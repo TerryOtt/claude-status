@@ -205,9 +205,14 @@ PAGE = """<!doctype html>
      as one group rather than as a continuation of the title. Terry: "CTA's should
      stand in a group." */
   #counts { display: flex; gap: 8px; align-items: center; margin-left: 22px; }
-  #alerts { font: inherit; font-size: 11px; font-weight: 600; cursor: pointer;
-            border: 1px solid var(--line); background: #FFFFFF; color: var(--dim);
-            border-radius: 4px; padding: 3px 8px; }
+  /* A persistent toggle rather than a button that vanishes. See the note on
+     `syncAlerts` for why the browser permission and this preference are two
+     different things. */
+  #alerts-wrap { font-size: 11px; font-weight: 600; color: var(--dim);
+                 display: flex; gap: 4px; align-items: center; cursor: pointer;
+                 user-select: none; white-space: nowrap; }
+  #alerts-wrap.blocked { cursor: not-allowed; opacity: .55; }
+  #alerts { margin: 0; cursor: inherit; }
   .cta { font-size: 11px; font-weight: 700; letter-spacing: .03em;
          color: var(--dim); padding: 3px 8px; border-radius: 4px; }
   /* **Warning-sign yellow, not highlighter yellow.** Terry asked for higher
@@ -458,7 +463,7 @@ PAGE = """<!doctype html>
     <span id="counts"></span>
     <span class="grow"></span>
     <span id="live">connecting…</span>
-    <button id="alerts" hidden>Enable alerts</button>
+    <label id="alerts-wrap"><input type="checkbox" id="alerts"> Alerts</label>
     <span id="badge"
       title="Green means Python read and parsed the board file in the last 5s.">LIVE</span>
   </div>
@@ -770,12 +775,7 @@ function announce(c) {
   const asking = (c.needs_terry_action || 0) + (c.blocked || 0);
   document.title = asking > 0 ? '(' + asking + ') ' + BASE_TITLE : BASE_TITLE;
 
-  const alerts = document.getElementById('alerts');
-  const can = ('Notification' in window);
-  alerts.hidden = !can || Notification.permission !== 'default';
-
-  if (lastCta !== null && asking > lastCta
-      && can && Notification.permission === 'granted') {
+  if (lastCta !== null && asking > lastCta && alertsOn()) {
     const n = new Notification('FGA board needs you', {
       body: (c.needs_terry_action || 0) + ' waiting for Terry, '
           + (c.blocked || 0) + ' blocked',
@@ -786,15 +786,64 @@ function announce(c) {
   lastCta = asking;
 }
 
-document.getElementById('alerts').addEventListener('click', () => {
-  // **Requested behind a click on purpose.** Chrome refuses the prompt without a
-  // user gesture, and an auto-request on load is the pattern people reflexively
-  // deny -- which would leave the page permanently unable to ask again.
-  Notification.requestPermission().then(() => {
-    document.getElementById('alerts').hidden =
-      Notification.permission !== 'default';
-  });
+// **THE BROWSER PERMISSION AND THIS PREFERENCE ARE TWO DIFFERENT THINGS**, and
+// conflating them is what made the old button vanish forever after one click.
+//
+// A permission is granted once and CANNOT be revoked from script. A preference is
+// ours, lives in `localStorage` beside `fga-hide-landed`, and can be turned off.
+// Terry asked for a checkbox precisely because the button gave him no way to see
+// whether alerts were on, or to switch them off again.
+//
+// **Three states, rendered honestly:**
+//   `default` -- unchecked; ticking it prompts.
+//   `granted` -- checked or not, per the stored preference.
+//   `denied`  -- unchecked and DISABLED. **A checkbox that silently does nothing
+//                is worse than one that admits it cannot.**
+const ALERTS_KEY = 'fga-alerts';
+const alertsBox = document.getElementById('alerts');
+const alertsWrap = document.getElementById('alerts-wrap');
+
+function alertsOn() {
+  return ('Notification' in window)
+    && Notification.permission === 'granted'
+    && localStorage.getItem(ALERTS_KEY) === '1';
+}
+
+function syncAlerts() {
+  if (!('Notification' in window)) {
+    alertsWrap.hidden = true;
+    return;
+  }
+  const denied = Notification.permission === 'denied';
+  alertsBox.disabled = denied;
+  alertsWrap.classList.toggle('blocked', denied);
+  alertsWrap.title = denied
+    ? 'Your browser has blocked notifications for this site.'
+    : 'Desktop notification when a card starts waiting on you.';
+  alertsBox.checked = alertsOn();
+}
+
+alertsBox.addEventListener('change', async () => {
+  if (!alertsBox.checked) {
+    localStorage.setItem(ALERTS_KEY, '0');
+    syncAlerts();
+    return;
+  }
+  // **The prompt only appears behind this gesture.** Chrome refuses
+  // `requestPermission` without one, and an auto-request on load is the pattern
+  // people reflexively deny -- which would leave the page permanently unable to
+  // ask again.
+  if (Notification.permission === 'default') {
+    await Notification.requestPermission();
+  }
+  // **Stored only if the browser actually said yes.** Otherwise the box unticks
+  // itself, which is the honest answer to "I asked and was refused".
+  localStorage.setItem(ALERTS_KEY,
+    Notification.permission === 'granted' ? '1' : '0');
+  syncAlerts();
 });
+
+syncAlerts();
 
 function paint() {
   const board = document.getElementById('board');
