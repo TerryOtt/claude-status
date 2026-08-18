@@ -179,13 +179,18 @@ PAGE = """<!doctype html>
      horizontal scrollbar under it. **A board you have to scroll sideways to see is not
      a board**, because the whole point is taking it in at a glance.
 
-     `flex: 1 1 0` divides whatever is there. `min-width` is the floor at which a
-     two-word title still wraps sanely; below that the row does scroll, which is the
-     right behavior on a genuinely tiny window. */
+     `flex: 1 1 0` divides whatever is there. **The floor is deliberately LOW**, because
+     Terry ruled on the trade: *"I'm okay with cards being taller than they are wide;
+     vertical scroll is easy and I don't think it'll get deep other than backlog and
+     completed."* So a narrow lane wraps its titles rather than pushing a lane off the
+     edge -- **the horizontal overflow is the failure, and card height is not.**
+
+     118px keeps all seven visible down to about a 900px viewport. Below that the row
+     scrolls, which is the honest behavior for a window too small for the board. */
   #board { display: flex; gap: 8px; padding: 10px; align-items: stretch;
            overflow-x: auto; height: calc(100vh - 44px); }
   .lane { background: var(--lane); border-radius: 8px;
-          flex: 1 1 0; min-width: 158px; max-width: 340px;
+          flex: 1 1 0; min-width: 118px; max-width: 340px;
           display: flex; flex-direction: column;
           border-top: 3px solid var(--dim); }
   .lane[data-css="terry"]   { border-top-color: var(--terry); }
