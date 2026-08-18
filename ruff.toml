@@ -1,0 +1,74 @@
+# Ruff, the linter half of this project's gate. `pyright` is the other half.
+#
+# **The two are NOT redundant.** Ruff checks that an annotation EXISTS; pyright
+# checks that it is TRUE. A green ruff run MUST NOT be described as type-checked.
+#
+#     python -m ruff check .
+#     python -m pyright .
+#
+# **The SELECT LIST below travels from Terry's other projects. The IGNORE COUNTS
+# DO NOT.** `--select ALL` was run against this repository before anything was
+# switched off, and every number in the ignore block is what it reported HERE.
+# A count copied from elsewhere is evidence for a decision nobody made.
+#
+# Measured 2026-08-18 against `status.py`, `serve.py` and `migrate_md.py`.
+
+target-version = "py313"
+line-length = 100
+
+[lint]
+# **BUGS FIRST.** Families that catch defects rather than express taste.
+select = [
+    "F",      # pyflakes -- undefined names, unused imports. Never optional
+    "E", "W", # pycodestyle
+    "I",      # import sorting
+    "N",      # PEP 8 naming
+    "UP",     # pyupgrade -- modern syntax for the pinned target-version
+    "B",      # bugbear -- the highest-yield bug family
+    "A",      # shadowed builtins
+    "C4",     # comprehensions
+    "SIM",    # simplifications that read better
+    "RET",    # return-statement hygiene
+    "ARG",    # unused arguments
+    "PIE",    # miscellaneous correctness
+    "PERF",   # obvious performance mistakes
+    "RUF",    # ruff's own
+    "ANN",    # THE STANDING ORDER: every signature fully type hinted
+    "DTZ",    # naive datetimes
+    "ISC",    # implicit string concatenation
+    "FURB",   # modernization
+    "TID",    # tidy imports
+    "SLF",    # private member access
+    "PL",     # pylint's port
+    "PTH",    # pathlib over os.path -- see the note below, it is ON here
+]
+
+# **Each family below was measured HERE and refused. The count is this repo's.**
+#
+#   T20   25  `print` IS the interface. Both entry points are CLI tools, and the
+#             server's request log is a print. Silencing them would delete the
+#             product rather than tidy it
+#   D     14  Docstrings here are house-styled essays carrying decisions and
+#             quotations, not PEP 257 one-line summaries
+#   EM    13  Wants every raise to build its message in a local first
+#   TRY   13  Wants a custom exception class per raise site. `BoardError` is
+#             deliberately the only one -- a caller distinguishes causes by
+#             reading the message, which `explain_refusal` writes for humans
+#   CPY    3  No copyright headers in a personal repository
+ignore = [
+    # The formatter owns these, and ruff itself warns that they fight it.
+    "COM812", "ISC001",
+    # The house style uses em dashes and curly quotes on purpose.
+    "RUF001", "RUF002", "RUF003",
+]
+
+[lint.flake8-annotations]
+allow-star-arg-any = false
+mypy-init-return = true
+
+# **PTH IS SELECTED HERE, unlike in FlickrGroupAddr, and the difference is
+# deliberate rather than an inconsistency.** That repository refused it because
+# migrating 154 findings across live hooks bought no behavior change. **This code
+# is new**, it already uses `pathlib` throughout, and turning the rule on now
+# costs nothing and keeps it that way. **A rule is cheap to adopt at line one and
+# expensive at line ten thousand.**
