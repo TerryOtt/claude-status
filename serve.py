@@ -64,10 +64,53 @@ import http.server
 import json
 import pathlib
 import re
+import subprocess
 
 import status
 
 HOST = "127.0.0.1"
+
+
+def build_id() -> str:
+    """What this checkout is, for the stale-page check. Never raises.
+
+    **`git` is asked in serve.py's OWN directory**, not the working directory, because
+    the tool and the board data live in different repositories and the caller is usually
+    standing in neither.
+
+    **A dirty tree is marked, and that is the case this exists for.** A developer editing
+    the server is exactly who ends up with a stale tab, and a bare hash would claim a
+    cleanliness the working tree does not have -- it would go on matching across every
+    uncommitted edit, which is the whole failure wearing a shorter name.
+
+    **Failure returns `unknown`, never a lie and never an exception.** A missing hash is a
+    real answer and reads as "cannot tell", which is different from "current". Same
+    three-state rule this project applies to the toolchain banner: confirmed fresh,
+    confirmed stale, and could-not-establish are three outcomes, not two.
+    """
+    here = pathlib.Path(__file__).resolve().parent
+    try:
+        head = subprocess.run(["git", "-C", str(here), "rev-parse", "--short", "HEAD"],
+                              capture_output=True, encoding="utf-8", errors="replace",
+                              timeout=5, check=False)
+        if head.returncode != 0 or not (head.stdout or "").strip():
+            return "unknown"
+        ident = head.stdout.strip()
+        dirty = subprocess.run(["git", "-C", str(here), "status", "--porcelain"],
+                               capture_output=True, encoding="utf-8", errors="replace",
+                               timeout=5, check=False)
+    except (OSError, subprocess.SubprocessError):
+        return "unknown"
+    if dirty.returncode == 0 and (dirty.stdout or "").strip():
+        return ident + "-dirty"
+    return ident
+
+
+# **Read ONCE, at import, and that is the point rather than an optimization.** This value
+# must describe the code the running process actually loaded. Recomputing it per request
+# would report whatever the checkout says NOW, so a `git pull` under a running server would
+# make a genuinely stale process claim to be current -- the exact lie being detected.
+BUILD = build_id()
 
 # Far below the time a human takes to switch windows, and a stat() against a local file
 # rather than anything on a network.
@@ -454,6 +497,12 @@ PAGE = """<!doctype html>
            pointer-events: none; z-index: 40; max-width: 70vw; }
   #toast.show { opacity: 1; }
   #toast.bad { background: var(--p0); }
+
+  /* **The stale-page flag, and it is LOUD on purpose.** It is the one thing in this bar
+     that says the page you are looking at is lying to you, and it appears only when that
+     is true -- so it never becomes scenery. Hidden means the two build ids agree. */
+  #stale { display: none; background: var(--p0); color: #FFFFFF; font-weight: 700;
+           padding: 2px 8px; border-radius: 4px; white-space: nowrap; }
 </style>
 </head>
 <body>
@@ -463,6 +512,8 @@ PAGE = """<!doctype html>
     <span id="counts"></span>
     <span class="grow"></span>
     <span id="live">connecting…</span>
+    <span id="stale"
+      title="This tab is running older code than the server. Reload with Ctrl+Shift+R."></span>
     <label id="alerts-wrap"><input type="checkbox" id="alerts"> Alerts</label>
     <span id="badge"
       title="Green means Python read and parsed the board file in the last 5s.">LIVE</span>
@@ -943,6 +994,17 @@ let fileMs = 0;
 // keys on -- not the HTTP status, because a socket answering proves the process is
 // up and nothing about the file.
 const LIVE_MS  = 5000;   // Terry's number: "read that file within last 5 seconds".
+
+// **What THIS TAB is running, frozen at load time.** The server stamps it into the HTML,
+// so it describes the JavaScript the browser actually has -- not what the checkout says
+// now. Every poll compares it against the server's live answer.
+//
+// **This exists because a patched server and an unpatched page look IDENTICAL.** On
+// 2026-08-18 a P0 was fixed, verified, and reported still broken, because the tab had
+// been open across the restart and was running the code from before it. Both of us read
+// the symptom as a bad fix, and twenty minutes went into a defect that was not there.
+const PAGE_BUILD = '%BUILD%';
+let serverBuild = null;
 const WARN_MS  = 15000;  // ~37 polls missed at 400ms. Nothing benign lasts this long.
 
 // **The dot's 2s breathing cycle is CSS, not JavaScript, and it is cosmetic.**
@@ -998,6 +1060,22 @@ function renderLive() {
   const nowMs = Date.now();
   const nowTxt = clockOf(nowMs);
 
+  // **Checked BEFORE the lastOk guard**, because a stale tab and a dead poll are
+  // independent failures. The old order would have hidden the reload flag at exactly
+  // the moment somebody is staring at the bar wondering what is wrong.
+  //
+  // **Silence here means the two ids AGREE.** An unknown build on either side is not a
+  // mismatch -- it is "cannot tell", and shouting on it would fire this every time git
+  // is unavailable, which is how a warning becomes wallpaper.
+  const stale = document.getElementById('stale');
+  const known = serverBuild && serverBuild !== 'unknown' && PAGE_BUILD !== 'unknown';
+  if (known && serverBuild !== PAGE_BUILD) {
+    stale.textContent = 'RELOAD  \\u00b7  page ' + PAGE_BUILD + '  \\u00b7  server ' + serverBuild;
+    stale.style.display = '';
+  } else {
+    stale.style.display = 'none';
+  }
+
   if (!lastOk) {
     el.textContent = 'Last update: never  ·  ' + nowTxt;
     badge.className = 'dead';
@@ -1023,6 +1101,11 @@ function renderLive() {
   if (fileMs) parts.push('File written: ' + agoOf(fileMs));
   parts.push('Last update: ' + agoOf(lastOk));
   parts.push(nowTxt);
+  // **The build id shows even when it AGREES, and that is deliberate.** A check that is
+  // invisible while healthy is indistinguishable from one that was never wired up, which
+  // is the failure this whole bar exists to refuse. It sits in the proof-of-life span
+  // rather than beside the counts, because it is evidence and not a call to action.
+  parts.push('build ' + PAGE_BUILD);
   el.textContent = parts.join('  ·  ');
 
   // **The badge flips at LIVE_MS, not at WARN_MS.** It carries a single claim --
@@ -1062,6 +1145,9 @@ function renderLive() {
 async function tick() {
   try {
     const meta = await (await fetch('/mtime', {cache: 'no-store'})).json();
+    // **Captured before the ok check**, because a stale tab and an unreadable board
+    // are independent failures and either can be true while the other is.
+    if (meta.build) serverBuild = meta.build;
     // **`ok: false` does NOT refresh `lastOk`.** The server answered, but it
     // could not read the board -- and a reachable server serving an unreadable
     // file is exactly the state that must not look healthy.
@@ -1200,12 +1286,15 @@ class Handler(http.server.BaseHTTPRequestHandler):
                 mtime = BOARD_PATH.stat().st_mtime
                 status.load(BOARD_PATH)
             except (OSError, status.BoardError, json.JSONDecodeError) as exc:
+                # **`build` rides on the FAILURE path too.** An unreadable board and a
+                # stale tab are independent problems, and the page must be able to tell
+                # them apart while one of them is happening.
                 self._json({"ok": False, "mtime": 0, "stamp": "unreadable",
-                            "error": str(exc)})
+                            "build": BUILD, "error": str(exc)})
                 return
             stamp = (datetime.datetime.fromtimestamp(mtime, tz=datetime.UTC)
                      .astimezone().strftime("%H:%M:%S"))
-            self._json({"ok": True, "mtime": mtime, "stamp": stamp})
+            self._json({"ok": True, "mtime": mtime, "stamp": stamp, "build": BUILD})
         elif route == "/data":
             self._send(payload(), "application/json")
         elif route in FONTS:
@@ -1229,7 +1318,11 @@ class Handler(http.server.BaseHTTPRequestHandler):
             with contextlib.suppress(status.BoardError, OSError,
                                      json.JSONDecodeError):
                 title = status.load(BOARD_PATH).project or title
+            # **`%BUILD%` is baked into the page at request time**, so the constant the
+            # JavaScript holds describes the code THIS tab loaded -- which is the whole
+            # comparison. Fetching it later would just re-read the server and always agree.
             page = (PAGE.replace("%POLL%", str(POLL_MS))
+                    .replace("%BUILD%", html.escape(BUILD))
                     .replace("%TITLE%", html.escape(title)))
             self._send(page.encode("utf-8"), "text/html; charset=utf-8")
         else:
