@@ -155,6 +155,7 @@ PAGE = """<!doctype html>
     --bg: #F4F5F7; --lane: #EBECF0; --card: #FFFFFF;
     --ink: #172B4D; --dim: #5E6C84; --line: #DFE1E6;
     --terry: #0052CC; --claude: #E2A100; --handoff: #1F845A; --done: #5E6C84;
+    --live: #14663F;
     --p0: #C9372C; --p1: #E56910; --p2: #B77600;
     --p3: #5E6C84; --p4: #8993A4; --p5: #B3BAC5;
   }
@@ -169,9 +170,34 @@ PAGE = """<!doctype html>
   #bar .grow { flex: 1; }
   #title { font-weight: 700; letter-spacing: -.01em; }
   #counts { color: var(--dim); }
-  #dot { width: 8px; height: 8px; border-radius: 50%; background: var(--handoff); }
-  #dot.stale { background: var(--p0); }
-  .meta { color: var(--dim); }
+  /* **THE HEARTBEAT.** Terry, 2026-08-18, after being burned by a dashboard at
+     work: *"'Written 13:52:53 Reload 1' ain't gonna do it for my brain due to
+     emotional trauma."*
+
+     **He is right, and it is the same defect this page exists to prevent.** A
+     reload counter only moves when the FILE changes, so `Reload 1` after three
+     quiet hours means "nothing happened" and "the poll died at 13:52" equally.
+     **A stale view and a healthy view produced the identical pixel.**
+
+     So the dot pulses on every successful poll and the bar counts the seconds
+     since the last one. **Proof of life has to be something that MOVES**, because
+     anything static is indistinguishable from a frozen page. */
+  #dot { width: 9px; height: 9px; border-radius: 50%; background: var(--live);
+         flex: 0 0 auto; transition: transform .12s ease, background .2s; }
+  #dot.beat { transform: scale(1.9); }
+  #dot.stale { background: var(--p0); transform: none; }
+  .meta { color: var(--dim); font-variant-numeric: tabular-nums; }
+  #live { color: var(--dim); font-variant-numeric: tabular-nums; }
+
+  /* **A BADGE, not colored text.** Terry: "go high contrast green with bold white
+     LIVE badge and we're good." White on #14663F is 7.4:1, past WCAG AA for
+     small text -- which matters because this is the one element on the page whose
+     job is to be believed at a glance. */
+  #badge { font-size: 11px; font-weight: 700; letter-spacing: .06em;
+           color: #FFFFFF; background: var(--live); border-radius: 4px;
+           padding: 3px 8px; flex: 0 0 auto; transition: background .2s; }
+  #badge.warn { background: var(--p1); }
+  #badge.dead { background: var(--p0); }
 
   /* **SEVEN LANES SHARE THE WIDTH RATHER THAN OVERFLOWING IT.** Terry works with the
      terminal on the left and the browser on the right, so the viewport is about half a
@@ -302,7 +328,9 @@ PAGE = """<!doctype html>
     <span id="counts"></span>
     <span class="grow"></span>
     <span class="meta" id="stamp"></span>
-    <span class="meta" id="reloads"></span>
+    <span id="live">connecting…</span>
+    <span id="badge"
+      title="Green means Python read and parsed the board file in the last 5s.">LIVE</span>
   </div>
   <div id="banner">
     <strong id="banner-head"></strong>
@@ -545,26 +573,122 @@ function paint() {
   if (openId) openCard(openId);
 }
 
+// ---- proof of life -------------------------------------------------------
+//
+// **Terry had a dashboard whose backend had crashed, and the page looked fine.**
+// His words: "past date/time does not mean it's the latest." A timestamp answers
+// "when did I last get data", which reads IDENTICALLY to "when did everything
+// stop" -- and the second one is the case you needed to notice.
+//
+// **So liveness is measured by the CLIENT against its own clock**, and it counts
+// UP. `lastOk` is the only thing this trusts: the moment a fetch actually
+// returned. Nothing the server sends can fake it, because a server that sends
+// nothing cannot move it.
+let lastOk = 0;
+
+// **`lastOk` moves ONLY when Python confirms it read and parsed the board.** The
+// `/mtime` route performs a real `status.load()`, and its `ok` field is what this
+// keys on -- not the HTTP status, because a socket answering proves the process is
+// up and nothing about the file.
+const LIVE_MS  = 5000;   // Terry's number: "read that file within last 5 seconds".
+const WARN_MS  = 15000;  // ~37 polls missed at 400ms. Nothing benign lasts this long.
+
+function clockOf(ms) {
+  const d = new Date(ms);
+  return String(d.getHours()).padStart(2, '0') + ':'
+       + String(d.getMinutes()).padStart(2, '0') + ':'
+       + String(d.getSeconds()).padStart(2, '0');
+}
+
+// **Terry specified this bar himself:** "last update: HH:MM:SS - Currently:
+// HH:MM:SS [green circle]".
+//
+// **It is better than a computed age, and the reason is that it needs no
+// interpretation.** `Currently` is a wall clock the browser ticks every half
+// second. If it FREEZES, the page is dead. If the GAP between the two grows,
+// the server is dead. Both failures are visible without anyone trusting a
+// number this code calculated -- which is the whole complaint, since the
+// dashboard that burned him showed a perfectly plausible timestamp.
+function renderLive() {
+  const el = document.getElementById('live');
+  const badge = document.getElementById('badge');
+  const dot = document.getElementById('dot');
+  const nowMs = Date.now();
+  const nowTxt = clockOf(nowMs);
+
+  if (!lastOk) {
+    el.textContent = 'last update: never  ·  Currently: ' + nowTxt;
+    badge.className = 'dead';
+    badge.textContent = 'NO DATA';
+    dot.classList.add('stale');
+    return;
+  }
+
+  const age = nowMs - lastOk;
+  el.textContent = 'last update: ' + clockOf(lastOk) + '  ·  Currently: ' + nowTxt;
+
+  // **The badge flips at LIVE_MS, not at WARN_MS.** It carries a single claim --
+  // "Python read that file within the last 5 seconds" -- and a badge that stays
+  // green while quietly becoming false is the whole problem being fixed.
+  if (age < LIVE_MS) {
+    badge.className = '';
+    badge.textContent = 'LIVE';
+  } else if (age < WARN_MS) {
+    badge.className = 'warn';
+    badge.textContent = 'NO ANSWER ' + Math.round(age / 1000) + 's';
+  } else {
+    const s = Math.round(age / 1000);
+    badge.className = 'dead';
+    badge.textContent = 'STALE ' + (s < 90 ? s + 's' : Math.round(s / 60) + 'm');
+  }
+  dot.classList.toggle('stale', age >= LIVE_MS);
+}
+
+// **POLLING IS THE DESIGN, not a fallback for missing file watching.** Terry:
+// "I hope inotify or equivalent works and we get realtime update, but the timer
+// also actively polling will keep blood pressure low."
+//
+// **A push socket would be worse here, and for his own reason.** A WebSocket or
+// SSE stream that goes quiet is indistinguishable from one that is working and
+// has nothing to say -- which is the crashed-dashboard failure again, wearing a
+// different protocol. **A poll that must answer every 400ms cannot go quiet
+// without the circle noticing.**
+//
+// 400ms is realtime as far as an eye is concerned, and the cost is one `stat`
+// plus a 12 KB JSON parse against a local file.
 async function tick() {
   try {
     const meta = await (await fetch('/mtime', {cache: 'no-store'})).json();
+    // **`ok: false` does NOT refresh `lastOk`.** The server answered, but it
+    // could not read the board -- and a reachable server serving an unreadable
+    // file is exactly the state that must not look healthy.
+    if (meta.ok === false) { renderLive(); return; }
     if (meta.mtime !== seen) {
       data = await (await fetch('/data', {cache: 'no-store'})).json();
       seen = meta.mtime;
       reloads++;
-      document.getElementById('stamp').textContent = 'Written ' + meta.stamp;
-      document.getElementById('reloads').textContent = 'Reload ' + reloads;
+      document.getElementById('stamp').textContent = 'file written ' + meta.stamp;
+      document.getElementById('reloads').textContent = 'repaint ' + reloads;
       paint();
     }
-    document.getElementById('dot').classList.remove('stale');
+    // Only a real answer moves this. It is the whole signal.
+    lastOk = Date.now();
+    const dot = document.getElementById('dot');
+    dot.classList.add('beat');
+    setTimeout(() => dot.classList.remove('beat'), 120);
   } catch (e) {
-    // Say the server is gone rather than leaving a stale board looking current.
-    document.getElementById('dot').classList.add('stale');
-    document.getElementById('stamp').textContent = 'Server unreachable';
+    // Deliberately does NOT touch lastOk. The age keeps climbing, and that is
+    // what turns the bar red on its own.
   }
+  renderLive();
 }
 tick();
 setInterval(tick, %POLL%);
+// **A second timer, and it is not redundant.** If `tick` itself wedges -- a
+// hung fetch, a thrown error in paint -- the age would freeze at whatever it
+// last rendered and the page would look healthy forever. This one only reads
+// the clock, so it keeps counting when everything else has stopped.
+setInterval(renderLive, 500);
 </script>
 </body>
 </html>
@@ -652,14 +776,28 @@ class Handler(http.server.BaseHTTPRequestHandler):
     def do_GET(self) -> None:
         route = self.path.partition("?")[0]
         if route == "/mtime":
+            # **THE GREEN CIRCLE MEANS "PYTHON READ THAT FILE JUST NOW", so this
+            # route actually reads it.** Terry set the bar: *"green circle means
+            # python has actively polled and read that file within last 5 seconds."*
+            #
+            # **A `stat()` would have been cheaper and would have lied.** It proves
+            # the directory entry exists, not that the board is readable -- a
+            # truncated or half-written file passes `stat` and fails `load`. And a
+            # server answering HTTP proves only that the socket is up.
+            #
+            # **`ok` is the field the dot keys on.** Parsing 12 KB of JSON at 2.5 Hz
+            # is nothing, and it is the difference between a signal that means
+            # something and one that looks reassuring.
             try:
                 mtime = BOARD_PATH.stat().st_mtime
-            except OSError:
-                self._json({"mtime": 0, "stamp": "board file missing"})
+                status.load(BOARD_PATH)
+            except (OSError, status.BoardError, json.JSONDecodeError) as exc:
+                self._json({"ok": False, "mtime": 0, "stamp": "unreadable",
+                            "error": str(exc)})
                 return
             stamp = (datetime.datetime.fromtimestamp(mtime, tz=datetime.UTC)
                      .astimezone().strftime("%H:%M:%S"))
-            self._json({"mtime": mtime, "stamp": stamp})
+            self._json({"ok": True, "mtime": mtime, "stamp": stamp})
         elif route == "/data":
             self._send(payload(), "application/json")
         elif route in FONTS:
