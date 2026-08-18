@@ -167,7 +167,10 @@ RULES: dict[str, LaneRules] = {
     # form would be a second inbox.
     "backlog": LaneRules(
         create=CLAUDE,
-        inbound={"ready_for_claude": TERRY, "ready_for_review": TERRY},
+        inbound={"ready_for_claude": TERRY, "ready_for_review": TERRY,
+                 # Answered, but not soup yet. See the note on
+                 # `needs_terry_action.outbound`.
+                 "needs_terry_action": TERRY},
         # **Claude may take a backlog card to `needs_terry_action` and NOWHERE
         # else.** That is not a loosening of "the backlog is Terry's" -- the edge
         # names its destination, so raising a question is expressible without
@@ -192,7 +195,16 @@ RULES: dict[str, LaneRules] = {
     # `create`.
     "ready_for_claude": LaneRules(
         create=CLAUDE,
-        inbound={"backlog": TERRY, "blocked": TERRY, "ready_for_review": TERRY},
+        inbound={"backlog": TERRY, "blocked": TERRY, "ready_for_review": TERRY,
+                 # **Terry's answer IS the unblock.** He asked for this the moment
+                 # the first three cards piled up in Needs Terry: *"I'll move there
+                 # when I feel I've unblocked you."*
+                 #
+                 # **It completes the loop the other grant opened.** Claude may move
+                 # a card INTO `needs_terry_action` from any lane; Terry moves it out
+                 # to the queue. Neither of us can do the other's half, and the card
+                 # never sits in a lane whose owner has already finished with it.
+                 "needs_terry_action": TERRY},
         outbound={"in_progress": CLAUDE, "needs_terry_action": CLAUDE,
                   "blocked": CLAUDE, "backlog": TERRY},
     ),
@@ -228,8 +240,14 @@ RULES: dict[str, LaneRules] = {
         inbound={"backlog": CLAUDE, "ready_for_claude": CLAUDE,
                  "in_progress": CLAUDE, "blocked": CLAUDE,
                  "ready_for_review": CLAUDE},
+        # **Terry has TWO exits, because answering and prioritizing are different
+        # acts.** His words: *"I may post a reply and realize that card is not yet
+        # soup and goes to backlog for now."* Clearing the question is not the same
+        # as saying do it next, and collapsing the two would force him to queue work
+        # he only meant to unblock.
         outbound={"in_progress": CLAUDE, "blocked": CLAUDE,
-                  "ready_for_review": CLAUDE},
+                  "ready_for_review": CLAUDE,
+                  "ready_for_claude": TERRY, "backlog": TERRY},
     ),
     # **NOT a pure Claude lane, and the cross-check is what revealed that.** His
     # `ready_for_claude` spec lets a card arrive *from blocked*, which is Terry taking
