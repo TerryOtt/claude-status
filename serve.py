@@ -327,7 +327,6 @@ PAGE = """<!doctype html>
     <span id="title">%TITLE%</span>
     <span id="counts"></span>
     <span class="grow"></span>
-    <span class="meta" id="stamp"></span>
     <span id="live">connecting…</span>
     <span id="badge"
       title="Green means Python read and parsed the board file in the last 5s.">LIVE</span>
@@ -360,7 +359,11 @@ PAGE = """<!doctype html>
   <div id="toast"></div>
 
 <script>
-let seen = null, reloads = 0, openId = null;
+// **The repaint counter is GONE, deliberately.** It only moved when the file
+// changed, so a healthy quiet board and a dead poll showed the same number --
+// which is the exact confusion the LIVE badge replaced. Two signals telling the
+// same story badly is worse than one telling it well.
+let seen = null, openId = null;
 let data = {lanes: [], edges: [], counts: {}, error: null};
 
 function toast(msg, bad) {
@@ -585,6 +588,9 @@ function paint() {
 // returned. Nothing the server sends can fake it, because a server that sends
 // nothing cannot move it.
 let lastOk = 0;
+// The board file's own mtime, in client-clock milliseconds. Both processes are on
+// this machine, so the two clocks are the same clock.
+let fileMs = 0;
 
 // **`lastOk` moves ONLY when Python confirms it read and parsed the board.** The
 // `/mtime` route performs a real `status.load()`, and its `ok` field is what this
@@ -592,12 +598,38 @@ let lastOk = 0;
 // up and nothing about the file.
 const LIVE_MS  = 5000;   // Terry's number: "read that file within last 5 seconds".
 const WARN_MS  = 15000;  // ~37 polls missed at 400ms. Nothing benign lasts this long.
+const BEAT_MS  = 1000;   // How often the dot may PULSE. Not how often it polls.
+let lastBeat = 0;
 
+// **One absolute clock, everything else relative.** Terry's call: the two
+// timestamps became "N seconds/minutes ago" and only `Currently` stays a wall
+// clock. **The absolute one is the tick; the relative ones are the answer.** A
+// past HH:MM:SS makes you subtract before you know whether to worry, and doing
+// arithmetic under stress is how a stale dashboard gets believed.
 function clockOf(ms) {
+  // **`2:09:29pm`, lower case and closed up.** Terry's preference, stated as one:
+  // "for AM/PM go all lower case and no space between second and am/pm."
+  //
+  // **Built by hand rather than by `toLocaleTimeString`, and that is the safer
+  // choice here.** Chrome emits `2:09:29 PM` with U+202F NARROW NO-BREAK SPACE
+  // before the meridiem, not an ordinary space -- so the obvious `.replace(' PM')`
+  // silently does nothing on a machine with current ICU, and a regex for it needs
+  // escapes that this Python template would have to double.
   const d = new Date(ms);
-  return String(d.getHours()).padStart(2, '0') + ':'
-       + String(d.getMinutes()).padStart(2, '0') + ':'
-       + String(d.getSeconds()).padStart(2, '0');
+  const h24 = d.getHours();
+  const h12 = ((h24 + 11) % 12) + 1;
+  const mm = String(d.getMinutes()).padStart(2, '0');
+  const ss = String(d.getSeconds()).padStart(2, '0');
+  return h12 + ':' + mm + ':' + ss + (h24 < 12 ? 'am' : 'pm');
+}
+
+function agoOf(ms) {
+  const s = Math.max(0, Math.round((Date.now() - ms) / 1000));
+  if (s < 60) return s + (s === 1 ? ' second ago' : ' seconds ago');
+  const m = Math.round(s / 60);
+  if (m < 60) return m + (m === 1 ? ' minute ago' : ' minutes ago');
+  const h = Math.round(m / 60);
+  return h + (h === 1 ? ' hour ago' : ' hours ago');
 }
 
 // **Terry specified this bar himself:** "last update: HH:MM:SS - Currently:
@@ -624,8 +656,20 @@ function renderLive() {
     return;
   }
 
+  // **All three in ONE span, so every separator is the same separator.** Terry
+  // asked for the dot between the first two to match the one already between the
+  // last two; two spans plus a flex gap could never quite line up with a `·`
+  // typed into the middle of a string.
+  //
+  // The file's age is a DIFFERENT fact from the poll's, and both belong here: a
+  // board nobody has touched for two hours is normal, and a poll that has not
+  // answered for two hours is not.
   const age = nowMs - lastOk;
-  el.textContent = 'last update: ' + clockOf(lastOk) + '  ·  Currently: ' + nowTxt;
+  const parts = [];
+  if (fileMs) parts.push('file written ' + agoOf(fileMs));
+  parts.push('last update: ' + agoOf(lastOk));
+  parts.push('Currently: ' + nowTxt);
+  el.textContent = parts.join('  ·  ');
 
   // **The badge flips at LIVE_MS, not at WARN_MS.** It carries a single claim --
   // "Python read that file within the last 5 seconds" -- and a badge that stays
@@ -663,19 +707,28 @@ async function tick() {
     // could not read the board -- and a reachable server serving an unreadable
     // file is exactly the state that must not look healthy.
     if (meta.ok === false) { renderLive(); return; }
+    fileMs = meta.mtime * 1000;
     if (meta.mtime !== seen) {
       data = await (await fetch('/data', {cache: 'no-store'})).json();
       seen = meta.mtime;
-      reloads++;
-      document.getElementById('stamp').textContent = 'file written ' + meta.stamp;
-      document.getElementById('reloads').textContent = 'repaint ' + reloads;
       paint();
     }
     // Only a real answer moves this. It is the whole signal.
     lastOk = Date.now();
-    const dot = document.getElementById('dot');
-    dot.classList.add('beat');
-    setTimeout(() => dot.classList.remove('beat'), 120);
+    // **THE PULSE IS THROTTLED TO 1 Hz, and the POLL IS NOT.** Terry: "the
+    // heartbeat at top left is cool but drop to 1 Hz; it's making me anxious at
+    // current frequency." At 400ms it read as a stutter rather than a pulse.
+    //
+    // **Do not "fix" this by slowing the poll.** The badge's claim is that Python
+    // read the file within 5 seconds, and a 1 Hz poll would leave only five
+    // chances to notice a failure before the badge is already wrong. The
+    // animation is cosmetic; the poll rate is the guarantee.
+    if (lastOk - lastBeat >= BEAT_MS) {
+      lastBeat = lastOk;
+      const dot = document.getElementById('dot');
+      dot.classList.add('beat');
+      setTimeout(() => dot.classList.remove('beat'), 220);
+    }
   } catch (e) {
     // Deliberately does NOT touch lastOk. The age keeps climbing, and that is
     // what turns the bar red on its own.
