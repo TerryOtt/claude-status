@@ -168,7 +168,11 @@ RULES: dict[str, LaneRules] = {
     "backlog": LaneRules(
         create=CLAUDE,
         inbound={"ready_for_claude": TERRY, "ready_for_review": TERRY},
-        outbound={"ready_for_claude": TERRY},
+        # **Claude may take a backlog card to `needs_terry_action` and NOWHERE
+        # else.** That is not a loosening of "the backlog is Terry's" -- the edge
+        # names its destination, so raising a question is expressible without
+        # granting Claude any power to advance its own queue.
+        outbound={"ready_for_claude": TERRY, "needs_terry_action": CLAUDE},
     ),
     # **Verbatim:** *"ready for claude: create=none, in=terry, from backlog, from
     # blocked, from ready for review. out=claude, to (three lanes claude owns)."*
@@ -201,9 +205,29 @@ RULES: dict[str, LaneRules] = {
     ),
     # **Terry answers in CHAT and Claude moves the card.** He does not drag this one:
     # the card is Claude's bookkeeping about what it is waiting for.
+    #
+    # **CLAUDE MAY MOVE A CARD HERE FROM ANY LANE EXCEPT `completed`.** Terry granted
+    # it deliberately broadly, 2026-08-18: *"claude has perms to move TO 'Needs Terry'
+    # from any swimlane EXCEPT Completed."*
+    #
+    # **It exists to serve his other standing order the same day:** *"when you comment
+    # on a card and your comment needs Terry response? That means move card to 'Needs
+    # Terry'. That way I get a loud CTA and will jump on it."* Applying that rule
+    # immediately found it impossible from `backlog`, whose only exit was
+    # `terry -> ready_for_claude`.
+    #
+    # **`completed` is excluded because it is terminal**, and a question about
+    # finished work is a new card rather than a resurrection.
+    #
+    # **This grants Claude no power to advance work**, and that is the model earning
+    # its keep: every edge names its DESTINATION, so "may raise a question from
+    # anywhere" is expressible without also meaning "may move things out of the
+    # backlog". An actor-only model could not have said one without the other.
     "needs_terry_action": LaneRules(
         create=NOBODY,
-        inbound={"in_progress": CLAUDE, "ready_for_claude": CLAUDE, "blocked": CLAUDE},
+        inbound={"backlog": CLAUDE, "ready_for_claude": CLAUDE,
+                 "in_progress": CLAUDE, "blocked": CLAUDE,
+                 "ready_for_review": CLAUDE},
         outbound={"in_progress": CLAUDE, "blocked": CLAUDE,
                   "ready_for_review": CLAUDE},
     ),
@@ -230,7 +254,7 @@ RULES: dict[str, LaneRules] = {
         inbound={"in_progress": CLAUDE, "needs_terry_action": CLAUDE,
                  "blocked": CLAUDE},
         outbound={"completed": TERRY, "backlog": TERRY, "ready_for_claude": TERRY,
-                  "in_progress": CLAUDE},
+                  "in_progress": CLAUDE, "needs_terry_action": CLAUDE},
     ),
     # **Terminal, and it needs no flag saying so** -- an empty `outbound` IS
     # append-only, enforced by the same rule as everything else.

@@ -197,6 +197,9 @@ PAGE = """<!doctype html>
      as one group rather than as a continuation of the title. Terry: "CTA's should
      stand in a group." */
   #counts { display: flex; gap: 8px; align-items: center; margin-left: 22px; }
+  #alerts { font: inherit; font-size: 11px; font-weight: 600; cursor: pointer;
+            border: 1px solid var(--line); background: #FFFFFF; color: var(--dim);
+            border-radius: 4px; padding: 3px 8px; }
   .cta { font-size: 11px; font-weight: 700; letter-spacing: .03em;
          color: var(--dim); padding: 3px 8px; border-radius: 4px; }
   .cta.hot { background: #F5CD47; color: #000000; }
@@ -399,6 +402,7 @@ PAGE = """<!doctype html>
     <span id="counts"></span>
     <span class="grow"></span>
     <span id="live">connecting…</span>
+    <button id="alerts" hidden>Enable alerts</button>
     <span id="badge"
       title="Green means Python read and parsed the board file in the last 5s.">LIVE</span>
   </div>
@@ -669,6 +673,53 @@ function playFlip(before) {
   }
 }
 
+// **A card can ask for Terry and he can be in another window.** His words: "with no
+// email those could get missed." Three escalating tells, none of which needs a mail
+// server:
+//
+//   1. **The tab title.** Free, always on, survives a backgrounded tab. `(2) FGA
+//      board` is visible in the tab strip from any other window.
+//   2. **A desktop notification**, if he grants it once. Fires only when a count
+//      GOES UP, never on a repaint, so a board sitting at two does not nag.
+//   3. **A push to his phone**, which is Claude's job rather than the page's --
+//      Claude sends one when it moves a card to Needs Terry.
+//
+// **It fires on a RISE, not on a non-zero value.** A notification that repeats every
+// 400ms while a count sits at one is the boy-who-cried-wolf failure this project
+// keeps guarding against, and it would be worse than silence.
+let lastCta = null;
+const BASE_TITLE = document.title;
+
+function announce(c) {
+  const asking = (c.needs_terry_action || 0) + (c.blocked || 0);
+  document.title = asking > 0 ? '(' + asking + ') ' + BASE_TITLE : BASE_TITLE;
+
+  const alerts = document.getElementById('alerts');
+  const can = ('Notification' in window);
+  alerts.hidden = !can || Notification.permission !== 'default';
+
+  if (lastCta !== null && asking > lastCta
+      && can && Notification.permission === 'granted') {
+    const n = new Notification('FGA board needs you', {
+      body: (c.needs_terry_action || 0) + ' waiting for Terry, '
+          + (c.blocked || 0) + ' blocked',
+      tag: 'fga-cta',          // Replaces its predecessor rather than stacking.
+    });
+    n.onclick = () => { window.focus(); n.close(); };
+  }
+  lastCta = asking;
+}
+
+document.getElementById('alerts').addEventListener('click', () => {
+  // **Requested behind a click on purpose.** Chrome refuses the prompt without a
+  // user gesture, and an auto-request on load is the pattern people reflexively
+  // deny -- which would leave the page permanently unable to ask again.
+  Notification.requestPermission().then(() => {
+    document.getElementById('alerts').hidden =
+      Notification.permission !== 'default';
+  });
+});
+
 function paint() {
   const board = document.getElementById('board');
   const before = measureCards();
@@ -707,6 +758,8 @@ function paint() {
     s.textContent = pair[0] + ': ' + pair[1];
     counts.appendChild(s);
   }
+
+  announce(c);
 
   // Repaint the drawer too, so a comment posted a moment ago appears without the
   // card having to be reopened.
