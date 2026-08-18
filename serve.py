@@ -501,8 +501,13 @@ PAGE = """<!doctype html>
   /* **The stale-page flag, and it is LOUD on purpose.** It is the one thing in this bar
      that says the page you are looking at is lying to you, and it appears only when that
      is true -- so it never becomes scenery. Hidden means the two build ids agree. */
+  /* **A CLASS toggles this, never `style.display`.** Setting the inline style back to
+     `''` to reveal it does not work: the element falls straight back to this `none`, so
+     the flag stays invisible while every inline-style assertion reports it shown. That
+     is what happened on the first cut, and only the render caught it. */
   #stale { display: none; background: var(--p0); color: #FFFFFF; font-weight: 700;
            padding: 2px 8px; border-radius: 4px; white-space: nowrap; }
+  #stale.show { display: inline-block; }
 </style>
 </head>
 <body>
@@ -1069,12 +1074,11 @@ function renderLive() {
   // is unavailable, which is how a warning becomes wallpaper.
   const stale = document.getElementById('stale');
   const known = serverBuild && serverBuild !== 'unknown' && PAGE_BUILD !== 'unknown';
-  if (known && serverBuild !== PAGE_BUILD) {
+  const drifted = known && serverBuild !== PAGE_BUILD;
+  if (drifted) {
     stale.textContent = 'RELOAD  \\u00b7  page ' + PAGE_BUILD + '  \\u00b7  server ' + serverBuild;
-    stale.style.display = '';
-  } else {
-    stale.style.display = 'none';
   }
+  stale.classList.toggle('show', drifted);
 
   if (!lastOk) {
     el.textContent = 'Last update: never  ·  ' + nowTxt;
