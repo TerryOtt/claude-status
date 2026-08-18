@@ -244,11 +244,11 @@ PAGE = """<!doctype html>
   .lane[data-css="handoff"] { border-top-color: var(--handoff); }
   .lane[data-css="done"]    { border-top-color: var(--done); }
 
-  /* **+50% on the lane titles**, 12px to 18px, at Terry's request. The count sits
-     in a circle exactly as tall as that type -- `1em` on a child whose own
-     `font-size` is set in `em` of the same parent, so the two track each other if
-     the title size ever changes again. */
-  .lane h2 { margin: 0; padding: 9px 12px 3px; font-size: 18px; font-weight: 700;
+  /* **+25% on the lane titles, 12px to 15px.** Terry asked for +50% first, looked
+     at 18px and pulled it back: "that may have overshot for my yes." The count sits
+     in a circle sized in `em` of this same rule, so the two track each other and a
+     third adjustment needs one number changed rather than two. */
+  .lane h2 { margin: 0; padding: 9px 12px 3px; font-size: 15px; font-weight: 700;
              text-transform: uppercase; letter-spacing: .02em;
              display: flex; gap: 8px; align-items: center; line-height: 1.15; }
   .lane h2 .n { margin-left: auto; background: #FFFFFF; color: var(--dim);
