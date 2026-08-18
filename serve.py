@@ -177,7 +177,10 @@ PAGE = """<!doctype html>
      **Zero is plain text; non-zero is a hazard pill.** So the bar is quiet when
      there is nothing to do and impossible to miss when there is, which is this
      project's loudness rule applied to a status line. */
-  #counts { display: flex; gap: 8px; align-items: center; }
+  /* **The gap on the left separates the CTAs from the project name**, so they read
+     as one group rather than as a continuation of the title. Terry: "CTA's should
+     stand in a group." */
+  #counts { display: flex; gap: 8px; align-items: center; margin-left: 22px; }
   .cta { font-size: 11px; font-weight: 700; letter-spacing: .03em;
          color: var(--dim); padding: 3px 8px; border-radius: 4px; }
   .cta.hot { background: #F5CD47; color: #000000; }
@@ -611,10 +614,15 @@ function paint() {
   const c = data.counts || {};
   const counts = document.getElementById('counts');
   counts.replaceChildren();
+  // **Ranked worst first, left to right.** Terry's order. Blocked means neither of
+  // us can move it; waiting-for-Terry means Claude is stopped until he answers;
+  // needs-signoff means the work is done and a tick is outstanding. **Reading order
+  // is severity order**, so the leftmost pill that is lit is the worst thing on the
+  // board.
   for (const pair of [
-    ['AWAITING SIGNOFF', c.ready_for_review || 0],
     ['BLOCKED', c.blocked || 0],
     ['WAITING FOR TERRY', c.needs_terry_action || 0],
+    ['NEEDS SIGNOFF', c.ready_for_review || 0],
   ]) {
     const s = document.createElement('span');
     s.className = pair[1] > 0 ? 'cta hot' : 'cta';
