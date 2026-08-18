@@ -289,6 +289,20 @@ PAGE = """<!doctype html>
           margin-bottom: 7px; box-shadow: 0 1px 1px rgba(9,30,66,.25);
           display: flex; gap: 8px; align-items: flex-start; cursor: pointer; }
   .card.dragging { opacity: .4; }
+  /* **A card that MOVED glides from where it was.** Terry asked to watch Claude's
+     moves happen: "a motion animation would be fun af for me to watch in realtime."
+     The transform is set by the FLIP pass in paint(); this rule only says how it
+     travels. `will-change` keeps it on the compositor so a board full of cards does
+     not judder. */
+  .card.flip { transition: transform .55s cubic-bezier(.22, 1, .36, 1);
+               will-change: transform; z-index: 5; position: relative; }
+  /* A brief wash of the destination lane's meaning, so the eye lands on the card
+     that actually changed rather than hunting for it. */
+  @keyframes landed {
+    0%   { box-shadow: 0 0 0 3px rgba(0, 82, 204, .55); }
+    100% { box-shadow: 0 1px 1px rgba(9, 30, 66, .25); }
+  }
+  .card.landed { animation: landed 1.1s ease-out; }
   .card:hover { background: #FAFBFC; }
   .pri { font-size: 10px; font-weight: 700; color: #FFFFFF; border-radius: 3px;
          padding: 1px 5px; letter-spacing: .02em; flex: 0 0 auto; margin-top: 1px; }
@@ -593,10 +607,58 @@ function laneEl(lane) {
   return el;
 }
 
+// **FLIP: First, Last, Invert, Play.** Terry wanted to watch Claude's moves happen
+// rather than see a card teleport: "a motion animation would be fun af for me to
+// watch in realtime."
+//
+// **The board repaints wholesale, so the old elements are gone by the time the new
+// ones exist.** FLIP works anyway because it compares POSITIONS rather than nodes:
+// measure every card's rectangle before the rebuild, measure again after, then
+// translate each survivor back to where it was and let CSS carry it home.
+//
+// **Cards are matched by `data-id`**, which is why stable ids mattered beyond
+// bookkeeping. Under the old positional row numbers a signoff renumbered everything
+// and every card would have appeared to move.
+function measureCards() {
+  const seen = new Map();
+  for (const el of document.querySelectorAll('.card[data-id]')) {
+    seen.set(el.dataset.id, el.getBoundingClientRect());
+  }
+  return seen;
+}
+
+function playFlip(before) {
+  if (!before.size) return;   // First paint. Nothing moved; it all just arrived.
+  for (const el of document.querySelectorAll('.card[data-id]')) {
+    const was = before.get(el.dataset.id);
+    if (!was) continue;       // A brand new card fades in rather than flying in.
+    const now = el.getBoundingClientRect();
+    const dx = was.left - now.left;
+    const dy = was.top - now.top;
+    // Sub-pixel drift from a reflow is not a move. Two pixels is the floor.
+    if (Math.abs(dx) < 2 && Math.abs(dy) < 2) continue;
+
+    el.style.transform = 'translate(' + dx + 'px, ' + dy + 'px)';
+    // **Two frames, not one.** Setting the transform and removing it in the same
+    // frame collapses to no animation at all, because the browser never renders
+    // the inverted position.
+    requestAnimationFrame(() => requestAnimationFrame(() => {
+      el.classList.add('flip');
+      el.style.transform = '';
+      el.addEventListener('transitionend', () => {
+        el.classList.remove('flip');
+        el.classList.add('landed');
+      }, {once: true});
+    }));
+  }
+}
+
 function paint() {
   const board = document.getElementById('board');
+  const before = measureCards();
   board.replaceChildren();
   for (const lane of data.lanes) board.appendChild(laneEl(lane));
+  playFlip(before);
 
   const banner = document.getElementById('banner');
   banner.classList.toggle('show', !!data.error);
