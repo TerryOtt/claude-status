@@ -119,6 +119,16 @@ POLL_MS = 400
 # The 12-hour pivot, named so the meridiem arithmetic reads as a rule.
 NOON = 12
 
+# Below this an hour is one digit, so a column of times needs a pad to stay aligned.
+TWO_DIGIT_HOUR = 10
+
+# **U+2007 FIGURE SPACE: one digit wide in a font with tabular figures.** That is the
+# character's entire purpose, and Inter is loaded with 'tnum' 1. It replaces the leading
+# zero Terry asked to drop, so the column stays aligned and there is no zero to look at.
+#
+# **Written as an escape rather than pasted, deliberately.** An invisible character sitting
+# in source is unreviewable -- anyone reading this line can see exactly what it is.
+FIGURE_SPACE = "\u2007"
 # **Inline markdown only, and that is a deliberate scope.** A detail or comment carries
 # `code`, **bold** and *italic* and nothing else. A markdown library for one field would
 # be a dependency for a job this size.
@@ -182,15 +192,24 @@ def when(stamp: str) -> str:
     # which a plain modulo gets wrong in both directions.
     hour = moment.hour % NOON or NOON
     meridiem = "am" if moment.hour < NOON else "pm"
-    # **The hour is zero-padded, and that is what makes a COLUMN of these align.**
-    # Terry: "in the name of all that is holy keep the datetimes cleanly aligned so
-    # all dates line up and times line up." Inter carries `tnum`, so every digit is
-    # the same width -- but `2:56pm` against `12:05pm` is one digit shorter and
-    # shifts everything after it regardless.
+    # **A single-digit hour is padded with a FIGURE SPACE, not a zero.** Terry asked
+    # whether the leading zero could go and whether that breaks anything: it can, and
+    # it would have, so this pads with something invisible instead.
     #
-    # **It also matches his original spec**, which said `HH:MM(am/pm)`. `HH` is two
-    # digits and the first implementation quietly dropped the pad.
-    return f"{moment:%Y-%m-%d} {hour:02d}:{moment:%M}{meridiem}"
+    # **U+2007 FIGURE SPACE is exactly the width of a digit** in a font with tabular
+    # figures, which is what it exists for. Inter is loaded with
+    # `font-feature-settings: 'tnum' 1`, so ` 2:56pm` and `12:05pm` put their colons
+    # in the same column while only one of them shows two characters.
+    #
+    # **Both halves of his ask survive.** No leading zero to look at, and: "in the
+    # name of all that is holy keep the datetimes cleanly aligned so all dates line
+    # up and times line up."
+    #
+    # **It stays a plain string**, which matters -- `at.textContent = h.when` and the
+    # comment header both take it as text, and returning markup here would force both
+    # onto `innerHTML` for a cosmetic fix.
+    pad = FIGURE_SPACE if hour < TWO_DIGIT_HOUR else ""
+    return f"{moment:%Y-%m-%d} {pad}{hour}:{moment:%M}{meridiem}"
 
 
 PAGE = """<!doctype html>
