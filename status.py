@@ -599,12 +599,31 @@ class Board:
                 for state, label in LANES]
 
     def verify(self) -> list[str]:
-        """Every item whose stored state disagrees with its own audit trail.
+        """Replay every item's history and report anything the state machine forbids.
 
         **THIS IS THE ENFORCEMENT THAT SURVIVES A DIRECT WRITE.** `move()` guards every
         caller that uses the API; nothing can stop `item.state = "completed"` or a hand
         edit to the JSON. **The history is the authority**, so replaying it catches an
         out-of-band change on the next load, whoever made it and however.
+
+        **Terry asked for exactly this emphasis:** *"I'd rather the state machine guard
+        sanity."* So it checks four things rather than one, and only the first was
+        here before:
+
+        1. The stored `state` matches where the history ends.
+        2. **Every recorded transition was LEGAL for the actor that claimed it.** A
+           forged `by` on an edge that actor may not take is now caught.
+        3. **The chain is unbroken** -- each entry leaves where the previous one
+           arrived. A spliced or deleted entry shows up as a gap.
+        4. The first entry is a creation, in a lane that permits creation by its actor.
+
+        **What it still cannot catch, stated plainly: a LEGAL edge with a forged
+        actor.** If a `ready_for_review -> completed` entry claims `terry`, the state
+        machine agrees, because that is exactly what Terry is allowed to do. No amount
+        of checking here fixes that; only signing would, and signing a local board is
+        absurd. **The defense is that the CLI cannot emit `by: terry` and the server
+        cannot emit `by: claude`**, so forging one takes a deliberate hand edit rather
+        than a flag.
 
         **An item with no history is skipped rather than flagged.** The twelve cards
         migrated from the markdown log carry none, and inventing a trail for them would
@@ -612,11 +631,37 @@ class Board:
         """
         problems: list[str] = []
         for item in self.items:
-            replayed = item.replayed_state()
-            if replayed is not None and replayed != item.state:
+            if not item.history:
+                continue
+
+            first = item.history[0]
+            if first.frm is None and not may_create(first.by, first.to):
+                problems.append(
+                    f"{item.id}: history says {first.by} created it in {first.to}, "
+                    f"which {first.by} may not do")
+
+            where: str | None = None
+            for index, change in enumerate(item.history):
+                if change.frm is None:
+                    if index > 0:
+                        problems.append(
+                            f"{item.id}: history[{index}] has no 'from', so it reads "
+                            f"as a second creation")
+                elif where is not None and change.frm != where:
+                    problems.append(
+                        f"{item.id}: history[{index}] leaves {change.frm!r} but the "
+                        f"previous entry arrived at {where!r} -- the chain is broken")
+                elif not may_move(change.by, change.frm, change.to):
+                    problems.append(
+                        f"{item.id}: history[{index}] records {change.by} moving "
+                        f"{change.frm} -> {change.to}, which the permission table "
+                        f"forbids")
+                where = change.to
+
+            if where is not None and where != item.state:
                 problems.append(
                     f"{item.id}: stored state is {item.state!r} but its history ends "
-                    f"at {replayed!r} -- something changed it without going through "
+                    f"at {where!r} -- something changed it without going through "
                     f"move()")
         return problems
 
@@ -724,14 +769,31 @@ def main() -> None:
     ap.add_argument("--move", nargs=2, metavar=("ID", "STATE"), help="move one card")
     ap.add_argument("--comment", nargs=2, metavar=("ID", "TEXT"),
                     help="leave a comment on one card")
-    ap.add_argument("--by", choices=ACTORS, default="claude", help="who is acting")
     args = ap.parse_args()
 
     board = load(args.board)
 
     if args.move or args.comment:
-        result = (board.move(args.move[0], args.move[1], args.by) if args.move
-                  else board.comment(args.comment[0], args.comment[1], args.by))
+        # **THE CLI IS ALWAYS `claude`, and there is no flag to say otherwise.**
+        #
+        # Terry asked how Claude's changes get tagged, and the first answer exposed a
+        # backwards asymmetry: the server HARD-CODES `terry` because loopback proves
+        # it is him, while the CLI merely DEFAULTED to `claude` and accepted
+        # `--by terry`. **So he could not impersonate Claude and Claude could
+        # impersonate him** -- including on `ready_for_review -> completed`, the one
+        # edge that exists to be his alone.
+        #
+        # **Two paths, two identities, neither able to claim the other.** The
+        # library's `move(by=...)` still takes an actor because the tests need to
+        # walk both sides of the permission table; the CLI, which is the thing
+        # Claude actually runs, cannot.
+        #
+        # **This is a guard rail, not a proof.** Nothing stops a hand edit that
+        # writes `"by": "terry"` into the JSON, and no amount of code here can fix
+        # that short of signing, which would be absurd for a local board. What it
+        # does is make the honest path the easy path and forgery a deliberate act.
+        result = (board.move(args.move[0], args.move[1], "claude") if args.move
+                  else board.comment(args.comment[0], args.comment[1], "claude"))
         save(board, args.board)
         print(f"  {result}")
         return
