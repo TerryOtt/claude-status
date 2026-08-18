@@ -973,9 +973,26 @@ def main() -> None:
     ap.add_argument("--move", nargs=2, metavar=("ID", "STATE"), help="move one card")
     ap.add_argument("--comment", nargs=2, metavar=("ID", "TEXT"),
                     help="leave a comment on one card")
+    ap.add_argument("--create", nargs=2, metavar=("ID", "SUBJECT"),
+                    help="add one card; needs --state")
+    # **`choices` is the lanes Claude may CREATE in, not every lane.** argparse then
+    # refuses an illegal lane by name before the board is opened, which is a better
+    # error than `BoardError` raised under the lock -- and it makes `--help` state
+    # the permission rather than hide it behind a failed run.
+    ap.add_argument("--state", choices=[s for s in STATES if may_create("claude", s)],
+                    help="the lane to --create in")
+    ap.add_argument("--priority", choices=list(PRIORITIES), default=DEFAULT_PRIORITY,
+                    help="priority for --create")
+    detail = ap.add_mutually_exclusive_group()
+    detail.add_argument("--detail", default="", help="description for --create")
+    detail.add_argument("--detail-file", type=pathlib.Path,
+                        help="read the description from a file instead")
     args = ap.parse_args()
 
-    if args.move or args.comment:
+    if args.create and not args.state:
+        ap.error("--create needs --state")
+
+    if args.move or args.comment or args.create:
         # **The lock is held across load, mutate and save.** Reading first and
         # locking second would hand out a snapshot another writer can invalidate.
         with edit(args.board) as board:
@@ -1005,9 +1022,30 @@ def _apply(board: Board, args: argparse.Namespace) -> None:
     which would be absurd for a local board. What it does is make the honest path
     the easy path and forgery a deliberate act.
     """
-    result = (board.move(args.move[0], args.move[1], "claude") if args.move
-              else board.comment(args.comment[0], args.comment[1], "claude"))
+    if args.create:
+        result = board.create(args.create[0], args.create[1], args.state, "claude",
+                              priority=args.priority, detail=_detail_text(args))
+    elif args.move:
+        result = board.move(args.move[0], args.move[1], "claude")
+    else:
+        result = board.comment(args.comment[0], args.comment[1], "claude")
     print(f"  {result}")
+
+
+def _detail_text(args: argparse.Namespace) -> str:
+    """A new card's description, from `--detail` or from `--detail-file`.
+
+    **The file form exists because the SHELL eats punctuation and the board keeps the
+    damage.** A detail passed inline through bash on 2026-08-18 lost the apostrophe in
+    `I'd` to a literal `%27`, and it reached the board that way -- a quoting artifact
+    is indistinguishable from something Terry typed once it is in the record.
+
+    **A file has no quoting layer to survive**, which is why it is offered rather than
+    left as the caller's problem.
+    """
+    if args.detail_file:
+        return args.detail_file.read_text(encoding="utf-8").rstrip("\n")
+    return str(args.detail)
 
 
 def _report(board: Board, args: argparse.Namespace) -> None:
