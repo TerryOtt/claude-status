@@ -978,11 +978,20 @@ def payload() -> bytes:
                 "draggable": any(a == item.state for a, _ in status.TERRY_EDGES),
                 "comments": [{"by": c.by, "when": when(c.at),
                               "text": inline(c.text)} for c in item.comments],
+                # **Newest first.** Terry: "needs to be newest at top (most
+                # relevant) to oldest at bottom." The Completed lane already
+                # reverses for the same reason -- the interesting end of a
+                # permanent record is the recent end, and a long trail otherwise
+                # buries the entry you opened the card to read.
+                #
+                # **Reversed HERE rather than in `status.py`.** The stored order is
+                # chronological and `verify()` replays it forwards; flipping the
+                # model to suit a drawer would break the audit.
                 "history": [{"by": h.by, "when": when(h.at),
                              "from": h.frm,
                              "fromLabel": status.LANE_LABEL.get(h.frm or "", ""),
                              "toLabel": status.LANE_LABEL.get(h.to, h.to)}
-                            for h in item.history],
+                            for h in reversed(item.history)],
             } for item in lane.items],
         } for lane in lanes],
         "edges": sorted(status.TERRY_EDGES),

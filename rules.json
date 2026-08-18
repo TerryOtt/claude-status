@@ -1,0 +1,382 @@
+{
+  "schema": 1,
+  "note": "The lanes and the permission model for a Claude/Terry board. Terry dictated this lane by lane on 2026-08-18, in the shape he asked for: \"I like that the perms are (in/out, actor, source/dest).\" It lives outside the code because a rule change should be a data diff a person can read, and because `git log rules.json` then shows ONLY permission history rather than mixing it with page CSS. Every edge is declared TWICE, once from each end, and status.check_edges() refuses to let the halves disagree -- Terry reasons one lane at a time, so the table is written the way he thinks and the machine catches what that costs.",
+  "priorities": [
+    {
+      "id": "P0",
+      "label": "On fire"
+    },
+    {
+      "id": "P1",
+      "label": "Urgent"
+    },
+    {
+      "id": "P2",
+      "label": "High"
+    },
+    {
+      "id": "P3",
+      "label": "Normal"
+    },
+    {
+      "id": "P4",
+      "label": "Low"
+    },
+    {
+      "id": "P5",
+      "label": "Only if idle"
+    }
+  ],
+  "defaultPriority": "P3",
+  "lanes": [
+    {
+      "id": "backlog",
+      "label": "Backlog",
+      "note": "Someday. Terry's queue, and the only lane Claude may CREATE in besides Ready for Claude.",
+      "create": [
+        "claude"
+      ],
+      "in": {
+        "needs_terry_action": {
+          "actors": [
+            "terry"
+          ],
+          "note": ""
+        },
+        "ready_for_claude": {
+          "actors": [
+            "terry"
+          ],
+          "note": ""
+        },
+        "ready_for_review": {
+          "actors": [
+            "terry"
+          ],
+          "note": ""
+        }
+      },
+      "out": {
+        "needs_terry_action": {
+          "actors": [
+            "claude"
+          ],
+          "note": "Claude may take a backlog card to Needs Terry and NOWHERE else. Terry, 2026-08-18: \"that way if I comment in backlog, you can reply with a clarify question and move it to Needs Terry.\" The edge names its destination, so raising a question is expressible without granting Claude any power to advance its own queue."
+        },
+        "ready_for_claude": {
+          "actors": [
+            "terry"
+          ],
+          "note": "Promotion is Terry's alone. This is what makes the queue his."
+        }
+      }
+    },
+    {
+      "id": "ready_for_claude",
+      "label": "Ready for Claude",
+      "note": "Do this next, in priority order. Terry fills it; Claude empties it. CREATING here is not PROMOTING here -- Claude files a card he just asked for in chat, but only Terry moves one in from the backlog, so Claude can never advance its own queue.",
+      "create": [
+        "claude"
+      ],
+      "in": {
+        "backlog": {
+          "actors": [
+            "terry"
+          ],
+          "note": ""
+        },
+        "blocked": {
+          "actors": [
+            "terry"
+          ],
+          "note": ""
+        },
+        "needs_terry_action": {
+          "actors": [
+            "terry"
+          ],
+          "note": ""
+        },
+        "ready_for_review": {
+          "actors": [
+            "terry"
+          ],
+          "note": ""
+        }
+      },
+      "out": {
+        "backlog": {
+          "actors": [
+            "terry"
+          ],
+          "note": "Withdrawing something he queued by mistake. The cross-check found this missing: he declared it from the Backlog end and omitted it here."
+        },
+        "blocked": {
+          "actors": [
+            "claude"
+          ],
+          "note": ""
+        },
+        "in_progress": {
+          "actors": [
+            "claude"
+          ],
+          "note": ""
+        },
+        "needs_terry_action": {
+          "actors": [
+            "claude"
+          ],
+          "note": ""
+        }
+      }
+    },
+    {
+      "id": "in_progress",
+      "label": "In progress",
+      "note": "Being worked now. Claude's lane end to end.",
+      "create": [],
+      "in": {
+        "blocked": {
+          "actors": [
+            "claude"
+          ],
+          "note": ""
+        },
+        "needs_terry_action": {
+          "actors": [
+            "claude"
+          ],
+          "note": ""
+        },
+        "ready_for_claude": {
+          "actors": [
+            "claude"
+          ],
+          "note": ""
+        },
+        "ready_for_review": {
+          "actors": [
+            "claude"
+          ],
+          "note": ""
+        }
+      },
+      "out": {
+        "blocked": {
+          "actors": [
+            "claude"
+          ],
+          "note": ""
+        },
+        "needs_terry_action": {
+          "actors": [
+            "claude"
+          ],
+          "note": ""
+        },
+        "ready_for_review": {
+          "actors": [
+            "claude"
+          ],
+          "note": ""
+        }
+      }
+    },
+    {
+      "id": "needs_terry_action",
+      "label": "Needs Terry",
+      "note": "Claude is STOPPED until Terry answers. His definition: \"that's 'need a judgement call'.\" Distinct from blocked, where nobody can act, and from review, where the work is done and only a tick is missing.",
+      "create": [],
+      "in": {
+        "backlog": {
+          "actors": [
+            "claude"
+          ],
+          "note": ""
+        },
+        "blocked": {
+          "actors": [
+            "claude"
+          ],
+          "note": ""
+        },
+        "in_progress": {
+          "actors": [
+            "claude"
+          ],
+          "note": ""
+        },
+        "ready_for_claude": {
+          "actors": [
+            "claude"
+          ],
+          "note": ""
+        },
+        "ready_for_review": {
+          "actors": [
+            "claude"
+          ],
+          "note": ""
+        }
+      },
+      "out": {
+        "backlog": {
+          "actors": [
+            "terry"
+          ],
+          "note": "Answered, but not soup yet. \"I may post a reply and realize that card is not yet soup and goes to backlog for now.\" Answering and prioritizing are different acts, and one exit would have forced him to queue work he only meant to unblock."
+        },
+        "blocked": {
+          "actors": [
+            "claude"
+          ],
+          "note": ""
+        },
+        "in_progress": {
+          "actors": [
+            "claude"
+          ],
+          "note": ""
+        },
+        "ready_for_claude": {
+          "actors": [
+            "terry"
+          ],
+          "note": "Answered, go. His words: \"I'll move there when I feel I've unblocked you.\""
+        },
+        "ready_for_review": {
+          "actors": [
+            "claude"
+          ],
+          "note": ""
+        }
+      }
+    },
+    {
+      "id": "blocked",
+      "label": "Blocked",
+      "note": "NEITHER of us can move it. Terry's example: \"awaiting license key.\" MUST NOT be used for \"waiting on a decision\" -- that is needs_terry_action -- and MUST NOT be used for \"hard\".",
+      "create": [],
+      "in": {
+        "in_progress": {
+          "actors": [
+            "claude"
+          ],
+          "note": ""
+        },
+        "needs_terry_action": {
+          "actors": [
+            "claude"
+          ],
+          "note": ""
+        },
+        "ready_for_claude": {
+          "actors": [
+            "claude"
+          ],
+          "note": ""
+        }
+      },
+      "out": {
+        "in_progress": {
+          "actors": [
+            "claude"
+          ],
+          "note": ""
+        },
+        "needs_terry_action": {
+          "actors": [
+            "claude"
+          ],
+          "note": ""
+        },
+        "ready_for_claude": {
+          "actors": [
+            "terry"
+          ],
+          "note": "Unblocked, requeue. This edge is why Blocked is NOT a pure Claude lane, which the cross-check revealed rather than anyone noticing."
+        },
+        "ready_for_review": {
+          "actors": [
+            "claude"
+          ],
+          "note": ""
+        }
+      }
+    },
+    {
+      "id": "ready_for_review",
+      "label": "Ready for review",
+      "note": "Claude believes it is done and is waiting on a signoff. This is as far as Claude may take anything.",
+      "create": [],
+      "in": {
+        "blocked": {
+          "actors": [
+            "claude"
+          ],
+          "note": ""
+        },
+        "in_progress": {
+          "actors": [
+            "claude"
+          ],
+          "note": ""
+        },
+        "needs_terry_action": {
+          "actors": [
+            "claude"
+          ],
+          "note": ""
+        }
+      },
+      "out": {
+        "backlog": {
+          "actors": [
+            "terry"
+          ],
+          "note": "Rejected, and not next either."
+        },
+        "completed": {
+          "actors": [
+            "terry"
+          ],
+          "note": "THE SIGNOFF, and the single edge Claude has no actor on. \"Claude must not sign off its own work\" is a missing table entry rather than a rule somebody remembers. It exists because Claude marked its own work complete twice on 2026-08-18 and was wrong both times."
+        },
+        "in_progress": {
+          "actors": [
+            "claude"
+          ],
+          "note": "Claude pulling back work it decides is not actually finished. \"claude can pull BACK from ready for terry review but Terry is only one that is ready to review out -> completed.\""
+        },
+        "needs_terry_action": {
+          "actors": [
+            "claude"
+          ],
+          "note": ""
+        },
+        "ready_for_claude": {
+          "actors": [
+            "terry"
+          ],
+          "note": "Rejected, redo it now."
+        }
+      }
+    },
+    {
+      "id": "completed",
+      "label": "Completed",
+      "note": "Terminal. An empty `out` IS append-only, enforced by the same rule as everything else rather than by a special flag.",
+      "create": [],
+      "in": {
+        "ready_for_review": {
+          "actors": [
+            "terry"
+          ],
+          "note": "The only way in, and only Terry may take it."
+        }
+      },
+      "out": {}
+    }
+  ]
+}

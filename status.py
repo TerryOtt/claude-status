@@ -78,41 +78,18 @@ DEFAULT_PORT = 8792
 # numbers somebody typed.
 MIN_PORT, MAX_PORT = 1, 65535
 
+# **`LANES`, `STATES`, `PRIORITIES`, `PRIORITY_LABEL` and `DEFAULT_PRIORITY` are all
+# LOADED FROM `rules.json`**, further down, once `LaneRules` exists to hold them.
+#
+# **They used to be literals here and both copies briefly survived the move.** The
+# loader ran after them so the right table won, and the file quietly lied to anyone
+# reading the top of it -- a dead literal that looks authoritative is worse than no
+# literal at all.
+#
 # **P0 is on fire. P5 is only if there is nothing else.** Terry's scale, verbatim:
 # *"P0 is [...] on fire emergency and P5 is 'only if you have nothing else to work'."*
 # Six levels rather than three, because he wanted room to rank a long backlog without
-# every item collapsing to "medium".
-PRIORITIES: tuple[str, ...] = ("P0", "P1", "P2", "P3", "P4", "P5")
-
-PRIORITY_LABEL: dict[str, str] = {
-    "P0": "On fire",
-    "P1": "Urgent",
-    "P2": "High",
-    "P3": "Normal",
-    "P4": "Low",
-    "P5": "Only if idle",
-}
-
-DEFAULT_PRIORITY = "P3"
-
-# **The lanes, left to right.** Terry named this order himself: *"backlog; ready for
-# claude; in progress; needs terry action; blocked; ready for review; completed."*
-#
-# **It reads as a pipeline and the middle two are a detour.** Work flows left to right;
-# `needs_terry_action` and `blocked` are where it stalls, and putting them in-line
-# rather than off to one side is what makes a stalled card impossible to miss.
-LANES: tuple[tuple[str, str], ...] = (
-    ("backlog", "Backlog"),
-    ("ready_for_claude", "Ready for Claude"),
-    ("in_progress", "In progress"),
-    ("needs_terry_action", "Needs Terry"),
-    ("blocked", "Blocked"),
-    ("ready_for_review", "Ready for review"),
-    ("completed", "Completed"),
-)
-
-STATES: tuple[str, ...] = tuple(state for state, _ in LANES)
-LANE_LABEL: dict[str, str] = dict(LANES)
+# every item collapsing to "medium". **The list itself is in `rules.json`.**
 
 Actor = Literal["terry", "claude"]
 ACTORS: tuple[str, ...] = ("terry", "claude")
@@ -155,130 +132,98 @@ TERRY = frozenset({"terry"})
 CLAUDE = frozenset({"claude"})
 NOBODY: frozenset[str] = frozenset()
 
+# **THE RULES LIVE IN `rules.json`, NOT HERE.** Terry, 2026-08-18: *"can we move
+# rules outside code? I'd like that to be like a JSON so it acts more like a rules
+# engine. I hate to recompile code when rules for rules engine change."*
+#
+# **The stronger argument is the one he gave second:** *"also get version history
+# isolated to JUST perms changes."* Today's history proves it -- permission edits are
+# tangled inside commits about heartbeat CSS and lane title sizes. Split out,
+# `git log rules.json` is only ever the rules.
+#
+# **JSON has no comments, and the reasoning is the most valuable part of that table**,
+# so every lane and every edge carries an optional `note`. He offered `.jsonc` as the
+# alternative and it is REFUSED: `jq` cannot read JSONC, and it fails dishonestly --
+# `jq -e '.name' wrangler.jsonc` reports `Invalid numeric literal at line 6, column 4`
+# where line 6 is the first `//` comment. **The error names the wrong cause**, and he
+# specifically wants jq on these files.
+#
+# **The notes are IN the data rather than in a companion document.** Two copies of one
+# fact is the drift this project keeps paying for.
+RULES_PATH = pathlib.Path(__file__).resolve().parent / "rules.json"
+
 # **THE PERMISSION TABLE. Terry dictated it lane by lane on 2026-08-18**, in the shape
 # he asked for: *"I like that the perms are (in/out, actor, source/dest)."*
-RULES: dict[str, LaneRules] = {
-    # **Verbatim:** *"backlog: create=claude, in=terry: from ready for claude, from
-    # ready for review. out=terry: to ready for claude."*
-    #
-    # **CREATE IS ALWAYS CLAUDE AND NEVER TERRY, and that is not an oversight.**
-    # *"create is always claude only because I want this chat to be how I task you."*
-    # The board TRACKS work; the conversation ASSIGNS it. A card he typed into a web
-    # form would be a second inbox.
-    "backlog": LaneRules(
-        create=CLAUDE,
-        inbound={"ready_for_claude": TERRY, "ready_for_review": TERRY,
-                 # Answered, but not soup yet. See the note on
-                 # `needs_terry_action.outbound`.
-                 "needs_terry_action": TERRY},
-        # **Claude may take a backlog card to `needs_terry_action` and NOWHERE
-        # else.** That is not a loosening of "the backlog is Terry's" -- the edge
-        # names its destination, so raising a question is expressible without
-        # granting Claude any power to advance its own queue.
-        outbound={"ready_for_claude": TERRY, "needs_terry_action": CLAUDE},
-    ),
-    # **Verbatim:** *"ready for claude: create=none, in=terry, from backlog, from
-    # blocked, from ready for review. out=claude, to (three lanes claude owns)."*
-    #
-    # **`create` was then widened to CLAUDE:** *"can start in either backlog or ready
-    # for claude I guess."*
-    #
-    # **CREATING here is not PROMOTING here, and the difference is why it is safe.**
-    # Filing a card transcribes something Terry just said; moving one in is a ranking
-    # decision, and `backlog -> ready_for_claude` stays TERRY-only. Claude can never
-    # advance its own backlog.
-    #
-    # **It also keeps the trail honest** -- his observation: *"so then there'd be audit
-    # trail of ready for claude to in progress."* A card created here and picked up
-    # records two events. One created straight into `in_progress` would materialize
-    # mid-flight with no pickup to point at, which is why no working lane permits
-    # `create`.
-    "ready_for_claude": LaneRules(
-        create=CLAUDE,
-        inbound={"backlog": TERRY, "blocked": TERRY, "ready_for_review": TERRY,
-                 # **Terry's answer IS the unblock.** He asked for this the moment
-                 # the first three cards piled up in Needs Terry: *"I'll move there
-                 # when I feel I've unblocked you."*
-                 #
-                 # **It completes the loop the other grant opened.** Claude may move
-                 # a card INTO `needs_terry_action` from any lane; Terry moves it out
-                 # to the queue. Neither of us can do the other's half, and the card
-                 # never sits in a lane whose owner has already finished with it.
-                 "needs_terry_action": TERRY},
-        outbound={"in_progress": CLAUDE, "needs_terry_action": CLAUDE,
-                  "blocked": CLAUDE, "backlog": TERRY},
-    ),
-    "in_progress": LaneRules(
-        create=NOBODY,
-        inbound={"ready_for_claude": CLAUDE, "needs_terry_action": CLAUDE,
-                 "blocked": CLAUDE, "ready_for_review": CLAUDE},
-        outbound={"needs_terry_action": CLAUDE, "blocked": CLAUDE,
-                  "ready_for_review": CLAUDE},
-    ),
-    # **Terry answers in CHAT and Claude moves the card.** He does not drag this one:
-    # the card is Claude's bookkeeping about what it is waiting for.
-    #
-    # **CLAUDE MAY MOVE A CARD HERE FROM ANY LANE EXCEPT `completed`.** Terry granted
-    # it deliberately broadly, 2026-08-18: *"claude has perms to move TO 'Needs Terry'
-    # from any swimlane EXCEPT Completed."*
-    #
-    # **It exists to serve his other standing order the same day:** *"when you comment
-    # on a card and your comment needs Terry response? That means move card to 'Needs
-    # Terry'. That way I get a loud CTA and will jump on it."* Applying that rule
-    # immediately found it impossible from `backlog`, whose only exit was
-    # `terry -> ready_for_claude`.
-    #
-    # **`completed` is excluded because it is terminal**, and a question about
-    # finished work is a new card rather than a resurrection.
-    #
-    # **This grants Claude no power to advance work**, and that is the model earning
-    # its keep: every edge names its DESTINATION, so "may raise a question from
-    # anywhere" is expressible without also meaning "may move things out of the
-    # backlog". An actor-only model could not have said one without the other.
-    "needs_terry_action": LaneRules(
-        create=NOBODY,
-        inbound={"backlog": CLAUDE, "ready_for_claude": CLAUDE,
-                 "in_progress": CLAUDE, "blocked": CLAUDE,
-                 "ready_for_review": CLAUDE},
-        # **Terry has TWO exits, because answering and prioritizing are different
-        # acts.** His words: *"I may post a reply and realize that card is not yet
-        # soup and goes to backlog for now."* Clearing the question is not the same
-        # as saying do it next, and collapsing the two would force him to queue work
-        # he only meant to unblock.
-        outbound={"in_progress": CLAUDE, "blocked": CLAUDE,
-                  "ready_for_review": CLAUDE,
-                  "ready_for_claude": TERRY, "backlog": TERRY},
-    ),
-    # **NOT a pure Claude lane, and the cross-check is what revealed that.** His
-    # `ready_for_claude` spec lets a card arrive *from blocked*, which is Terry taking
-    # it out of here -- so `terry -> ready_for_claude` is required, and an earlier
-    # "read-only for you" label on this lane would have been a lie.
-    "blocked": LaneRules(
-        create=NOBODY,
-        inbound={"in_progress": CLAUDE, "ready_for_claude": CLAUDE,
-                 "needs_terry_action": CLAUDE},
-        outbound={"in_progress": CLAUDE, "needs_terry_action": CLAUDE,
-                  "ready_for_review": CLAUDE, "ready_for_claude": TERRY},
-    ),
-    # **Terry, 2026-08-18:** *"claude can pull BACK from ready for terry review but
-    # Terry is only one that is ready to review out -> completed."*
-    #
-    # **`completed` is the single edge Claude has no actor on**, so "Claude MUST NOT
-    # sign off its own work" is a missing table entry rather than a rule somebody
-    # remembers. It exists because Claude marked its own work complete twice on
-    # 2026-08-18 and was wrong both times.
-    "ready_for_review": LaneRules(
-        create=NOBODY,
-        inbound={"in_progress": CLAUDE, "needs_terry_action": CLAUDE,
-                 "blocked": CLAUDE},
-        outbound={"completed": TERRY, "backlog": TERRY, "ready_for_claude": TERRY,
-                  "in_progress": CLAUDE, "needs_terry_action": CLAUDE},
-    ),
-    # **Terminal, and it needs no flag saying so** -- an empty `outbound` IS
-    # append-only, enforced by the same rule as everything else.
-    "completed": LaneRules(create=NOBODY, inbound={"ready_for_review": TERRY},
-                           outbound={}),
-}
+def _load_rules(path: pathlib.Path) -> tuple[
+    tuple[tuple[str, str], ...],
+    dict[str, LaneRules],
+    tuple[str, ...],
+    dict[str, str],
+    str,
+]:
+    """Read `rules.json` into the shapes the rest of this module already uses.
+
+    **It REFUSES rather than repairs**, exactly like `Board.from_json`. A rules file
+    naming an unknown actor or a lane that does not exist is a bug in whoever edited
+    it, and defaulting past that would hide the edit that broke the board.
+
+    **`note` fields are ignored here on purpose.** They exist for the person reading
+    the diff; nothing in the permission logic consults them, so a wrong note cannot
+    change behavior and a missing one cannot break a build.
+    """
+    with path.open(encoding="utf-8") as fh:
+        doc = json.load(fh)
+
+    if doc.get("schema") != SCHEMA:
+        raise BoardError(f"{path}: rules schema {doc.get('schema')!r}, want {SCHEMA}")
+
+    lanes_raw = doc.get("lanes")
+    if not isinstance(lanes_raw, list) or not lanes_raw:
+        raise BoardError(f"{path}: 'lanes' is missing or empty")
+
+    known = {lane["id"] for lane in lanes_raw}
+    order = tuple((lane["id"], lane["label"]) for lane in lanes_raw)
+
+    def actors(spec: object, where: str) -> frozenset[str]:
+        if not isinstance(spec, dict) or not isinstance(spec.get("actors"), list):
+            raise BoardError(f"{path}: {where} has no 'actors' list")
+        bad = [a for a in spec["actors"] if a not in ACTORS]
+        if bad:
+            raise BoardError(f"{path}: {where} names unknown actor(s) {bad}")
+        return frozenset(spec["actors"])
+
+    table: dict[str, LaneRules] = {}
+    for lane in lanes_raw:
+        lane_id = lane["id"]
+        for direction in ("in", "out"):
+            for other in lane.get(direction, {}):
+                if other not in known:
+                    raise BoardError(
+                        f"{path}: {lane_id}.{direction} names unknown lane {other!r}")
+        bad_create = [a for a in lane.get("create", []) if a not in ACTORS]
+        if bad_create:
+            raise BoardError(f"{path}: {lane_id}.create names {bad_create}")
+        table[lane_id] = LaneRules(
+            create=frozenset(lane.get("create", [])),
+            inbound={src: actors(spec, f"{lane_id}.in.{src}")
+                     for src, spec in lane.get("in", {}).items()},
+            outbound={dst: actors(spec, f"{lane_id}.out.{dst}")
+                      for dst, spec in lane.get("out", {}).items()},
+        )
+
+    priorities = tuple(p["id"] for p in doc["priorities"])
+    labels = {p["id"]: p["label"] for p in doc["priorities"]}
+    default = doc.get("defaultPriority", priorities[len(priorities) // 2])
+    if default not in priorities:
+        raise BoardError(f"{path}: defaultPriority {default!r} is not in the list")
+    return order, table, priorities, labels, default
+
+
+LANES, RULES, PRIORITIES, PRIORITY_LABEL, DEFAULT_PRIORITY = _load_rules(RULES_PATH)
+
+STATES: tuple[str, ...] = tuple(state for state, _ in LANES)
+LANE_LABEL: dict[str, str] = dict(LANES)
+
 
 
 class BoardError(ValueError):
