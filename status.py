@@ -446,15 +446,35 @@ class Item:
     and any future consumer agree on which card is which, and it survives reordering,
     renaming and signoff. The markdown version numbered rows positionally, so signing
     one off renumbered the rest while the panel matched by position.
+
+    **`ticket` is the handle a PERSON uses**, and it is not decoration on top of the
+    slug. Terry named the use case exactly: *"Human brains will want to do shit like
+    'wtf is up with ticket 137, Claude? you high today?'"* -- and then the other half,
+    *"we don't like ticket summary"*, because quoting a long subject out loud is
+    miserable.
+
+    **So the two identifiers have different jobs.** The slug is the machine's; the
+    number is the conversation's. Both are permanent, and `find()` accepts either.
     """
 
     id: str
     subject: str
     state: str
+    ticket: int = 0
     priority: str = DEFAULT_PRIORITY
     detail: str = ""
     history: list[Change] = field(default_factory=list)
     comments: list[Comment] = field(default_factory=list)
+
+    @property
+    def label(self) -> str:
+        """`#0016`. **Four digits, zero-padded**, per Terry's standing order.
+
+        *"Zero-pad anything that will ever sort."* Unpadded numbers sort `1, 10, 2`,
+        and a reference cited in a commit message cannot be cheaply changed later.
+        Above 9999 it simply grows rather than truncating.
+        """
+        return f"#{self.ticket:04d}"
 
     def replayed_state(self) -> str | None:
         """The state this item's own history says it should be in.
@@ -467,6 +487,7 @@ class Item:
     def to_json(self) -> dict[str, Any]:
         out: dict[str, Any] = {
             "id": self.id,
+            "ticket": self.ticket,
             "priority": self.priority,
             "state": self.state,
             "subject": self.subject,
@@ -488,10 +509,14 @@ class Item:
         priority = raw.get("priority", DEFAULT_PRIORITY)
         if priority not in PRIORITIES:
             raise BoardError(f"{where}: unknown priority {priority!r}")
+        ticket = raw.get("ticket", 0)
+        if not isinstance(ticket, int) or ticket < 0:
+            raise BoardError(f"{where}: ticket {ticket!r} is not a positive integer")
         return cls(
             id=raw["id"],
             subject=raw["subject"],
             state=raw["state"],
+            ticket=ticket,
             priority=priority,
             detail=raw.get("detail", "") or "",
             history=[Change.from_json(h, where) for h in raw.get("history", [])],
@@ -516,6 +541,17 @@ class Board:
     port: int = DEFAULT_PORT
     items: list[Item] = field(default_factory=list)
 
+    # **The next ticket to hand out. It only ever goes UP.**
+    #
+    # **A number MUST NOT be reused, even after a card is archived or deleted.** The
+    # whole point is that Terry can say "ticket 137" and mean one thing forever; two
+    # pieces of work sharing a reference in git history would destroy that.
+    #
+    # **Stored rather than derived.** `len(items) + 1` and `max(ticket) + 1` both
+    # look correct and both collide the moment anything is removed -- the first
+    # immediately, the second as soon as the highest-numbered card goes.
+    next_ticket: int = 1
+
     # ---- serialization -------------------------------------------------------
 
     def to_json(self) -> dict[str, Any]:
@@ -523,6 +559,7 @@ class Board:
             "schema": SCHEMA,
             "project": self.project,
             "port": self.port,
+            "nextTicket": self.next_ticket,
             "items": [item.to_json() for item in self.items],
         }
 
@@ -549,6 +586,7 @@ class Board:
 
         items: list[Item] = []
         seen: set[str] = set()
+        tickets: set[int] = set()
         for index, item_raw in enumerate(items_raw):
             spot = f"{where}: items[{index}]"
             if not isinstance(item_raw, dict):
@@ -557,17 +595,54 @@ class Board:
             if item.id in seen:
                 raise BoardError(f"{spot}: duplicate id {item.id!r}")
             seen.add(item.id)
+            # **A duplicate ticket is refused at the door.** The number's whole value
+            # is that "ticket 137" means one thing forever, and two cards sharing one
+            # would break every reference in git and in conversation at once.
+            if item.ticket and item.ticket in tickets:
+                raise BoardError(f"{spot}: duplicate ticket {item.label}")
+            tickets.add(item.ticket)
             items.append(item)
 
-        return cls(project=str(raw.get("project", "")), port=port, items=items)
+        next_ticket = raw.get("nextTicket", max(tickets, default=0) + 1)
+        if not isinstance(next_ticket, int) or next_ticket < 1:
+            raise BoardError(f"{where}: nextTicket {next_ticket!r} is not positive")
+        # **The counter MUST be ahead of every ticket in the file.** A hand edit that
+        # rewinds it would hand out a number already in use -- caught here rather
+        # than discovered when two cards collide.
+        if tickets and next_ticket <= max(tickets):
+            raise BoardError(
+                f"{where}: nextTicket is {next_ticket} but ticket "
+                f"#{max(tickets):04d} already exists -- the counter went backwards")
+
+        return cls(project=str(raw.get("project", "")), port=port, items=items,
+                   next_ticket=next_ticket)
 
     # ---- reading -------------------------------------------------------------
 
-    def find(self, item_id: str) -> Item:
+    def find(self, ref: str) -> Item:
+        """A card, by slug OR by ticket number. **If you can say it, you can type it.**
+
+        Terry's use case is spoken -- *"wtf is up with ticket 137"* -- so the CLI
+        accepts `137`, `#137` and `0137` as readily as `implement-lrc-plug-as`.
+        Making him look up a slug to act on a number he just said out loud would
+        waste the handle the number exists to be.
+
+        **The slug is tried first.** A slug is unambiguous; a bare number could in
+        principle be one, and the explicit identifier should win.
+        """
         for item in self.items:
-            if item.id == item_id:
+            if item.id == ref:
                 return item
-        raise BoardError(f"no item with id {item_id!r}")
+
+        digits = ref.lstrip("#").lstrip("0") or "0"
+        if digits.isdigit():
+            wanted = int(digits)
+            for item in self.items:
+                if item.ticket == wanted:
+                    return item
+            raise BoardError(f"no card with ticket #{wanted:04d}")
+
+        raise BoardError(f"no item with id {ref!r}")
 
     def lanes(self) -> list[Lane]:
         """One `Lane` per column, each sorted by priority then by file order.
@@ -688,10 +763,15 @@ class Board:
             raise BoardError(f"duplicate id {item_id!r}")
         if priority not in PRIORITIES:
             raise BoardError(f"unknown priority {priority!r}")
-        self.items.append(Item(
-            id=item_id, subject=subject, state=state, priority=priority,
-            detail=detail, history=[Change(at=now(), to=state, by=by)]))
-        return f"created {item_id} in {state} (by {by})"
+        # **Taken from the counter and the counter advances**, never derived from the
+        # items. See `next_ticket` for why both obvious derivations collide.
+        item = Item(
+            id=item_id, subject=subject, state=state, ticket=self.next_ticket,
+            priority=priority, detail=detail,
+            history=[Change(at=now(), to=state, by=by)])
+        self.next_ticket += 1
+        self.items.append(item)
+        return f"created {item.label} {item_id} in {state} (by {by})"
 
     def move(self, item_id: str, to_state: str, by: Actor) -> str:
         """Move one card, appending to its history. Returns a one-line description.

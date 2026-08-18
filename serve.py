@@ -328,6 +328,14 @@ PAGE = """<!doctype html>
   .pri.P0 { background: var(--p0); } .pri.P1 { background: var(--p1); }
   .pri.P2 { background: var(--p2); } .pri.P3 { background: var(--p3); }
   .pri.P4 { background: var(--p4); } .pri.P5 { background: var(--p5); }
+  /* **Two lines: badge and ticket up top, subject below.** Terry: "display card
+     number on same line as P1/P2 with description below it." The number is dim
+     gray rather than a second pill -- two pills would compete, and the priority
+     badge is the one that must win the glance. */
+  .card { flex-direction: column; gap: 5px; }
+  .card .head { display: flex; gap: 7px; align-items: center; width: 100%; }
+  .card .tix { color: var(--dim); font-size: 11px; font-weight: 600;
+               font-variant-numeric: tabular-nums; }
   .card .subject { font-size: 13px; font-weight: 500; }
   .card .marks { margin-left: auto; color: var(--dim); font-size: 11px;
                  flex: 0 0 auto; }
@@ -473,7 +481,7 @@ function openCard(id) {
   pri.title = it.priorityLabel;
   document.getElementById('p-subject').textContent = it.subject;
   document.getElementById('p-sub').textContent =
-    it.laneLabel + '  \\u00b7  ' + it.id;
+    it.ticket + '  \\u00b7  ' + it.laneLabel + '  \\u00b7  ' + it.id;
 
   const detail = document.getElementById('p-detail');
   if (it.detail) { detail.innerHTML = it.detail; detail.className = 'detail-text'; }
@@ -554,8 +562,10 @@ function card(item) {
   d.draggable = !!item.draggable;
   d.dataset.id = item.id;
   d.dataset.state = item.state;
-  d.innerHTML = '<span class="pri"></span><span class="subject"></span>'
-    + '<span class="marks"></span>';
+  d.innerHTML = '<div class="head"><span class="pri"></span>'
+    + '<span class="tix"></span><span class="marks"></span></div>'
+    + '<span class="subject"></span>';
+  d.querySelector('.tix').textContent = item.ticket;
   const pri = d.querySelector('.pri');
   pri.textContent = item.priority;
   pri.className = 'pri ' + item.priority;
@@ -967,6 +977,7 @@ def payload() -> bytes:
             "ownerLabel": lane.owner_label,
             "items": [{
                 "id": item.id,
+                "ticket": item.label,
                 "state": item.state,
                 "laneLabel": lane.label,
                 "subject": item.subject,
