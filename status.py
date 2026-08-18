@@ -995,15 +995,33 @@ def main() -> None:
     if args.move or args.comment or args.create:
         # **The lock is held across load, mutate and save.** Reading first and
         # locking second would hand out a snapshot another writer can invalidate.
+        #
+        # **THE PRINT IS OUTSIDE THE BLOCK, and that ordering is the whole point.**
+        # `edit()` saves on the way out, so printing inside it reports a result the
+        # disk has not accepted yet. On 2026-08-18 `--move 31 ready_for_review`
+        # printed its success line and the card did not move: `save()` then raised
+        # `PermissionError: [WinError 5]` from `tmp.replace(target)`, because the
+        # board lives on a NAS share and `os.replace` over SMB can return
+        # access-denied while another handle is briefly open.
+        #
+        # **This is the library's own rule, one layer up.** `move()` records Terry's
+        # instruction verbatim -- *"I'd rather log fail and then we abort vs write
+        # file succeed and succeed THEN log fails. Leaves you in a bad spot."* A
+        # failed save now raises before anything reaches the screen.
         with edit(args.board) as board:
-            _apply(board, args)
+            result = _apply(board, args)
+        print(f"  {result}")
         return
 
     _report(load(args.board), args)
 
 
-def _apply(board: Board, args: argparse.Namespace) -> None:
-    """Perform the one requested change. Called INSIDE `edit`, so it must not save.
+def _apply(board: Board, args: argparse.Namespace) -> str:
+    """Perform the one requested change and RETURN its description.
+
+    Called INSIDE `edit`, so it must not save -- and it must not PRINT either. The
+    caller prints after the save lands, which is what makes the line trustworthy.
+    See the comment at the call site for the lost write that established this.
 
     **THE CLI IS ALWAYS `claude`, and there is no flag to say otherwise.**
 
@@ -1023,13 +1041,11 @@ def _apply(board: Board, args: argparse.Namespace) -> None:
     the easy path and forgery a deliberate act.
     """
     if args.create:
-        result = board.create(args.create[0], args.create[1], args.state, "claude",
-                              priority=args.priority, detail=_detail_text(args))
-    elif args.move:
-        result = board.move(args.move[0], args.move[1], "claude")
-    else:
-        result = board.comment(args.comment[0], args.comment[1], "claude")
-    print(f"  {result}")
+        return board.create(args.create[0], args.create[1], args.state, "claude",
+                            priority=args.priority, detail=_detail_text(args))
+    if args.move:
+        return board.move(args.move[0], args.move[1], "claude")
+    return board.comment(args.comment[0], args.comment[1], "claude")
 
 
 def _detail_text(args: argparse.Namespace) -> str:
