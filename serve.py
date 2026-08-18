@@ -433,14 +433,27 @@ PAGE = """<!doctype html>
            max-width: 92vw; background: #FFFFFF; z-index: 31; display: none;
            flex-direction: column; box-shadow: -4px 0 16px rgba(9,30,66,.2); }
   #panel.show { display: flex; }
-  #panel header { padding: 16px 20px 12px; border-bottom: 1px solid var(--line); }
+  #panel header { padding: 16px 20px 12px; border-bottom: 1px solid var(--line);
+                  position: relative; }
+  /* **The ticket row mirrors `.card .head` deliberately.** Same flex, same
+     `margin-left: auto`, same dim bold tabular 12px -- so the number sits in the same
+     place and reads the same way whether you are looking at the card or the drawer.
+     `padding-right` clears the close button, which is absolute rather than floated
+     precisely so this row can be a flex container at all. */
+  #panel .head { display: flex; gap: 7px; align-items: center; padding-right: 22px; }
+  #p-tix { margin-left: auto; color: var(--dim); font-size: 12px;
+           font-weight: 700; font-variant-numeric: tabular-nums; }
   #panel h1 { margin: 6px 0 0; font-size: 18px; letter-spacing: -.01em; }
   #panel .sub { color: var(--dim); font-size: 12px; margin-top: 6px; }
   #panel .body { overflow-y: auto; padding: 16px 20px 24px; flex: 1; }
   #panel h3 { font-size: 11px; text-transform: uppercase; letter-spacing: .06em;
               color: var(--dim); margin: 22px 0 8px; }
   #panel h3:first-child { margin-top: 0; }
-  #close { float: right; border: 0; background: transparent; font-size: 20px;
+  /* **Absolute, not floated.** A float is not laid out around a flex container, so
+     the ticket row above would have run underneath it. Taking the button out of the
+     flow entirely is what lets that row exist. */
+  #close { position: absolute; top: 14px; right: 16px; border: 0;
+           background: transparent; font-size: 20px;
            cursor: pointer; color: var(--dim); line-height: 1; }
   .detail-text { font-size: 13px; }
   .detail-text code { font-family: 'Cascadia Mono', Consolas, monospace;
@@ -533,7 +546,10 @@ PAGE = """<!doctype html>
   <aside id="panel">
     <header>
       <button id="close" title="Close">&times;</button>
-      <span class="pri" id="p-pri"></span>
+      <div class="head">
+        <span class="pri" id="p-pri"></span>
+        <span id="p-tix"></span>
+      </div>
       <h1 id="p-subject"></h1>
       <div class="sub" id="p-sub"></div>
     </header>
@@ -611,9 +627,15 @@ function openCard(id) {
   pri.textContent = it.priority;
   pri.className = 'pri ' + it.priority;
   pri.title = it.priorityLabel;
+  // **The ticket moved OUT of the sub line and up to the top right**, matching what
+  // #0021 did for the card face. Leaving it in both places would print the same number
+  // twice in a header two lines tall.
+  // **No leading hash, for the same reason the card face strips it** -- #0021. The two
+  // MUST agree; a number that gains a `#` when you open the card is two conventions.
+  document.getElementById('p-tix').textContent = it.ticket.replace('#', '');
   document.getElementById('p-subject').textContent = it.subject;
   document.getElementById('p-sub').textContent =
-    it.ticket + '  \\u00b7  ' + it.laneLabel + '  \\u00b7  ' + it.id;
+    it.laneLabel + '  \\u00b7  ' + it.id;
 
   const detail = document.getElementById('p-detail');
   if (it.detail) { detail.innerHTML = it.detail; detail.className = 'detail-text'; }
