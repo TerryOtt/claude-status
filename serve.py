@@ -139,7 +139,15 @@ def when(stamp: str) -> str:
     # which a plain modulo gets wrong in both directions.
     hour = moment.hour % NOON or NOON
     meridiem = "am" if moment.hour < NOON else "pm"
-    return f"{moment:%Y-%m-%d} {hour}:{moment:%M}{meridiem}"
+    # **The hour is zero-padded, and that is what makes a COLUMN of these align.**
+    # Terry: "in the name of all that is holy keep the datetimes cleanly aligned so
+    # all dates line up and times line up." Inter carries `tnum`, so every digit is
+    # the same width -- but `2:56pm` against `12:05pm` is one digit shorter and
+    # shifts everything after it regardless.
+    #
+    # **It also matches his original spec**, which said `HH:MM(am/pm)`. `HH` is two
+    # digits and the first implementation quietly dropped the pad.
+    return f"{moment:%Y-%m-%d} {hour:02d}:{moment:%M}{meridiem}"
 
 
 PAGE = """<!doctype html>
@@ -202,7 +210,12 @@ PAGE = """<!doctype html>
             border-radius: 4px; padding: 3px 8px; }
   .cta { font-size: 11px; font-weight: 700; letter-spacing: .03em;
          color: var(--dim); padding: 3px 8px; border-radius: 4px; }
-  .cta.hot { background: #F5CD47; color: #000000; }
+  /* **Warning-sign yellow, not highlighter yellow.** Terry asked for higher
+     contrast, and the lever is SATURATION rather than contrast ratio -- black on
+     the old #F5CD47 already measured about 11:1, well past AAA, so the pill was
+     never hard to READ. It just did not read as a hazard. #FFD400 is the pure
+     unmuted yellow of a road sign and takes black past 13:1. */
+  .cta.hot { background: #FFD400; color: #000000; }
   /* **THE HEARTBEAT.** Terry, 2026-08-18, after being burned by a dashboard at
      work: *"'Written 13:52:53 Reload 1' ain't gonna do it for my brain due to
      emotional trauma."*
@@ -328,17 +341,25 @@ PAGE = """<!doctype html>
   .pri.P0 { background: var(--p0); } .pri.P1 { background: var(--p1); }
   .pri.P2 { background: var(--p2); } .pri.P3 { background: var(--p3); }
   .pri.P4 { background: var(--p4); } .pri.P5 { background: var(--p5); }
-  /* **Two lines: badge and ticket up top, subject below.** Terry: "display card
-     number on same line as P1/P2 with description below it." The number is dim
-     gray rather than a second pill -- two pills would compete, and the priority
-     badge is the one that must win the glance. */
+  /* **Three rows: badge and ticket, subject, then the comment count.** Terry:
+     "display card number on same line as P1/P2 with description below it", then
+     "drop the # in front of ticket number, move ticket number to top right and
+     make bold", then "move comment count to its own row at the very bottom on
+     right and double height of glyph and count; it's too small for me to see."
+
+     **The ticket and the count SWAP places**, which is why those two arrived as
+     separate asks and were built in one pass -- doing either alone leaves the top
+     right holding two things or nothing. */
   .card { flex-direction: column; gap: 5px; }
   .card .head { display: flex; gap: 7px; align-items: center; width: 100%; }
-  .card .tix { color: var(--dim); font-size: 11px; font-weight: 600;
-               font-variant-numeric: tabular-nums; }
+  .card .tix { margin-left: auto; color: var(--dim); font-size: 12px;
+               font-weight: 700; font-variant-numeric: tabular-nums; }
   .card .subject { font-size: 13px; font-weight: 500; }
-  .card .marks { margin-left: auto; color: var(--dim); font-size: 11px;
-                 flex: 0 0 auto; }
+  /* Double the old 11px, and it only exists when a card HAS comments -- an empty
+     third row on every card would cost real height in a lane that scrolls. */
+  .card .marks { align-self: flex-end; color: var(--dim); font-size: 22px;
+                 line-height: 1; font-variant-numeric: tabular-nums;
+                 display: flex; gap: 5px; align-items: center; }
 
   /* The detail panel. A drawer rather than a modal, so the board stays visible and
      a card's lane is still legible while you read it. */
@@ -367,13 +388,25 @@ PAGE = """<!doctype html>
   /* The audit trail and the comments are visually DIFFERENT on purpose. One is what
      the machine recorded and nobody typed; the other is what a person chose to say.
      Making them look alike would suggest the trail is editable. */
-  .trail { border-left: 2px solid var(--line); padding-left: 12px; }
-  .trail li { list-style: none; font-size: 12px; color: var(--dim);
-              margin-bottom: 5px; font-variant-numeric: tabular-nums; }
+  /* **THREE COLUMNS: datetime, actor, action.** Terry's order and his layout --
+     "change audit trail to be datetime then user then action in three columns."
+     A grid rather than three spans in a sentence, so every column starts at the
+     same x whatever the content.
+
+     **`tabular-nums` plus a zero-padded hour is what actually aligns the times.**
+     The grid aligns the COLUMN; without the pad, `02:56pm` and `12:05pm` differ by
+     a digit inside it. Between the two, no monospace face is needed -- which is
+     why Roboto Mono and JetBrains Mono stayed on the shelf. */
+  .trail { border-left: 2px solid var(--line); padding-left: 12px;
+           display: grid; grid-template-columns: max-content max-content 1fr;
+           gap: 5px 14px; font-size: 12px; }
+  .trail .at { color: var(--dim); font-variant-numeric: tabular-nums;
+               white-space: nowrap; }
   .trail .who { font-weight: 600; }
   .trail .who.terry { color: var(--terry); }
   .trail .who.claude { color: var(--claude); }
-  .trail ul { margin: 0; padding: 0; }
+  .trail .what { color: var(--dim); }
+  .trail .empty { grid-column: 1 / -1; }
 
   .comment { background: #F4F5F7; border-radius: 6px; padding: 8px 10px;
              margin-bottom: 8px; font-size: 13px; }
@@ -436,7 +469,7 @@ PAGE = """<!doctype html>
       <textarea id="say" placeholder="Leave a note on this card…"></textarea>
       <button id="post">Comment as Terry</button>
       <h3>Audit trail</h3>
-      <div class="trail"><ul id="p-trail"></ul></div>
+      <div class="trail" id="p-trail"></div>
     </div>
   </aside>
   <div id="toast"></div>
@@ -505,22 +538,31 @@ function openCard(id) {
     cs.appendChild(d);
   }
 
+  // Three cells per entry, appended straight into the grid -- no row wrapper, so
+  // the columns line up across every entry rather than within each one.
   const tr = document.getElementById('p-trail');
   tr.replaceChildren();
   if (!it.history.length) {
-    const li = document.createElement('li');
-    li.className = 'empty';
-    li.textContent = 'No recorded history \\u2014 migrated before the trail existed.';
-    tr.appendChild(li);
+    const e = document.createElement('div');
+    e.className = 'empty';
+    e.textContent = 'No recorded history \\u2014 migrated before the trail existed.';
+    tr.appendChild(e);
   }
   for (const h of it.history) {
-    const li = document.createElement('li');
-    const move = h.from ? (h.fromLabel + ' \\u2192 ' + h.toLabel)
-                        : ('created in ' + h.toLabel);
-    li.innerHTML = '<span class="who ' + h.by + '"></span> <span class="m"></span>';
-    li.querySelector('.who').textContent = h.by === 'terry' ? 'Terry' : 'Claude';
-    li.querySelector('.m').textContent = move + '  \\u00b7  ' + h.when;
-    tr.appendChild(li);
+    const at = document.createElement('div');
+    at.className = 'at';
+    at.textContent = h.when;
+
+    const who = document.createElement('div');
+    who.className = 'who ' + h.by;
+    who.textContent = h.by === 'terry' ? 'Terry' : 'Claude';
+
+    const what = document.createElement('div');
+    what.className = 'what';
+    what.textContent = h.from ? (h.fromLabel + ' \\u2192 ' + h.toLabel)
+                              : ('created in ' + h.toLabel);
+
+    tr.append(at, who, what);
   }
 
   document.getElementById('scrim').classList.add('show');
@@ -563,20 +605,26 @@ function card(item) {
   d.dataset.id = item.id;
   d.dataset.state = item.state;
   d.innerHTML = '<div class="head"><span class="pri"></span>'
-    + '<span class="tix"></span><span class="marks"></span></div>'
-    + '<span class="subject"></span>';
-  d.querySelector('.tix').textContent = item.ticket;
+    + '<span class="tix"></span></div>'
+    + '<span class="subject"></span>'
+    + (item.comments.length ? '<span class="marks"></span>' : '');
+  // **No leading hash.** Display only -- find() still takes 0003, #0003, 3 or the
+  // slug, because he may paste a hash from an older message or a commit.
+  d.querySelector('.tix').textContent = item.ticket.replace('#', '');
   const pri = d.querySelector('.pri');
   pri.textContent = item.priority;
   pri.className = 'pri ' + item.priority;
   pri.title = item.priorityLabel;
   // Set as text, so a stray angle bracket in a subject cannot become markup.
   d.querySelector('.subject').textContent = item.subject;
-  // A tiny count, because a card with discussion on it should say so without
-  // being opened. Nothing else earns space here.
-  const marks = [];
-  if (item.comments.length) marks.push(item.comments.length + '\\u{1F4AC}');
-  d.querySelector('.marks').textContent = marks.join(' ');
+  // A card with discussion on it should say so without being opened. At 11px on
+  // the top row Terry could not see it -- "it's too small for me to see" -- so it
+  // is 22px on its own bottom row now, and absent entirely when there is nothing
+  // to say.
+  if (item.comments.length) {
+    d.querySelector('.marks').textContent =
+      item.comments.length + ' \\u{1F4AC}';
+  }
 
   d.addEventListener('click', () => openCard(item.id));
   d.addEventListener('dragstart', ev => {
