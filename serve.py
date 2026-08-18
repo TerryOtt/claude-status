@@ -1,50 +1,51 @@
-"""A live, draggable swimlane board over one `board.json`, served on loopback.
+"""A live, draggable swimlane board over one board JSON, served on loopback.
 
     python serve.py path/to/board.json
-    then open http://127.0.0.1:8792/
+    then open the URL it prints
 
 **RFC 2119 keywords, and the capitals are load-bearing.**
 
-## What it is for
+## The port comes from the BOARD, not from this file
 
-**Terry and Claude need ONE artifact instead of two views held equal by a contract.**
-The earlier arrangement had a markdown log plus the harness task panel, and the whole
-sync problem existed only because there were two copies. **A browser tab reading the
-same file Claude writes cannot diverge from it.**
+**Terry, 2026-08-18:** *"I want per-project config JSON that includes TCP port num; I
+want to be able to bookmark one board per project. reduces surprise if nothing is
+listening at that port."*
 
-**It also lifts the panel's size limit.** The harness panel gives Terry about five
-lines, so the log had to be trimmed to fit a window it does not control.
+**A shared default port is worse than a dead bookmark.** With every project on 8792, a
+bookmark opens whichever board happens to be running -- so the failure mode is reading
+the WRONG project's work and believing it, which is silent. **A port per project means
+the bookmark either shows your board or shows nothing, and nothing is honest.**
+
+`--port` still overrides, for the case where two boards must run at once during a
+migration.
 
 ## IT WRITES, and that is safe here for a reason Trello could not offer
 
-**Terry drags cards.** That is a write path by definition, and it was added
-deliberately on 2026-08-18.
+**Terry drags cards, and either of us can comment.** Both are write paths.
 
 **The same afternoon, the official Trello MCP server was connected and removed within
-the hour**, because its OAuth grant authenticates Claude AS Terry -- a card Claude
-moved and a card Terry moved were the same event by the same member, so his signoff
-stopped being provable.
+the hour**, because its OAuth grant authenticates Claude AS Terry -- a card Claude moved
+and a card Terry moved were the same event by the same member, so his signoff stopped
+being provable.
 
-**This server binds to loopback.** Whoever reaches it is sitting at his machine, so a
-drag IS Terry: no identity to forge, no token to leak, and the `by` field in an item's
-history can be trusted.
+**This server binds to loopback.** Whoever reaches it is at his machine, so a drag IS
+Terry: no identity to forge, no token to leak, and `by` in the history can be trusted.
 
-**`status.TERRY_EDGES` is the guard rail**, re-checked on the server for every request.
-The browser carries the same list only so the cursor can answer without a round trip.
-**A guard that lives only in the client is decoration.**
+**Permission is re-checked in `status.Board.move`, not here.** The page carries the edge
+list only so the cursor can answer without a round trip. **A guard that lives only in
+the client is decoration** -- and one that lives only in the server leaves the library
+Claude uses wide open, which is exactly what happened on the first version.
 
 ## Three staleness edges, and each looks like the server being broken
 
 **A change to the BOARD FILE is live**, picked up within `POLL_MS`.
 
-**A change to THIS FILE or to `status.py` needs a RESTART**, because the server
-imports the parser once at startup.
+**A change to THIS FILE or to `status.py` needs a RESTART.**
 
-**A change to the PAGE needs a BROWSER RELOAD on top of that.** The open tab is still
-running the script it was served, which produces a genuinely confusing halfway state:
-rows render correctly because their content comes from `/data`, while new CSS and new
-counts do not, because those live in the page. **Half the change appearing is more
-disorienting than none of it.**
+**A change to the PAGE needs a BROWSER RELOAD on top of that.** The open tab still runs
+the script it was served, which produces a genuinely confusing halfway state: cards
+render correctly because their content comes from `/data`, while new CSS and new counts
+do not. **Half the change appearing is more disorienting than none of it.**
 
 ## The browser rules this had to satisfy
 
@@ -67,30 +68,44 @@ import re
 import status
 
 HOST = "127.0.0.1"
-DEFAULT_PORT = 8792
 
-# Far below the time a human takes to switch windows, and a stat() against a local
-# file rather than anything on a network.
+# Far below the time a human takes to switch windows, and a stat() against a local file
+# rather than anything on a network.
 POLL_MS = 400
 
-# **Inline markdown only, and that is a deliberate scope.** A detail field carries
-# `code`, **bold** and *italic* and nothing else. A markdown library for one field
-# would be a dependency for a job this size.
+# **Inline markdown only, and that is a deliberate scope.** A detail or comment carries
+# `code`, **bold** and *italic* and nothing else. A markdown library for one field would
+# be a dependency for a job this size.
 INLINE = (
     (re.compile(r"`([^`]+)`"), r"<code>\1</code>"),
     (re.compile(r"\*\*([^*]+)\*\*"), r"<strong>\1</strong>"),
     (re.compile(r"\*([^*]+)\*"), r"<em>\1</em>"),
 )
 
-BOARD: pathlib.Path = pathlib.Path("board.json")
+# Set once at startup by `main`. One process serves one board.
+BOARD_PATH: pathlib.Path = pathlib.Path("board.json")
+
+# **Inter, bundled rather than linked, under the SIL Open Font License 1.1.**
+# `vendor/typefaces/inter/README.md` carries the copyright, the license text and the
+# three conditions that make redistributing it here compliant. Terry raised the
+# question himself and proposed this exact layout.
+#
+# **It is NOT installed on his machine**, checked rather than assumed, so naming it in a
+# CSS font stack alone would have fallen back to Segoe UI and looked almost right --
+# the kind of failure nobody investigates. And a Google Fonts `<link>` would make a
+# LOCAL tool reach the internet to render, breaking the board on a plane.
+FONT_DIR = pathlib.Path(__file__).resolve().parent / "vendor" / "typefaces" / "inter"
+
+FONTS = {
+    "/fonts/Inter-latin.woff2": "Inter-latin.woff2",
+    "/fonts/Inter-latin-ext.woff2": "Inter-latin-ext.woff2",
+}
 
 
 def inline(text: str) -> str:
     """Escape HTML, THEN apply the three inline spans.
 
-    **That order is the whole safety of it.** Detail fields are written by Claude and
-    read by Terry, so this is about a stray `<` in a path rendering as text rather
-    than about an attacker -- but reversing the order would escape the markup this
+    **That order is the whole safety of it.** Reversing it would escape the markup this
     function just produced and leave the content raw.
     """
     out = html.escape(text)
@@ -99,89 +114,166 @@ def inline(text: str) -> str:
     return out
 
 
+def when(stamp: str) -> str:
+    """An ISO stamp as `Aug 18, 13:52`, or unchanged if it will not parse.
+
+    **Unchanged rather than blank on failure.** A card migrated from the markdown log
+    carries whatever its old date column said, and showing that beats showing nothing.
+    """
+    try:
+        return datetime.datetime.fromisoformat(stamp).strftime("%b %d, %H:%M")
+    except ValueError:
+        return stamp
+
+
 PAGE = """<!doctype html>
 <html>
 <head>
 <meta charset="utf-8">
 <title>%TITLE%</title>
 <style>
-  /* LIGHT, because Terry asked for it in exactly those words: "turn off dark mode
-     I hate it." No media query and no toggle -- one look, chosen. */
+  /* Inter, served from this repository. See the FONTS note in serve.py. */
+  @font-face {
+    font-family: 'Inter'; font-style: normal; font-weight: 100 900;
+    font-display: swap; src: url('/fonts/Inter-latin.woff2') format('woff2');
+    unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6,
+      U+02DA, U+02DC, U+0304, U+0308, U+0329, U+2000-206F, U+20AC, U+2122,
+      U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD;
+  }
+  @font-face {
+    font-family: 'Inter'; font-style: normal; font-weight: 100 900;
+    font-display: swap; src: url('/fonts/Inter-latin-ext.woff2') format('woff2');
+    unicode-range: U+0100-02BA, U+02BD-02C5, U+02C7-02CC, U+02CE-02D7,
+      U+02DD-02FF, U+0304, U+0308, U+0329, U+1D00-1DBF, U+1E00-1E9F,
+      U+1EF2-1EFF, U+2020, U+20A0-20AB, U+20AD-20C0, U+2113, U+2C60-2C7F,
+      U+A720-A7FF;
+  }
+
+  /* LIGHT, because Terry asked in exactly those words: "turn off dark mode I hate
+     it." No media query and no toggle -- one look, chosen. */
   :root {
     --bg: #F4F5F7; --lane: #EBECF0; --card: #FFFFFF;
     --ink: #172B4D; --dim: #5E6C84; --line: #DFE1E6;
     --terry: #0052CC; --claude: #E2A100; --handoff: #1F845A; --done: #5E6C84;
-    --p0: #C9372C; --p1: #E56910; --p2: #E2A100;
+    --p0: #C9372C; --p1: #E56910; --p2: #B77600;
     --p3: #5E6C84; --p4: #8993A4; --p5: #B3BAC5;
   }
   * { box-sizing: border-box; }
   body { margin: 0; background: var(--bg); color: var(--ink);
-         font: 14px/1.5 "Segoe UI", system-ui, sans-serif; }
+         font: 14px/1.5 'Inter', 'Segoe UI', system-ui, sans-serif;
+         font-feature-settings: 'cv05' 1, 'tnum' 1; }
 
   #bar { position: sticky; top: 0; z-index: 20; display: flex; gap: 14px;
-         align-items: center; padding: 8px 14px; background: #FFFFFF;
+         align-items: center; padding: 9px 14px; background: #FFFFFF;
          border-bottom: 1px solid var(--line); font-size: 12px; }
   #bar .grow { flex: 1; }
-  #title { font-weight: 700; }
+  #title { font-weight: 700; letter-spacing: -.01em; }
   #counts { color: var(--dim); }
   #dot { width: 8px; height: 8px; border-radius: 50%; background: var(--handoff); }
   #dot.stale { background: var(--p0); }
   .meta { color: var(--dim); }
 
-  /* One row of lanes, scrolled sideways. Seven columns do not fit a laptop at a
-     readable card width, and shrinking them to fit is what makes a board useless. */
-  #board { display: flex; gap: 10px; padding: 12px; align-items: flex-start;
-           overflow-x: auto; min-height: calc(100vh - 46px); }
-  .lane { background: var(--lane); border-radius: 8px; width: 296px;
-          flex: 0 0 296px; display: flex; flex-direction: column;
-          max-height: calc(100vh - 70px); border-top: 3px solid var(--dim); }
-  .lane[data-owner="terry"]   { border-top-color: var(--terry); }
-  .lane[data-owner="claude"]  { border-top-color: var(--claude); }
-  .lane[data-owner="handoff"] { border-top-color: var(--handoff); }
-  .lane[data-owner="done"]    { border-top-color: var(--done); }
+  /* **SEVEN LANES SHARE THE WIDTH RATHER THAN OVERFLOWING IT.** Terry works with the
+     terminal on the left and the browser on the right, so the viewport is about half a
+     screen -- and at a fixed 268px the seventh lane was clipped off the edge with a
+     horizontal scrollbar under it. **A board you have to scroll sideways to see is not
+     a board**, because the whole point is taking it in at a glance.
 
-  .lane h2 { margin: 0; padding: 9px 12px 4px; font-size: 12px; font-weight: 700;
-             text-transform: uppercase; letter-spacing: .5px;
+     `flex: 1 1 0` divides whatever is there. `min-width` is the floor at which a
+     two-word title still wraps sanely; below that the row does scroll, which is the
+     right behavior on a genuinely tiny window. */
+  #board { display: flex; gap: 8px; padding: 10px; align-items: stretch;
+           overflow-x: auto; height: calc(100vh - 44px); }
+  .lane { background: var(--lane); border-radius: 8px;
+          flex: 1 1 0; min-width: 158px; max-width: 340px;
+          display: flex; flex-direction: column;
+          border-top: 3px solid var(--dim); }
+  .lane[data-css="terry"]   { border-top-color: var(--terry); }
+  .lane[data-css="claude"]  { border-top-color: var(--claude); }
+  .lane[data-css="handoff"] { border-top-color: var(--handoff); }
+  .lane[data-css="done"]    { border-top-color: var(--done); }
+
+  .lane h2 { margin: 0; padding: 9px 12px 3px; font-size: 12px; font-weight: 700;
+             text-transform: uppercase; letter-spacing: .04em;
              display: flex; gap: 8px; align-items: center; }
   .lane h2 .n { margin-left: auto; background: #FFFFFF; border-radius: 10px;
-                padding: 0 7px; font-size: 11px; color: var(--dim);
-                font-weight: 600; }
+                padding: 0 7px; font-size: 11px; color: var(--dim); }
   /* Ownership is stated in words under every lane title, not implied by a color.
-     Terry: "Real clear ownership per lane." A legend somewhere else would make him
+     Terry: "Real clear ownership per lane." A legend elsewhere would make him
      remember which color meant what. */
-  .owner { padding: 0 12px 8px; font-size: 10px; font-weight: 700;
-           letter-spacing: .8px; color: var(--dim); }
-  .lane[data-owner="terry"]   .owner { color: var(--terry); }
-  .lane[data-owner="claude"]  .owner { color: var(--claude); }
-  .lane[data-owner="handoff"] .owner { color: var(--handoff); }
-  .owner .ro { font-weight: 600; letter-spacing: 0; text-transform: none;
-               color: var(--dim); }
+  .owner { padding: 0 12px 8px; font-size: 10px; font-weight: 600;
+           letter-spacing: .02em; color: var(--dim); }
+  .lane[data-css="terry"]   .owner { color: var(--terry); }
+  .lane[data-css="handoff"] .owner { color: var(--handoff); }
 
   .cards { padding: 0 8px 10px; overflow-y: auto; flex: 1; }
-  /* The drop target is the whole lane, so a card can be released anywhere in the
-     column rather than onto a precise gap. */
   .lane.over { outline: 2px solid var(--terry); outline-offset: -2px; }
   .lane.deny { outline: 2px dashed var(--p0); outline-offset: -2px; }
 
-  .card { background: var(--card); border-radius: 6px; padding: 8px 10px 9px;
-          margin-bottom: 8px; box-shadow: 0 1px 1px rgba(9,30,66,.25); }
-  .card.draggable { cursor: grab; }
-  .card.dragging { opacity: .45; }
-  .card .top { display: flex; gap: 7px; align-items: center; }
+  /* **PRIORITY AND TITLE, NOTHING ELSE.** Terry: "for the cards, only show P1-P5 &
+     title; I need to click in for description or comment history or audit trail."
+     A card is a thing you scan; the panel is a thing you read. */
+  .card { background: var(--card); border-radius: 6px; padding: 7px 9px;
+          margin-bottom: 7px; box-shadow: 0 1px 1px rgba(9,30,66,.25);
+          display: flex; gap: 8px; align-items: flex-start; cursor: pointer; }
+  .card.dragging { opacity: .4; }
+  .card:hover { background: #FAFBFC; }
   .pri { font-size: 10px; font-weight: 700; color: #FFFFFF; border-radius: 3px;
-         padding: 1px 5px; letter-spacing: .3px; }
+         padding: 1px 5px; letter-spacing: .02em; flex: 0 0 auto; margin-top: 1px; }
   .pri.P0 { background: var(--p0); } .pri.P1 { background: var(--p1); }
   .pri.P2 { background: var(--p2); } .pri.P3 { background: var(--p3); }
   .pri.P4 { background: var(--p4); } .pri.P5 { background: var(--p5); }
-  .card .subject { font-weight: 600; font-size: 13px; }
-  .card .detail { color: var(--dim); font-size: 12px; margin-top: 5px;
-                  overflow: hidden; display: -webkit-box; -webkit-line-clamp: 3;
-                  line-clamp: 3; -webkit-box-orient: vertical; }
-  .card.open .detail { -webkit-line-clamp: unset; line-clamp: unset; }
-  .card .more { color: var(--terry); font-size: 11px; cursor: pointer;
-                margin-top: 4px; user-select: none; }
-  .card code { font-family: Consolas, "Cascadia Mono", monospace; font-size: 11px;
-               background: #F4F5F7; padding: 0 3px; border-radius: 3px; }
+  .card .subject { font-size: 13px; font-weight: 500; }
+  .card .marks { margin-left: auto; color: var(--dim); font-size: 11px;
+                 flex: 0 0 auto; }
+
+  /* The detail panel. A drawer rather than a modal, so the board stays visible and
+     a card's lane is still legible while you read it. */
+  #scrim { position: fixed; inset: 0; background: rgba(9,30,66,.45); display: none;
+           z-index: 30; }
+  #scrim.show { display: block; }
+  #panel { position: fixed; top: 0; right: 0; bottom: 0; width: 560px;
+           max-width: 92vw; background: #FFFFFF; z-index: 31; display: none;
+           flex-direction: column; box-shadow: -4px 0 16px rgba(9,30,66,.2); }
+  #panel.show { display: flex; }
+  #panel header { padding: 16px 20px 12px; border-bottom: 1px solid var(--line); }
+  #panel h1 { margin: 6px 0 0; font-size: 18px; letter-spacing: -.01em; }
+  #panel .sub { color: var(--dim); font-size: 12px; margin-top: 6px; }
+  #panel .body { overflow-y: auto; padding: 16px 20px 24px; flex: 1; }
+  #panel h3 { font-size: 11px; text-transform: uppercase; letter-spacing: .06em;
+              color: var(--dim); margin: 22px 0 8px; }
+  #panel h3:first-child { margin-top: 0; }
+  #close { float: right; border: 0; background: transparent; font-size: 20px;
+           cursor: pointer; color: var(--dim); line-height: 1; }
+  .detail-text { font-size: 13px; }
+  .detail-text code { font-family: 'Cascadia Mono', Consolas, monospace;
+                      font-size: 11.5px; background: #F4F5F7; padding: 0 3px;
+                      border-radius: 3px; }
+  .empty { color: var(--dim); font-style: italic; font-size: 12.5px; }
+
+  /* The audit trail and the comments are visually DIFFERENT on purpose. One is what
+     the machine recorded and nobody typed; the other is what a person chose to say.
+     Making them look alike would suggest the trail is editable. */
+  .trail { border-left: 2px solid var(--line); padding-left: 12px; }
+  .trail li { list-style: none; font-size: 12px; color: var(--dim);
+              margin-bottom: 5px; font-variant-numeric: tabular-nums; }
+  .trail .who { font-weight: 600; }
+  .trail .who.terry { color: var(--terry); }
+  .trail .who.claude { color: var(--claude); }
+  .trail ul { margin: 0; padding: 0; }
+
+  .comment { background: #F4F5F7; border-radius: 6px; padding: 8px 10px;
+             margin-bottom: 8px; font-size: 13px; }
+  .comment .head { font-size: 11px; color: var(--dim); margin-bottom: 3px; }
+  .comment .head .who { font-weight: 700; }
+  .comment .head .who.terry { color: var(--terry); }
+  .comment .head .who.claude { color: var(--claude); }
+  #say { width: 100%; min-height: 68px; font: inherit; font-size: 13px;
+         padding: 8px 10px; border: 1px solid var(--line); border-radius: 6px;
+         resize: vertical; }
+  #post { margin-top: 8px; background: var(--terry); color: #FFFFFF; border: 0;
+          border-radius: 5px; padding: 7px 14px; font: inherit; font-weight: 600;
+          font-size: 13px; cursor: pointer; }
 
   #banner { display: none; margin: 12px; padding: 14px 16px; background: #FFEBE6;
             border: 1px solid var(--p0); border-radius: 6px; font-size: 13px; }
@@ -212,10 +304,30 @@ PAGE = """<!doctype html>
     <div class="hint" id="banner-body"></div>
   </div>
   <div id="board"></div>
+
+  <div id="scrim"></div>
+  <aside id="panel">
+    <header>
+      <button id="close" title="Close">&times;</button>
+      <span class="pri" id="p-pri"></span>
+      <h1 id="p-subject"></h1>
+      <div class="sub" id="p-sub"></div>
+    </header>
+    <div class="body">
+      <h3>Description</h3>
+      <div class="detail-text" id="p-detail"></div>
+      <h3>Comments</h3>
+      <div id="p-comments"></div>
+      <textarea id="say" placeholder="Leave a note on this card…"></textarea>
+      <button id="post">Comment as Terry</button>
+      <h3>Audit trail</h3>
+      <div class="trail"><ul id="p-trail"></ul></div>
+    </div>
+  </aside>
   <div id="toast"></div>
 
 <script>
-let seen = null, reloads = 0;
+let seen = null, reloads = 0, openId = null;
 let data = {lanes: [], edges: [], counts: {}, error: null};
 
 function toast(msg, bad) {
@@ -227,36 +339,125 @@ function toast(msg, bad) {
   t._timer = setTimeout(() => t.classList.remove('show'), 2800);
 }
 
-// Terry may drag only the edges the server will accept. Asking the server first
-// would make the highlight lag the cursor, so the page carries the same list and
-// the server stays the one that decides.
 function allowed(from, to) {
   return data.edges.some(e => e[0] === from && e[1] === to);
 }
 
+function itemById(id) {
+  for (const lane of data.lanes) {
+    for (const it of lane.items) if (it.id === id) return it;
+  }
+  return null;
+}
+
+// ---- the detail panel ----------------------------------------------------
+
+function openCard(id) {
+  const it = itemById(id);
+  if (!it) return;
+  openId = id;
+  const pri = document.getElementById('p-pri');
+  pri.textContent = it.priority;
+  pri.className = 'pri ' + it.priority;
+  pri.title = it.priorityLabel;
+  document.getElementById('p-subject').textContent = it.subject;
+  document.getElementById('p-sub').textContent =
+    it.laneLabel + '  \\u00b7  ' + it.id;
+
+  const detail = document.getElementById('p-detail');
+  if (it.detail) { detail.innerHTML = it.detail; detail.className = 'detail-text'; }
+  else { detail.textContent = 'No description.'; detail.className = 'empty'; }
+
+  const cs = document.getElementById('p-comments');
+  cs.replaceChildren();
+  if (!it.comments.length) {
+    const e = document.createElement('div');
+    e.className = 'empty';
+    e.textContent = 'No comments yet.';
+    cs.appendChild(e);
+  }
+  for (const c of it.comments) {
+    const d = document.createElement('div');
+    d.className = 'comment';
+    d.innerHTML = '<div class="head"><span class="who ' + c.by + '"></span>'
+      + '<span class="at"></span></div><div class="text">' + c.text + '</div>';
+    d.querySelector('.who').textContent = c.by === 'terry' ? 'Terry' : 'Claude';
+    d.querySelector('.at').textContent = '  \\u00b7  ' + c.when;
+    cs.appendChild(d);
+  }
+
+  const tr = document.getElementById('p-trail');
+  tr.replaceChildren();
+  if (!it.history.length) {
+    const li = document.createElement('li');
+    li.className = 'empty';
+    li.textContent = 'No recorded history \\u2014 migrated before the trail existed.';
+    tr.appendChild(li);
+  }
+  for (const h of it.history) {
+    const li = document.createElement('li');
+    const move = h.from ? (h.fromLabel + ' \\u2192 ' + h.toLabel)
+                        : ('created in ' + h.toLabel);
+    li.innerHTML = '<span class="who ' + h.by + '"></span> <span class="m"></span>';
+    li.querySelector('.who').textContent = h.by === 'terry' ? 'Terry' : 'Claude';
+    li.querySelector('.m').textContent = move + '  \\u00b7  ' + h.when;
+    tr.appendChild(li);
+  }
+
+  document.getElementById('scrim').classList.add('show');
+  document.getElementById('panel').classList.add('show');
+  document.getElementById('say').value = '';
+}
+
+function closeCard() {
+  openId = null;
+  document.getElementById('scrim').classList.remove('show');
+  document.getElementById('panel').classList.remove('show');
+}
+
+document.getElementById('close').addEventListener('click', closeCard);
+document.getElementById('scrim').addEventListener('click', closeCard);
+document.addEventListener('keydown', ev => {
+  if (ev.key === 'Escape') closeCard();
+});
+
+document.getElementById('post').addEventListener('click', async () => {
+  const text = document.getElementById('say').value.trim();
+  if (!openId || !text) return;
+  const res = await fetch('/comment', {
+    method: 'POST', headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({id: openId, text: text}),
+  });
+  const out = await res.json();
+  if (!res.ok) { toast(out.error || 'Comment refused', true); return; }
+  document.getElementById('say').value = '';
+  toast(out.result);
+  seen = null;
+});
+
+// ---- the board -----------------------------------------------------------
+
 function card(item) {
   const d = document.createElement('div');
-  d.className = 'card' + (item.draggable ? ' draggable' : '');
+  d.className = 'card';
   d.draggable = !!item.draggable;
   d.dataset.id = item.id;
   d.dataset.state = item.state;
-  d.innerHTML = '<div class="top"><span class="pri"></span>'
-    + '<span class="subject"></span></div>'
-    + '<div class="detail">' + item.detail + '</div>'
-    + (item.detail.length > 110 ? '<div class="more">more</div>' : '');
+  d.innerHTML = '<span class="pri"></span><span class="subject"></span>'
+    + '<span class="marks"></span>';
   const pri = d.querySelector('.pri');
   pri.textContent = item.priority;
   pri.className = 'pri ' + item.priority;
   pri.title = item.priorityLabel;
   // Set as text, so a stray angle bracket in a subject cannot become markup.
   d.querySelector('.subject').textContent = item.subject;
-  const more = d.querySelector('.more');
-  if (more) {
-    more.addEventListener('click', ev => {
-      ev.stopPropagation();
-      more.textContent = d.classList.toggle('open') ? 'less' : 'more';
-    });
-  }
+  // A tiny count, because a card with discussion on it should say so without
+  // being opened. Nothing else earns space here.
+  const marks = [];
+  if (item.comments.length) marks.push(item.comments.length + '\\u{1F4AC}');
+  d.querySelector('.marks').textContent = marks.join(' ');
+
+  d.addEventListener('click', () => openCard(item.id));
   d.addEventListener('dragstart', ev => {
     ev.dataTransfer.setData('text/plain',
       JSON.stringify({id: item.id, from: item.state}));
@@ -271,25 +472,16 @@ function laneEl(lane) {
   const el = document.createElement('section');
   el.className = 'lane';
   el.dataset.lane = lane.state;
-  el.dataset.owner = lane.owner;
+  el.dataset.css = lane.css;
   el.innerHTML = '<h2><span class="nm"></span><span class="n"></span></h2>'
     + '<div class="owner"></div><div class="cards"></div>';
   el.querySelector('.nm').textContent = lane.label;
   el.querySelector('.n').textContent = lane.items.length;
-  const owner = el.querySelector('.owner');
-  owner.textContent = lane.ownerLabel;
-  if (lane.owner === 'claude') {
-    const ro = document.createElement('span');
-    ro.className = 'ro';
-    ro.textContent = '  \\u00b7 read-only for you';
-    owner.appendChild(ro);
-  }
+  el.querySelector('.owner').textContent = lane.ownerLabel;
   const cards = el.querySelector('.cards');
   for (const item of lane.items) cards.appendChild(card(item));
 
   el.addEventListener('dragover', ev => {
-    // Chrome hides the payload during dragover, so the source lane is read from
-    // the card currently marked .dragging instead.
     const src = document.querySelector('.card.dragging');
     if (!src || src.dataset.state === lane.state) return;
     if (allowed(src.dataset.state, lane.state)) {
@@ -309,19 +501,17 @@ function laneEl(lane) {
     try { payload = JSON.parse(ev.dataTransfer.getData('text/plain')); }
     catch (e) { return; }
     if (!allowed(payload.from, lane.state)) {
-      toast('That lane is Claude\\u2019s \\u2014 ' + payload.from + ' \\u2192 '
-            + lane.state + ' is not yours to drag', true);
+      toast('Not yours to drop there: ' + payload.from + ' \\u2192 ' + lane.state, true);
       return;
     }
     const res = await fetch('/move', {
-      method: 'POST',
-      headers: {'Content-Type': 'application/json'},
+      method: 'POST', headers: {'Content-Type': 'application/json'},
       body: JSON.stringify({id: payload.id, to: lane.state}),
     });
     const out = await res.json();
     if (!res.ok) { toast(out.error || 'Move refused', true); return; }
     toast(out.result);
-    seen = null;   // force the next tick to refetch
+    seen = null;
   });
   return el;
 }
@@ -334,19 +524,20 @@ function paint() {
   const banner = document.getElementById('banner');
   banner.classList.toggle('show', !!data.error);
   if (data.error) {
-    document.getElementById('banner-head').textContent =
-      'The board file did not load.';
+    document.getElementById('banner-head').textContent = 'The board did not load.';
     document.getElementById('banner-body').textContent = data.error;
   }
 
   const c = data.counts || {};
-  // The two counts that ask Terry for something lead, because they are the only
-  // numbers on this page that are about him.
   document.getElementById('counts').textContent =
     ((c.needs_terry_action ? c.needs_terry_action + ' NEEDS YOU \\u00b7 ' : '')
      + (c.ready_for_review ? c.ready_for_review + ' TO SIGN OFF \\u00b7 ' : '')
      + (c.open || 0) + ' open \\u00b7 ' + (c.in_progress || 0) + ' in progress \\u00b7 '
      + (c.completed || 0) + ' completed');
+
+  // Repaint the drawer too, so a comment posted a moment ago appears without the
+  // card having to be reopened.
+  if (openId) openCard(openId);
 }
 
 async function tick() {
@@ -382,44 +573,55 @@ def payload() -> bytes:
     because a blank tab and a broken parser look identical and one of them is a lie.
     """
     try:
-        board = status.load(BOARD)
+        board = status.load(BOARD_PATH)
     except (status.BoardError, OSError, json.JSONDecodeError) as exc:
         return json.dumps({"lanes": [], "edges": [], "counts": {},
                            "error": str(exc)}).encode("utf-8")
 
-    lanes = status.lanes(board)
-    counts = {lane.state: len(lane.items) for lane in lanes}
+    # **Drift is reported to the page, not swallowed.** `verify()` replays each item's
+    # history; a mismatch means something changed a state without going through
+    # `move()`, and that is exactly the news a board must not keep to itself.
+    drift = board.verify()
+    lanes = board.lanes()
+    counts: dict[str, int] = {lane.state: len(lane.items) for lane in lanes}
     counts["open"] = sum(len(lane.items) for lane in lanes
                          if lane.state != "completed")
 
     return json.dumps({
-        "project": board["project"],
+        "project": board.project,
         "lanes": [{
             "state": lane.state,
             "label": lane.label,
-            "owner": lane.owner,
+            "css": lane.css,
             "ownerLabel": lane.owner_label,
             "items": [{
-                "id": item["id"],
-                "state": item["state"],
-                "subject": item["subject"],
-                "priority": item.get("priority", status.DEFAULT_PRIORITY),
-                "priorityLabel": status.PRIORITY_LABEL.get(
-                    item.get("priority", status.DEFAULT_PRIORITY), ""),
-                "detail": inline(item.get("detail", "")),
+                "id": item.id,
+                "state": item.state,
+                "laneLabel": lane.label,
+                "subject": item.subject,
+                "priority": item.priority,
+                "priorityLabel": status.PRIORITY_LABEL.get(item.priority, ""),
+                "detail": inline(item.detail),
                 # **Computed on the SERVER from the same table the server enforces**,
                 # so the cursor and the answer cannot disagree.
-                "draggable": any(a == item["state"] for a, _ in status.TERRY_EDGES),
+                "draggable": any(a == item.state for a, _ in status.TERRY_EDGES),
+                "comments": [{"by": c.by, "when": when(c.at),
+                              "text": inline(c.text)} for c in item.comments],
+                "history": [{"by": h.by, "when": when(h.at),
+                             "from": h.frm,
+                             "fromLabel": status.LANE_LABEL.get(h.frm or "", ""),
+                             "toLabel": status.LANE_LABEL.get(h.to, h.to)}
+                            for h in item.history],
             } for item in lane.items],
         } for lane in lanes],
         "edges": sorted(status.TERRY_EDGES),
         "counts": counts,
-        "error": None,
+        "error": "; ".join(drift) if drift else None,
     }).encode("utf-8")
 
 
 class Handler(http.server.BaseHTTPRequestHandler):
-    """Four routes: the page, the board, one timestamp to poll, and the move."""
+    """The page, the board, a timestamp to poll, the fonts, and two write routes."""
 
     def _send(self, body: bytes, ctype: str, code: int = 200) -> None:
         self.send_response(code)
@@ -434,27 +636,48 @@ class Handler(http.server.BaseHTTPRequestHandler):
     def _json(self, obj: dict[str, object], code: int = 200) -> None:
         self._send(json.dumps(obj).encode("utf-8"), "application/json", code)
 
+    def _read_json(self) -> dict[str, object] | None:
+        try:
+            length = int(self.headers.get("Content-Length") or 0)
+            body = json.loads(self.rfile.read(length) or b"{}")
+        except (ValueError, TypeError):
+            return None
+        return body if isinstance(body, dict) else None
+
     def do_GET(self) -> None:
         route = self.path.partition("?")[0]
         if route == "/mtime":
             try:
-                mtime = BOARD.stat().st_mtime
+                mtime = BOARD_PATH.stat().st_mtime
             except OSError:
                 self._json({"mtime": 0, "stamp": "board file missing"})
                 return
-            # **Terry's LOCAL wall clock**, which is the point of the bar.
             stamp = (datetime.datetime.fromtimestamp(mtime, tz=datetime.UTC)
                      .astimezone().strftime("%H:%M:%S"))
             self._json({"mtime": mtime, "stamp": stamp})
         elif route == "/data":
             self._send(payload(), "application/json")
+        elif route in FONTS:
+            # The font is immutable and 133 KB; letting the browser cache it is the
+            # one thing on this server that SHOULD be cached.
+            try:
+                blob = (FONT_DIR / FONTS[route]).read_bytes()
+            except OSError:
+                self.send_error(404)
+                return
+            self.send_response(200)
+            self.send_header("Content-Type", "font/woff2")
+            self.send_header("Content-Length", str(len(blob)))
+            self.send_header("Cache-Control", "public, max-age=31536000, immutable")
+            self.end_headers()
+            self.wfile.write(blob)
         elif route in ("/", "/index.html"):
             # **A broken board still serves its page.** The title falls back and
-            # `/data` carries the real error to the banner, because a blank tab and
-            # a parse failure look identical from the outside.
+            # `/data` carries the real error to the banner.
             title = "Work board"
-            with contextlib.suppress(status.BoardError, OSError, json.JSONDecodeError):
-                title = status.load(BOARD)["project"] or title
+            with contextlib.suppress(status.BoardError, OSError,
+                                     json.JSONDecodeError):
+                title = status.load(BOARD_PATH).project or title
             page = (PAGE.replace("%POLL%", str(POLL_MS))
                     .replace("%TITLE%", html.escape(title)))
             self._send(page.encode("utf-8"), "text/html; charset=utf-8")
@@ -462,93 +685,102 @@ class Handler(http.server.BaseHTTPRequestHandler):
             self.send_error(404)
 
     def do_POST(self) -> None:
-        """`POST /move` -- the one write path, and it refuses more than it accepts.
+        """`/move` and `/comment`. **Both act as `terry`, and that is a FACT here.**
 
-        **The server re-checks the edge rather than trusting the page.** The page
-        carries the same list only so the cursor can answer without a round trip.
-        **A guard that lives only in the client is decoration.**
+        The server binds to loopback, so the request came from his machine. That is
+        the property the Trello route could not offer at any price.
         """
-        if self.path.partition("?")[0] != "/move":
+        route = self.path.partition("?")[0]
+        if route not in ("/move", "/comment"):
             self.send_error(404)
             return
-        try:
-            length = int(self.headers.get("Content-Length") or 0)
-            body = json.loads(self.rfile.read(length) or b"{}")
-            item_id, to = str(body["id"]), str(body["to"])
-        except (ValueError, KeyError, TypeError):
+        body = self._read_json()
+        if body is None:
             self._json({"error": "bad request body"}, 400)
             return
 
         try:
-            board = status.load(BOARD)
-            was = status.find(board, item_id)["state"]
+            board = status.load(BOARD_PATH)
+            if route == "/move":
+                result = board.move(str(body["id"]), str(body["to"]), "terry")
+            else:
+                result = board.comment(str(body["id"]), str(body["text"]), "terry")
+            status.save(board, BOARD_PATH)
+        except KeyError as exc:
+            self._json({"error": f"missing field {exc}"}, 400)
+            return
         except (status.BoardError, OSError, json.JSONDecodeError) as exc:
-            self._json({"error": str(exc)}, 404)
-            return
-
-        if (was, to) not in status.TERRY_EDGES:
-            self._json({"error": f"{was} -> {to} is not an edge Terry drags"}, 409)
-            return
-
-        try:
-            # **`by="terry"` is a FACT here, not an assumption.** The server binds to
-            # loopback, so this request came from his machine.
-            result = status.move(board, item_id, to, "terry")
-            status.save(board, BOARD)
-        except (status.BoardError, OSError) as exc:
             self._json({"error": str(exc)}, 409)
             return
-        print(f"  MOVED {result}", flush=True)
+
+        print(f"  {result}", flush=True)
         self._json({"result": result})
 
     def log_message(self, format: str, *args: object) -> None:  # noqa: A002, ARG002
-        # **The parameter names are the base class's and MUST NOT be renamed.**
-        # `_fmt` satisfies ruff and then pyright refuses the override outright -- a
-        # parameter name is part of an override's contract because a caller may pass
-        # it by keyword. Both lint codes here are forced by a signature this code
-        # does not own.
+        # **The parameter names are the base class's and MUST NOT be renamed.** A
+        # parameter name is part of an override's contract, because a caller may pass
+        # it by keyword. Both lint codes here are forced by a signature this code does
+        # not own.
         #
         # The poll runs twice a second, so logging every request would bury anything
         # worth reading. Only a real data fetch prints.
         #
-        # **`args[0]` is NOT always a string.** `send_error` routes through
-        # `log_error` with `("code %d, message %s", 404, ...)`, an int first, and an
-        # unguarded `in` test raises inside the handler and closes the socket with no
-        # response.
+        # **`args[0]` is NOT always a string.** `send_error` routes through `log_error`
+        # with `("code %d, message %s", 404, ...)`, an int first, and an unguarded `in`
+        # test raises inside the handler and closes the socket with no response.
         first = args[0] if args else ""
         if isinstance(first, str) and "/data" in first:
             print(f"  Served {first.split()[1] if ' ' in first else first}", flush=True)
 
 
 def main() -> None:
-    global BOARD  # noqa: PLW0603 -- one process serves one board, set once at startup
+    global BOARD_PATH  # noqa: PLW0603 -- one process serves one board, set at startup
     ap = argparse.ArgumentParser(description="Serve a claude-status board.")
     ap.add_argument("board", type=pathlib.Path, help="path to the board JSON")
-    ap.add_argument("--port", type=int, default=DEFAULT_PORT,
-                    help=f"TCP port on {HOST} (default {DEFAULT_PORT})")
+    ap.add_argument("--port", type=int, default=None,
+                    help="override the port in the board file")
     args = ap.parse_args()
-    BOARD = args.board
+    BOARD_PATH = args.board
 
-    print(f"Serving {BOARD}")
+    port = args.port or status.DEFAULT_PORT
+    print(f"Serving {BOARD_PATH}")
     try:
-        board = status.load(BOARD)
-        print(f"  project   : {board['project'] or '(unnamed)'}")
-        for lane in status.lanes(board):
+        board = status.load(BOARD_PATH)
+        if args.port is None:
+            port = board.port
+        print(f"  project   : {board.project or '(unnamed)'}")
+        for lane in board.lanes():
             if lane.items:
                 print(f"      {lane.label:<20} {len(lane.items):>2}  [{lane.owner_label}]")
+        drift = board.verify()
+        if drift:
+            print(f"  DRIFT: {len(drift)} item(s) disagree with their own history:")
+            for problem in drift:
+                print(f"      {problem}")
     except (status.BoardError, OSError, json.JSONDecodeError) as exc:
         # **Loud, and it still serves.** The page renders the same message, so the
         # failure is visible in both places rather than as an empty board.
         print(f"  WARNING: {exc}")
         print("  The page will say so rather than look empty.")
 
-    print(f"  view      : http://{HOST}:{args.port}/")
+    bad_edges = status.check_edges()
+    if bad_edges:
+        print(f"  PERMISSION TABLE INCONSISTENT, {len(bad_edges)} problem(s):")
+        for problem in bad_edges:
+            print(f"      {problem}")
+
+    if not FONT_DIR.is_dir():
+        # Inter is bundled. Without it the page silently falls back to Segoe UI and
+        # looks almost right, which is the kind of failure nobody investigates.
+        print(f"  WARNING: {FONT_DIR} is missing, so Inter will not load.")
+
+    print(f"  view      : http://{HOST}:{port}/")
     print(f"  polling   : every {POLL_MS} ms, repaints only when the file changes")
     print("  Terry may drag:")
     for a, b in sorted(status.TERRY_EDGES):
         print(f"      {a} -> {b}")
-    print(f"Listening on {HOST}:{args.port}. Press Ctrl+C to stop.", flush=True)
-    http.server.ThreadingHTTPServer((HOST, args.port), Handler).serve_forever()
+    print(f"Listening on {HOST}:{port}. Press Ctrl+C to stop.", flush=True)
+    http.server.ThreadingHTTPServer((HOST, port), Handler).serve_forever()
 
 
 if __name__ == "__main__":

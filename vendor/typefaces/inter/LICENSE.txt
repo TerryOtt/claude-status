@@ -1,0 +1,191 @@
+Copyright (c) 2016 The Inter Project Authors 
+(https://github.com/rsms/inter)
+
+This Font So
+ftware is licensed under the SIL Open Font Li
+cense, Version 1.1.
+This license is copied be
+low, and is also available with a FAQ at:
+htt
+p://scripts.sil.org/OFL
+
+--------------------
+---------------------------------------
+SIL O
+PEN FONT LICENSE Version 1.1 - 26 February 20
+07
+------------------------------------------
+-----------------
+
+PREAMBLE
+The goals of the 
+Open Font License (OFL) are to stimulate worl
+dwide
+development of collaborative font proje
+cts, to support the font creation
+efforts of 
+academic and linguistic communities, and to p
+rovide a free and
+open framework in which fon
+ts may be shared and improved in partnership
+
+with others.
+
+The OFL allows the licensed fon
+ts to be used, studied, modified and
+redistri
+buted freely as long as they are not sold by 
+themselves. The
+fonts, including any derivati
+ve works, can be bundled, embedded,
+redistrib
+uted and/or sold with any software provided t
+hat any reserved
+names are not used by deriva
+tive works. The fonts and derivatives,
+howeve
+r, cannot be released under any other type of
+ license. The
+requirement for fonts to remain
+ under this license does not apply
+to any doc
+ument created using the fonts or their deriva
+tives.
+
+DEFINITIONS
+"Font Software" refers to
+ the set of files released by the Copyright
+H
+older(s) under this license and clearly marke
+d as such. This may
+include source files, bui
+ld scripts and documentation.
+
+"Reserved Font
+ Name" refers to any names specified as such 
+after the
+copyright statement(s).
+
+"Original 
+Version" refers to the collection of Font Sof
+tware components as
+distributed by the Copyri
+ght Holder(s).
+
+"Modified Version" refers to 
+any derivative made by adding to, deleting,
+o
+r substituting -- in part or in whole -- any 
+of the components of the
+Original Version, by
+ changing formats or by porting the Font Soft
+ware to a
+new environment.
+
+"Author" refers t
+o any designer, engineer, programmer, technic
+al
+writer or other person who contributed to 
+the Font Software.
+
+PERMISSION AND CONDITIONS
+
+Permission is hereby granted, free of charge
+, to any person obtaining
+a copy of the Font 
+Software, to use, study, copy, merge, embed, 
+modify,
+redistribute, and sell modified and u
+nmodified copies of the Font
+Software, subjec
+t to the following conditions:
+
+1) Neither th
+e Font Software nor any of its individual com
+ponents,
+in Original or Modified Versions, ma
+y be sold by itself.
+
+2) Original or Modified
+ Versions of the Font Software may be bundled
+,
+redistributed and/or sold with any software
+, provided that each copy
+contains the above 
+copyright notice and this license. These can 
+be
+included either as stand-alone text files,
+ human-readable headers or
+in the appropriate
+ machine-readable metadata fields within text
+ or
+binary files as long as those fields can 
+be easily viewed by the user.
+
+3) No Modified
+ Version of the Font Software may use the Res
+erved Font
+Name(s) unless explicit written pe
+rmission is granted by the corresponding
+Copy
+right Holder. This restriction only applies t
+o the primary font name as
+presented to the u
+sers.
+
+4) The name(s) of the Copyright Holder
+(s) or the Author(s) of the Font
+Software sha
+ll not be used to promote, endorse or adverti
+se any
+Modified Version, except to acknowledg
+e the contribution(s) of the
+Copyright Holder
+(s) and the Author(s) or with their explicit 
+written
+permission.
+
+5) The Font Software, mo
+dified or unmodified, in part or in whole,
+mu
+st be distributed entirely under this license
+, and must not be
+distributed under any other
+ license. The requirement for fonts to
+remain
+ under this license does not apply to any doc
+ument created
+using the Font Software.
+
+TERMI
+NATION
+This license becomes null and void if 
+any of the above conditions are
+not met.
+
+DIS
+CLAIMER
+THE FONT SOFTWARE IS PROVIDED "AS IS"
+, WITHOUT WARRANTY OF ANY KIND,
+EXPRESS OR IM
+PLIED, INCLUDING BUT NOT LIMITED TO ANY WARRA
+NTIES OF
+MERCHANTABILITY, FITNESS FOR A PARTI
+CULAR PURPOSE AND NONINFRINGEMENT
+OF COPYRIGH
+T, PATENT, TRADEMARK, OR OTHER RIGHT. IN NO E
+VENT SHALL THE
+COPYRIGHT HOLDER BE LIABLE FOR
+ ANY CLAIM, DAMAGES OR OTHER LIABILITY,
+INCLU
+DING ANY GENERAL, SPECIAL, INDIRECT, INCIDENT
+AL, OR CONSEQUENTIAL
+DAMAGES, WHETHER IN AN A
+CTION OF CONTRACT, TORT OR OTHERWISE, ARISING
+
+FROM, OUT OF THE USE OR INABILITY TO USE THE
+ FONT SOFTWARE OR FROM
+OTHER DEALINGS IN THE 
+FONT SOFTWARE.
+
+
