@@ -73,6 +73,9 @@ HOST = "127.0.0.1"
 # rather than anything on a network.
 POLL_MS = 400
 
+# The 12-hour pivot, named so the meridiem arithmetic reads as a rule.
+NOON = 12
+
 # **Inline markdown only, and that is a deliberate scope.** A detail or comment carries
 # `code`, **bold** and *italic* and nothing else. A markdown library for one field would
 # be a dependency for a job this size.
@@ -115,15 +118,28 @@ def inline(text: str) -> str:
 
 
 def when(stamp: str) -> str:
-    """An ISO stamp as `Aug 18, 13:52`, or unchanged if it will not parse.
+    """An ISO stamp as `2026-08-18 2:56pm`, or unchanged if it will not parse.
+
+    **Terry's house format**, which he named in one line: ISO 8601 date, a space, then
+    `HH:MM` with a lower-case meridiem closed up. The date sorts and never reads
+    ambiguously; the time reads the way a person says it.
+
+    **Built by hand rather than by `strftime`**, because `%p` emits `AM`/`PM` in the
+    C locale and the platform decides in others -- so lowering it would be a
+    locale-dependent guess. `%I` also zero-pads, which he does not want.
 
     **Unchanged rather than blank on failure.** A card migrated from the markdown log
     carries whatever its old date column said, and showing that beats showing nothing.
     """
     try:
-        return datetime.datetime.fromisoformat(stamp).strftime("%b %d, %H:%M")
+        moment = datetime.datetime.fromisoformat(stamp)
     except ValueError:
         return stamp
+    # `% NOON or NOON` is what makes midnight read `12:05am` and noon `12:00pm`,
+    # which a plain modulo gets wrong in both directions.
+    hour = moment.hour % NOON or NOON
+    meridiem = "am" if moment.hour < NOON else "pm"
+    return f"{moment:%Y-%m-%d} {hour}:{moment:%M}{meridiem}"
 
 
 PAGE = """<!doctype html>
