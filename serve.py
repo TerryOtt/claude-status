@@ -169,7 +169,18 @@ PAGE = """<!doctype html>
          border-bottom: 1px solid var(--line); font-size: 12px; }
   #bar .grow { flex: 1; }
   #title { font-weight: 700; letter-spacing: -.01em; }
-  #counts { color: var(--dim); }
+  /* **ONLY CALLS TO ACTION LIVE HERE.** Terry: "No other stats up there, just
+     calls to action." Open counts and in-progress counts were noise -- the lane
+     headers already carry them, and a number that never asks for anything trains
+     the eye to skip the whole bar.
+
+     **Zero is plain text; non-zero is a hazard pill.** So the bar is quiet when
+     there is nothing to do and impossible to miss when there is, which is this
+     project's loudness rule applied to a status line. */
+  #counts { display: flex; gap: 8px; align-items: center; }
+  .cta { font-size: 11px; font-weight: 700; letter-spacing: .03em;
+         color: var(--dim); padding: 3px 8px; border-radius: 4px; }
+  .cta.hot { background: #F5CD47; color: #000000; }
   /* **THE HEARTBEAT.** Terry, 2026-08-18, after being burned by a dashboard at
      work: *"'Written 13:52:53 Reload 1' ain't gonna do it for my brain due to
      emotional trauma."*
@@ -591,12 +602,25 @@ function paint() {
     document.getElementById('banner-body').textContent = data.error;
   }
 
+  // **Three counters, and every one is something TERRY must do.** Nothing else
+  // belongs here -- the lane headers already carry every other number, and a stat
+  // that never asks for anything teaches the eye to skip past the ones that do.
+  //
+  // **Zero is plain text; non-zero is a hazard pill.** Quiet when there is nothing
+  // to do, impossible to miss when there is.
   const c = data.counts || {};
-  document.getElementById('counts').textContent =
-    ((c.needs_terry_action ? c.needs_terry_action + ' NEEDS YOU \\u00b7 ' : '')
-     + (c.ready_for_review ? c.ready_for_review + ' TO SIGN OFF \\u00b7 ' : '')
-     + (c.open || 0) + ' open \\u00b7 ' + (c.in_progress || 0) + ' in progress \\u00b7 '
-     + (c.completed || 0) + ' completed');
+  const counts = document.getElementById('counts');
+  counts.replaceChildren();
+  for (const pair of [
+    ['AWAITING SIGNOFF', c.ready_for_review || 0],
+    ['BLOCKED', c.blocked || 0],
+    ['WAITING FOR TERRY', c.needs_terry_action || 0],
+  ]) {
+    const s = document.createElement('span');
+    s.className = pair[1] > 0 ? 'cta hot' : 'cta';
+    s.textContent = pair[0] + ': ' + pair[1];
+    counts.appendChild(s);
+  }
 
   // Repaint the drawer too, so a comment posted a moment ago appears without the
   // card having to be reopened.
@@ -680,7 +704,7 @@ function renderLive() {
   const nowTxt = clockOf(nowMs);
 
   if (!lastOk) {
-    el.textContent = 'last update: never  ·  Currently: ' + nowTxt;
+    el.textContent = 'Last update: never  ·  ' + nowTxt;
     badge.className = 'dead';
     badge.textContent = 'NO DATA';
     dot.classList.add('stale');
@@ -696,11 +720,14 @@ function renderLive() {
   // The file's age is a DIFFERENT fact from the poll's, and both belong here: a
   // board nobody has touched for two hours is normal, and a poll that has not
   // answered for two hours is not.
+  // **The wall clock carries no label.** Terry: "drop 'Currently:', it's obvious
+  // its current local time." The two ages are labelled because a bare duration
+  // could be either; a running clock explains itself.
   const age = nowMs - lastOk;
   const parts = [];
-  if (fileMs) parts.push('file written ' + agoOf(fileMs));
-  parts.push('last update: ' + agoOf(lastOk));
-  parts.push('Currently: ' + nowTxt);
+  if (fileMs) parts.push('File written: ' + agoOf(fileMs));
+  parts.push('Last update: ' + agoOf(lastOk));
+  parts.push(nowTxt);
   el.textContent = parts.join('  ·  ');
 
   // **The badge flips at LIVE_MS, not at WARN_MS.** It carries a single claim --
