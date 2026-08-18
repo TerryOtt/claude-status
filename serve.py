@@ -355,11 +355,22 @@ PAGE = """<!doctype html>
   .card .tix { margin-left: auto; color: var(--dim); font-size: 12px;
                font-weight: 700; font-variant-numeric: tabular-nums; }
   .card .subject { font-size: 13px; font-weight: 500; }
-  /* Double the old 11px, and it only exists when a card HAS comments -- an empty
-     third row on every card would cost real height in a lane that scrolls. */
-  .card .marks { align-self: flex-end; color: var(--dim); font-size: 22px;
-                 line-height: 1; font-variant-numeric: tabular-nums;
-                 display: flex; gap: 5px; align-items: center; }
+  /* **1.5x the 11px base, not 2x.** Terry corrected himself after seeing it: "2x is
+     too damn much." **This is why the house rule says render and LOOK** -- 22px
+     passed every check available and was still wrong, because "is this the right
+     size" is not a question code can answer.
+
+     It exists only when a card HAS comments; an empty third row on every card
+     would cost real height in a lane that scrolls. */
+  .card .marks { align-self: flex-end; color: var(--dim); font-size: 17px;
+                 line-height: 1; display: flex; gap: 5px; align-items: baseline; }
+  /* **Two digits of reserved width, and NO zero padding** -- his instruction, and
+     the reason is alignment rather than tidiness. The row is right-aligned, so an
+     unreserved number drags the bubble left and right as counts change and a
+     column of cards ends up with bubbles at three different x positions.
+     `tnum` makes "two digits" an exact width rather than an estimate. */
+  .card .marks .n { min-width: 2ch; text-align: right;
+                    font-variant-numeric: tabular-nums; }
 
   /* The detail panel. A drawer rather than a modal, so the board stays visible and
      a card's lane is still legible while you read it. */
@@ -621,9 +632,12 @@ function card(item) {
   // the top row Terry could not see it -- "it's too small for me to see" -- so it
   // is 22px on its own bottom row now, and absent entirely when there is nothing
   // to say.
+  // **Bubble first, then the count**, per Terry. The number sits in its own span so
+  // CSS can reserve two digits and right-align it without padding the value.
   if (item.comments.length) {
-    d.querySelector('.marks').textContent =
-      item.comments.length + ' \\u{1F4AC}';
+    const marks = d.querySelector('.marks');
+    marks.innerHTML = '<span class="b">\\u{1F4AC}</span><span class="n"></span>';
+    marks.querySelector('.n').textContent = item.comments.length;
   }
 
   d.addEventListener('click', () => openCard(item.id));
