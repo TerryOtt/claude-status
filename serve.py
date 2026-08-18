@@ -500,6 +500,18 @@ PAGE = """<!doctype html>
 // which is the exact confusion the LIVE badge replaced. Two signals telling the
 // same story badly is worse than one telling it well.
 let seen = null, openId = null;
+
+// **Unsent comment text, per card id. It is the ONLY state the repaint may not own.**
+//
+// Terry, 2026-08-18: "I've had to race claude several times and got comments wiped 3-4
+// times in a row." The drawer repaints on every board write so a new comment appears
+// without reopening the card -- and Claude writes to this board constantly, so the
+// refresh that keeps the panel honest was destroying whatever he was mid-sentence on.
+//
+// **A draft is the one thing on this page the SERVER does not have a copy of.** Every
+// other pixel can be rebuilt from /data; typed text that has not been posted exists
+// nowhere else, so it is the one thing a repaint must route around rather than redraw.
+let drafts = {};
 let data = {lanes: [], edges: [], counts: {}, error: null};
 
 function toast(msg, bad) {
@@ -527,6 +539,17 @@ function itemById(id) {
 function openCard(id) {
   const it = itemById(id);
   if (!it) return;
+
+  // **OPENING a card and REFRESHING one are different acts, and this line is what
+  // separates them.** paint() calls this on every board change, so an unconditional
+  // clear at the end of this function wiped Terry's draft on somebody else's write.
+  // The comparison MUST happen BEFORE openId is reassigned, or every call looks like
+  // a refresh and a genuinely new card inherits the previous card's text.
+  if (openId !== id) {
+    const box = document.getElementById('say');
+    if (openId) drafts[openId] = box.value;
+    box.value = drafts[id] || '';
+  }
   openId = id;
   const pri = document.getElementById('p-pri');
   pri.textContent = it.priority;
@@ -587,10 +610,15 @@ function openCard(id) {
 
   document.getElementById('scrim').classList.add('show');
   document.getElementById('panel').classList.add('show');
-  document.getElementById('say').value = '';
+  // **Nothing touches the textarea here.** The element is never replaced -- the
+  // comment list is a sibling -- so leaving its value alone also preserves focus
+  // and caret position through a repaint, for free.
 }
 
 function closeCard() {
+  // **Escape is one keypress away at all times.** Dropping the draft on close is the
+  // same defect as dropping it on repaint, just slower to notice.
+  if (openId) drafts[openId] = document.getElementById('say').value;
   openId = null;
   document.getElementById('scrim').classList.remove('show');
   document.getElementById('panel').classList.remove('show');
@@ -612,6 +640,9 @@ document.getElementById('post').addEventListener('click', async () => {
   const out = await res.json();
   if (!res.ok) { toast(out.error || 'Comment refused', true); return; }
   document.getElementById('say').value = '';
+  // **The stash MUST be dropped too, or the text just sent comes back on reopen** --
+  // which reads as the comment having failed, and invites Terry to send it twice.
+  delete drafts[openId];
   toast(out.result);
   seen = null;
 });
