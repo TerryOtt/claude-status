@@ -182,10 +182,30 @@ PAGE = """<!doctype html>
      So the dot pulses on every successful poll and the bar counts the seconds
      since the last one. **Proof of life has to be something that MOVES**, because
      anything static is indistinguishable from a frozen page. */
-  #dot { width: 9px; height: 9px; border-radius: 50%; background: var(--live);
-         flex: 0 0 auto; transition: transform .12s ease, background .2s; }
-  #dot.beat { transform: scale(1.9); }
-  #dot.stale { background: var(--p0); transform: none; }
+  /* **A CONSTANT-SIZE DOT THAT BREATHES.** Terry: "have it be a constant size but
+     do its heartbeat as a fade in/-out. Fade in linear over 1s, then fade out
+     linear over 1s. very chillax." Then, having watched it: "go bigger on breather
+     radius and slow down to 2s/2s." So 13px and a 4s cycle, linear both ways, no
+     scaling -- nothing in the corner of his eye jumping about.
+
+     **The animation runs ONLY while the poll is confirmed live**, and that is not
+     decoration. A CSS animation left running unconditionally would keep breathing
+     over a dead server, which is precisely the reassuring-but-false signal this
+     whole bar exists to kill. `renderLive` owns the class.
+
+     **A 4s cycle is FIFTY TIMES slower than the poll, and that gap is fine.** The
+     dot says "alive"; it was never a per-request indicator. `POLL_MS` is the
+     guarantee and this is the mood. */
+  @keyframes breathe {
+    0%   { opacity: .10; }
+    50%  { opacity: 1; }
+    100% { opacity: .10; }
+  }
+  #dot { width: 13px; height: 13px; border-radius: 50%; background: var(--live);
+         flex: 0 0 auto; opacity: .10; transition: background .2s; }
+  #dot.alive { animation: breathe 4s linear infinite; }
+  /* Solid, not breathing. A stopped heart does not pulse. */
+  #dot.stale { background: var(--p0); opacity: 1; animation: none; }
   .meta { color: var(--dim); font-variant-numeric: tabular-nums; }
   #live { color: var(--dim); font-variant-numeric: tabular-nums; }
 
@@ -598,8 +618,12 @@ let fileMs = 0;
 // up and nothing about the file.
 const LIVE_MS  = 5000;   // Terry's number: "read that file within last 5 seconds".
 const WARN_MS  = 15000;  // ~37 polls missed at 400ms. Nothing benign lasts this long.
-const BEAT_MS  = 1000;   // How often the dot may PULSE. Not how often it polls.
-let lastBeat = 0;
+
+// **The dot's 2s breathing cycle is CSS, not JavaScript, and it is cosmetic.**
+// **Do not "fix" the poll rate to match it.** The badge claims Python read the
+// file within 5 seconds; polling at the animation's pace would leave two or three
+// chances to notice a failure before the claim is already false. The animation is
+// how it feels; POLL_MS is what it guarantees.
 
 // **One absolute clock, everything else relative.** Terry's call: the two
 // timestamps became "N seconds/minutes ago" and only `Currently` stays a wall
@@ -653,6 +677,7 @@ function renderLive() {
     badge.className = 'dead';
     badge.textContent = 'NO DATA';
     dot.classList.add('stale');
+    dot.classList.remove('alive');
     return;
   }
 
@@ -685,7 +710,12 @@ function renderLive() {
     badge.className = 'dead';
     badge.textContent = 'STALE ' + (s < 90 ? s + 's' : Math.round(s / 60) + 'm');
   }
-  dot.classList.toggle('stale', age >= LIVE_MS);
+  // **The dot and the badge key off the SAME `lastOk` and the same threshold**, so
+  // they cannot disagree. Breathing green and a red STALE badge side by side would
+  // be worse than either alone.
+  const live = age < LIVE_MS;
+  dot.classList.toggle('stale', !live);
+  dot.classList.toggle('alive', live);
 }
 
 // **POLLING IS THE DESIGN, not a fallback for missing file watching.** Terry:
@@ -715,20 +745,6 @@ async function tick() {
     }
     // Only a real answer moves this. It is the whole signal.
     lastOk = Date.now();
-    // **THE PULSE IS THROTTLED TO 1 Hz, and the POLL IS NOT.** Terry: "the
-    // heartbeat at top left is cool but drop to 1 Hz; it's making me anxious at
-    // current frequency." At 400ms it read as a stutter rather than a pulse.
-    //
-    // **Do not "fix" this by slowing the poll.** The badge's claim is that Python
-    // read the file within 5 seconds, and a 1 Hz poll would leave only five
-    // chances to notice a failure before the badge is already wrong. The
-    // animation is cosmetic; the poll rate is the guarantee.
-    if (lastOk - lastBeat >= BEAT_MS) {
-      lastBeat = lastOk;
-      const dot = document.getElementById('dot');
-      dot.classList.add('beat');
-      setTimeout(() => dot.classList.remove('beat'), 220);
-    }
   } catch (e) {
     // Deliberately does NOT touch lastOk. The age keeps climbing, and that is
     // what turns the bar red on its own.
