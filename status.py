@@ -47,9 +47,13 @@ either. **It would have added a dependency and moved the rules, not enforced the
 """
 
 import argparse
+import contextlib
 import datetime
 import json
+import os
 import pathlib
+import time
+from collections.abc import Iterator
 from dataclasses import dataclass, field
 from typing import Any, Literal, Self
 
@@ -722,8 +726,33 @@ class Board:
             return f"{item_id} is already {to_state}"
         if not may_move(by, was, to_state):
             raise BoardError(explain_refusal(by, was, to_state))
+
+        # **WRITE THE LOG FIRST, THEN THE STATE.** Terry: *"I'd rather log fail and
+        # then we abort vs write file succeed and succeed THEN log fails. Leaves you
+        # in a bad spot."*
+        #
+        # **The bad spot is a card whose state nothing explains.** `verify()` treats
+        # the history as the authority, so a state change that never made it into the
+        # trail does not read as a missing log entry -- it reads as tampering, and it
+        # is indistinguishable from the real thing.
+        #
+        # **So the entry goes on first and is rolled back if anything downstream
+        # refuses.** In memory the two lines are adjacent and nothing can fail
+        # between them, which is exactly why the ordering costs nothing and is worth
+        # having anyway: the next person to add a step between them inherits the safe
+        # order rather than discovering it.
+        entry = Change(at=now(), frm=was, to=to_state, by=by)
+        item.history.append(entry)
         item.state = to_state
-        item.history.append(Change(at=now(), frm=was, to=to_state, by=by))
+
+        # **Abort rather than half-apply.** If the result would not survive its own
+        # audit, undo both and raise -- a board that fails `verify()` on the next load
+        # is worse than a move that plainly did not happen.
+        broken = [p for p in self.verify() if p.startswith(f"{item_id}:")]
+        if broken:
+            item.history.pop()
+            item.state = was
+            raise BoardError("; ".join(broken))
         return f"{item_id}: {was} → {to_state} (by {by})"
 
     def comment(self, item_id: str, text: str, by: Actor) -> str:
@@ -747,16 +776,124 @@ def load(path: pathlib.Path) -> Board:
     return Board.from_json(raw, str(path))
 
 
+# **How long to wait for another writer, and when to call a lock abandoned.**
+# A real edit is a file read, a dict mutation and a 13 KB write -- microseconds. A
+# second of patience covers any honest contention; ten means the holder is dead.
+LOCK_WAIT_S = 1.0
+LOCK_STALE_S = 10.0
+
+
+@contextlib.contextmanager
+def locked(path: pathlib.Path) -> Iterator[None]:
+    """Hold an exclusive lock on a board for the whole read-modify-write.
+
+    **Terry asked whether this was needed:** *"are we (do we need to?) file locking
+    as it's our 'Database'? ... if it's cheap seems like peace of mind to get atomic
+    test and set."* **It is needed, and the race is real rather than theoretical.**
+
+    **Two writers exist and both rewrite the WHOLE file.** Terry's drag goes through
+    the server's `do_POST`; Claude's edits go through `status.py --move`. Each loads
+    the entire board, mutates it and saves it. Overlap them and the second save
+    silently discards everything the first one did -- a lost update, and the atomic
+    rename in `save()` makes that outcome CLEANER rather than safer, because the
+    file left behind is perfectly valid and simply missing a card's move.
+
+    **`O_CREAT | O_EXCL` is the primitive**, because it is the one atomic
+    test-and-set every filesystem agrees on, including the SMB share `X:` lives on.
+    No dependency, and nothing to configure.
+
+    **A stale lock is stolen rather than waited on forever.** A process killed
+    mid-edit would otherwise wedge the board permanently, and a board that cannot be
+    written is a worse failure than the race this prevents. The holder's pid is
+    written into the file so an abandoned one can be identified.
+    """
+    lock = path.with_name(path.name + ".lock")
+    deadline = time.monotonic() + LOCK_WAIT_S
+    while True:
+        try:
+            fd = os.open(lock, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+        except FileExistsError:
+            # **Steal only a lock that is provably old.** Age is read from the lock
+            # file itself, so a live holder refreshing nothing still keeps it for
+            # LOCK_STALE_S -- far longer than any real edit takes.
+            try:
+                age = time.time() - lock.stat().st_mtime
+            except OSError:
+                continue  # It vanished between the two calls. Try again.
+            if age > LOCK_STALE_S:
+                lock.unlink(missing_ok=True)
+                continue
+            if time.monotonic() > deadline:
+                raise BoardError(
+                    f"{path.name} is locked by another writer "
+                    f"(held {age:.1f}s). Nothing was changed.") from None
+            time.sleep(0.02)
+            continue
+        try:
+            os.write(fd, str(os.getpid()).encode("ascii"))
+        finally:
+            os.close(fd)
+        break
+    try:
+        yield
+    finally:
+        lock.unlink(missing_ok=True)
+
+
+@contextlib.contextmanager
+def edit(path: pathlib.Path) -> Iterator[Board]:
+    """Load, hand over the board, then save -- all under one lock.
+
+    **This is the ONLY correct way to change a board**, and both writers use it. A
+    bare `load` / mutate / `save` is the lost-update race with extra steps.
+
+    **The board is loaded INSIDE the lock**, which is the whole point: reading before
+    acquiring would hand out a snapshot that another writer can invalidate before the
+    save lands.
+    """
+    with locked(path):
+        board = load(path)
+        yield board
+        save(board, path)
+
+
 def save(board: Board, path: pathlib.Path) -> None:
-    """Write the board, formatted so a git diff shows one changed field per line.
+    """Write the board ATOMICALLY. The reader sees the old file or the new one.
 
     **`indent=2` and a trailing newline are not cosmetic.** A single-line JSON file
     turns every edit into one enormous diff, which throws away the reason the record
     lives in git at all.
+
+    **The write goes to a temp file and is then RENAMED over the target**, because
+    the obvious version destroys the board on a bad day. `open(path, "w")` truncates
+    first and writes second, so a crash, a full disk or a killed process between
+    those two leaves a half file -- and the loser is not the one change in flight, it
+    is every card ever recorded.
+
+    **`Path.replace` is atomic on Windows and POSIX alike**, which is why it is used
+    rather than `shutil.move` or an unlink-then-rename.
+
+    **`fsync` before the rename is the part people skip.** Without it the rename can
+    reach the disk before the bytes do, and a power loss leaves a correctly named
+    empty file -- the worst of both outcomes. The board is 13 KB and this happens on
+    a human's drag, so the cost is irrelevant.
+
+    **The temp file is in the SAME DIRECTORY on purpose.** A rename across
+    filesystems is not atomic, and `X:` is an SMB share while the temp directory is
+    not.
     """
     text = json.dumps(board.to_json(), indent=2, ensure_ascii=False) + "\n"
-    with pathlib.Path(path).open("w", encoding="utf-8", newline="\n") as fh:
-        fh.write(text)
+    target = pathlib.Path(path)
+    tmp = target.with_name(target.name + f".tmp{os.getpid()}")
+    try:
+        with tmp.open("w", encoding="utf-8", newline="\n") as fh:
+            fh.write(text)
+            fh.flush()
+            os.fsync(fh.fileno())
+        tmp.replace(target)
+    except OSError:
+        tmp.unlink(missing_ok=True)
+        raise
 
 
 def main() -> None:
@@ -771,33 +908,43 @@ def main() -> None:
                     help="leave a comment on one card")
     args = ap.parse_args()
 
-    board = load(args.board)
-
     if args.move or args.comment:
-        # **THE CLI IS ALWAYS `claude`, and there is no flag to say otherwise.**
-        #
-        # Terry asked how Claude's changes get tagged, and the first answer exposed a
-        # backwards asymmetry: the server HARD-CODES `terry` because loopback proves
-        # it is him, while the CLI merely DEFAULTED to `claude` and accepted
-        # `--by terry`. **So he could not impersonate Claude and Claude could
-        # impersonate him** -- including on `ready_for_review -> completed`, the one
-        # edge that exists to be his alone.
-        #
-        # **Two paths, two identities, neither able to claim the other.** The
-        # library's `move(by=...)` still takes an actor because the tests need to
-        # walk both sides of the permission table; the CLI, which is the thing
-        # Claude actually runs, cannot.
-        #
-        # **This is a guard rail, not a proof.** Nothing stops a hand edit that
-        # writes `"by": "terry"` into the JSON, and no amount of code here can fix
-        # that short of signing, which would be absurd for a local board. What it
-        # does is make the honest path the easy path and forgery a deliberate act.
-        result = (board.move(args.move[0], args.move[1], "claude") if args.move
-                  else board.comment(args.comment[0], args.comment[1], "claude"))
-        save(board, args.board)
-        print(f"  {result}")
+        # **The lock is held across load, mutate and save.** Reading first and
+        # locking second would hand out a snapshot another writer can invalidate.
+        with edit(args.board) as board:
+            _apply(board, args)
         return
 
+    _report(load(args.board), args)
+
+
+def _apply(board: Board, args: argparse.Namespace) -> None:
+    """Perform the one requested change. Called INSIDE `edit`, so it must not save.
+
+    **THE CLI IS ALWAYS `claude`, and there is no flag to say otherwise.**
+
+    Terry asked how Claude's changes get tagged, and the first answer exposed a
+    backwards asymmetry: the server HARD-CODES `terry` because loopback proves it is
+    him, while the CLI merely DEFAULTED to `claude` and accepted `--by terry`. **So
+    he could not impersonate Claude and Claude could impersonate him** -- including
+    on `ready_for_review -> completed`, the one edge that exists to be his alone.
+
+    **Two paths, two identities, neither able to claim the other.** `Board.move`
+    still takes an actor because the tests must walk both sides of the permission
+    table; the CLI, which is the thing Claude actually runs, cannot.
+
+    **This is a guard rail, not a proof.** Nothing stops a hand edit that writes
+    `"by": "terry"` into the JSON, and no code here fixes that short of signing,
+    which would be absurd for a local board. What it does is make the honest path
+    the easy path and forgery a deliberate act.
+    """
+    result = (board.move(args.move[0], args.move[1], "claude") if args.move
+              else board.comment(args.comment[0], args.comment[1], "claude"))
+    print(f"  {result}")
+
+
+def _report(board: Board, args: argparse.Namespace) -> None:
+    """Print the board, and exit non-zero if anything fails its own audit."""
     if args.json:
         print(json.dumps(board.to_json(), indent=2, ensure_ascii=False))
         return
@@ -810,11 +957,11 @@ def main() -> None:
 
     drift = board.verify()
     if drift:
-        print(f"  {len(drift)} item(s) DISAGREE WITH THEIR OWN HISTORY:")
+        print(f"  {len(drift)} item(s) FAIL THEIR OWN AUDIT TRAIL:")
         for problem in drift:
             print(f"      {problem}")
     elif args.verify:
-        print("  Every item's state matches its audit trail.")
+        print("  Every item's history replays cleanly and matches its state.")
 
     print(f"\n{board.project}  ({len(board.items)} items, port {board.port})")
     for lane in board.lanes():

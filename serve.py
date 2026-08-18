@@ -244,11 +244,18 @@ PAGE = """<!doctype html>
   .lane[data-css="handoff"] { border-top-color: var(--handoff); }
   .lane[data-css="done"]    { border-top-color: var(--done); }
 
-  .lane h2 { margin: 0; padding: 9px 12px 3px; font-size: 12px; font-weight: 700;
-             text-transform: uppercase; letter-spacing: .04em;
-             display: flex; gap: 8px; align-items: center; }
-  .lane h2 .n { margin-left: auto; background: #FFFFFF; border-radius: 10px;
-                padding: 0 7px; font-size: 11px; color: var(--dim); }
+  /* **+50% on the lane titles**, 12px to 18px, at Terry's request. The count sits
+     in a circle exactly as tall as that type -- `1em` on a child whose own
+     `font-size` is set in `em` of the same parent, so the two track each other if
+     the title size ever changes again. */
+  .lane h2 { margin: 0; padding: 9px 12px 3px; font-size: 18px; font-weight: 700;
+             text-transform: uppercase; letter-spacing: .02em;
+             display: flex; gap: 8px; align-items: center; line-height: 1.15; }
+  .lane h2 .n { margin-left: auto; background: #FFFFFF; color: var(--dim);
+                font-size: .61em; font-weight: 600;
+                height: 1.64em; min-width: 1.64em; border-radius: 50%;
+                display: inline-flex; align-items: center; justify-content: center;
+                padding: 0 .4em; box-sizing: border-box; }
   /* Ownership is stated in words under every lane title, not implied by a color.
      Terry: "Real clear ownership per lane." A legend elsewhere would make him
      remember which color meant what. */
@@ -912,12 +919,19 @@ class Handler(http.server.BaseHTTPRequestHandler):
             return
 
         try:
-            board = status.load(BOARD_PATH)
-            if route == "/move":
-                result = board.move(str(body["id"]), str(body["to"]), "terry")
-            else:
-                result = board.comment(str(body["id"]), str(body["text"]), "terry")
-            status.save(board, BOARD_PATH)
+            # **`status.edit` holds an exclusive lock across load, mutate and save.**
+            # Both writers must use it or it protects nothing: Terry drags here while
+            # Claude runs `status.py --move`, and each rewrites the WHOLE file. The
+            # loser of that race does not get a corrupt board -- it gets a perfectly
+            # valid one that silently forgot a move.
+            #
+            # **This server is threaded**, so it also races itself: two quick drags
+            # land on two handler threads.
+            with status.edit(BOARD_PATH) as board:
+                if route == "/move":
+                    result = board.move(str(body["id"]), str(body["to"]), "terry")
+                else:
+                    result = board.comment(str(body["id"]), str(body["text"]), "terry")
         except KeyError as exc:
             self._json({"error": f"missing field {exc}"}, 400)
             return
