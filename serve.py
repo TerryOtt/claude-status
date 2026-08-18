@@ -354,7 +354,11 @@ PAGE = """<!doctype html>
   .card .head { display: flex; gap: 7px; align-items: center; width: 100%; }
   .card .tix { margin-left: auto; color: var(--dim); font-size: 12px;
                font-weight: 700; font-variant-numeric: tabular-nums; }
-  .card .subject { font-size: 13px; font-weight: 500; }
+  /* **+50% on the gap above the subject**, Terry's ask, 5px to 7.5px. It is a
+     `margin-top` rather than a larger flex `gap` on purpose: raising the gap would
+     also push the comment-count row down, and that is a different space he did not
+     ask about. */
+  .card .subject { font-size: 13px; font-weight: 500; margin-top: 2.5px; }
   /* **1.5x the 11px base, not 2x.** Terry corrected himself after seeing it: "2x is
      too damn much." **This is why the house rule says render and LOOK** -- 22px
      passed every check available and was still wrong, because "is this the right
