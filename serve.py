@@ -242,7 +242,11 @@ PAGE = """<!doctype html>
     --ink: #172B4D; --dim: #5E6C84; --line: #DFE1E6;
     --terry: #0052CC; --claude: #E2A100; --handoff: #1F845A; --done: #5E6C84;
     --live: #14663F;
-    --p0: #C9372C; --p1: #E56910; --p2: #B77600;
+    /* **The comment badge's ground.** Atlassian's dark neutral, chosen so the badge
+     is unmistakably darker than the P3 pill (`#5E6C84`) and cannot be mistaken for
+     a priority. White on it measures about 7.5:1. */
+  --mark: #42526E;
+  --p0: #C9372C; --p1: #E56910; --p2: #B77600;
     --p3: #5E6C84; --p4: #8993A4; --p5: #B3BAC5;
   }
   * { box-sizing: border-box; }
@@ -426,20 +430,36 @@ PAGE = """<!doctype html>
      also push the comment-count row down, and that is a different space he did not
      ask about. */
   .card .subject { font-size: 13px; font-weight: 500; margin-top: 2.5px; }
-  /* **1.5x the 11px base, not 2x.** Terry corrected himself after seeing it: "2x is
-     too damn much." **This is why the house rule says render and LOOK** -- 22px
-     passed every check available and was still wrong, because "is this the right
-     size" is not a question code can answer.
+  /* **A BADGE, because the glyph was bleeding into the card.** Terry, 2026-08-19:
+     "the comment glyph is bleeding with the card background, hence adding contrast
+     with dark gray badge under it." The speech bubble was a light glyph on a white
+     card and read as a smudge rather than an icon.
+
+     **13px, down 25% from 17px, and the badge is what makes that affordable.**
+     17px came from #0023, itself a correction of #0019's 2x -- "2x is too damn
+     much". **Shrinking it WITHOUT the badge would reopen #0019's original
+     complaint**, which was "it's too small for me to see", so the two changes ship
+     together or neither does. 25% of 17 is 12.75; 13 keeps `tnum` on a whole pixel.
+
+     **This size has now been set four times: 11, 22, 17, 13.** Every one of them
+     passed whatever checks existed. **Render and LOOK.**
 
      It exists only when a card HAS comments; an empty third row on every card
      would cost real height in a lane that scrolls. */
-  .card .marks { align-self: flex-end; color: var(--dim); font-size: 17px;
-                 line-height: 1; display: flex; gap: 5px; align-items: baseline; }
+  .card .marks { align-self: flex-end; color: #FFFFFF; font-size: 13px;
+                 font-weight: 700; line-height: 1; display: flex; gap: 5px;
+                 align-items: center; background: var(--mark);
+                 border-radius: 4px; padding: 3px 7px; }
   /* **Two digits of reserved width, and NO zero padding** -- his instruction, and
      the reason is alignment rather than tidiness. The row is right-aligned, so an
      unreserved number drags the bubble left and right as counts change and a
      column of cards ends up with bubbles at three different x positions.
-     `tnum` makes "two digits" an exact width rather than an estimate. */
+     `tnum` makes "two digits" an exact width rather than an estimate.
+
+     **The badge inherits that reservation and needs no width of its own.** With the
+     pair wrapped, `min-width` on the number sets the badge's minimum too -- so the
+     BADGE edge stops moving between cards, which is #0024's defect solved at the
+     container instead of at the number. */
   .card .marks .n { min-width: 2ch; text-align: right;
                     font-variant-numeric: tabular-nums; }
 
