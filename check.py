@@ -117,6 +117,30 @@ def run_ruff() -> bool:
     return ok
 
 
+def run_pyright() -> bool:
+    """Typecheck, and say plainly whether it passed.
+
+    **RUFF CHECKS THAT AN ANNOTATION EXISTS. PYRIGHT CHECKS THAT IT IS TRUE**, which is
+    Terry's global rule, and this gate proved it the hour pyright was added.
+
+    **It found a real defect on its first run**: `serve.py`'s `/assign` route passed
+    `str(body["owner"])` -- a value the browser controls -- into a parameter annotated
+    `Actor`. Ruff had been clean on that line every day. **`status.as_actor` now narrows
+    it at the boundary.**
+
+    **It MUST run with `cwd=ROOT`.** `serve.py` imports `status` as a sibling module, so
+    pyright invoked from anywhere else reports `Import "status" could not be resolved`
+    and stops before it reaches a single real finding. **That false error hid the true
+    one for a full run**, which is the failure this docstring exists to prevent.
+    """
+    print("  pyright")
+    done = subprocess.run([sys.executable, "-m", "pyright", "."],
+                          cwd=ROOT, check=False)
+    ok = done.returncode == 0
+    print(f"    {'ok' if ok else 'FAIL'}\n")
+    return ok
+
+
 def missing_table_banner(explicit: str | None) -> None:
     """Say loudly that nothing was checked. **Silence here would read as a pass.**"""
     print(RULE)
@@ -169,6 +193,9 @@ def main() -> int:
 
     if not run_ruff():
         failures.append("ruff")
+
+    if not run_pyright():
+        failures.append("pyright")
 
     table = find_table(args.word_table)
     files = tracked((".py", ".md", ".json"))

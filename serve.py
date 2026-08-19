@@ -66,6 +66,8 @@ import json
 import pathlib
 import re
 import subprocess
+import threading
+import time
 
 import status
 
@@ -200,6 +202,153 @@ def code_is_stale() -> bool:
             continue
         _code_differs[i] = digest != _BOOT_CODE[i][1]
     return any(_code_differs)
+
+# ---------------------------------------------------------------------------
+# AUTOPUSH: THE BOARD REACHES GITHUB WITHOUT ANYBODY REMEMBERING TO SEND IT
+#
+# **Card #0013. Terry, 2026-08-19: *"I def want automated push. When server sees a
+# local JSON change I want that local change in private Github ASAP."***
+#
+# **The hole this closes:** the board lived on a NAS and reached GitHub only when
+# Claude happened to be in session and happened to run `git push`. **Terry drags ten
+# cards in the evening and nothing leaves the laptop.** A manual step is a step that
+# gets skipped, and it fails silently -- the exact shape of bug this whole card is
+# about.
+#
+# **It runs on its OWN THREAD, not on the request path.** This server is passive: it
+# reads the board only when a browser polls `/mtime`. Hanging the push off a request
+# would mean a closed tab stops the backups, which is the failure wearing a new hat.
+#
+# **A `git push` takes seconds and MUST NOT block a request** in any case.
+_PUSH_QUIET_S = 5.0
+_PUSH_TICK_S = 1.0
+_PUSH_TIMEOUT_S = 120
+
+# **Five states, and only ONE of them is allowed to raise a pill.** Same doctrine as
+# the toolchain banner: loudness tracks what Terry can act on. `off` is a legitimate
+# configuration, `pending` is normal, `ok` is the resting state.
+_push_lock = threading.Lock()
+_push_state: dict[str, object] = {"state": "off", "at": 0.0, "detail": "not started"}
+
+
+def _set_push(state: str, detail: str) -> None:
+    """Publish the autopush verdict for `/mtime` to read."""
+    with _push_lock:
+        _push_state["state"] = state
+        _push_state["detail"] = detail
+        _push_state["at"] = time.time()
+
+
+def push_status() -> dict[str, object]:
+    """A snapshot of the autopush verdict. Copied under the lock, never handed out live."""
+    with _push_lock:
+        return dict(_push_state)
+
+
+def _git(args: list[str], cwd: pathlib.Path) -> subprocess.CompletedProcess[str]:
+    """Run one git command. Never raises; a timeout comes back as a failed result."""
+    try:
+        return subprocess.run(
+            ["git", *args], cwd=cwd, capture_output=True, text=True,
+            timeout=_PUSH_TIMEOUT_S, check=False)
+    except (OSError, subprocess.SubprocessError) as exc:
+        return subprocess.CompletedProcess(args, 1, "", str(exc))
+
+
+def push_unavailable(board_path: pathlib.Path) -> str:
+    """Why autopush cannot run here, or "" when it can.
+
+    **A repository with no remote is COMPLETE without a push**, which the global rule
+    already says. So "no remote" is a configuration rather than a failure, and it must
+    reach the `off` state rather than the `failed` one.
+    """
+    repo = _git(["rev-parse", "--show-toplevel"], board_path.parent)
+    if repo.returncode != 0:
+        return "the board's directory is not a git repository"
+    if not _git(["remote"], board_path.parent).stdout.strip():
+        return "the board's repository has no remote"
+    return ""
+
+
+def push_board(board_path: pathlib.Path) -> tuple[bool, str]:
+    """Commit the board file and push it. Returns (ok, one-line detail).
+
+    **It stages NOTHING and commits BY PATHSPEC**, which is the safety property rather
+    than a style choice. `git commit -- <board>` ignores the index and takes only that
+    one file. **A stray file in the working tree cannot ride along** -- and one was
+    found in the FGA repo the same day this was written, a 28-byte probe left behind by
+    a `cd` in the wrong shell. `git add -A` in a loop would have published it.
+    """
+    cwd = board_path.parent
+    if _git(["diff", "--quiet", "HEAD", "--", str(board_path)], cwd).returncode == 0:
+        return True, "no board change to commit"
+    when = datetime.datetime.now(tz=datetime.UTC).astimezone()
+    # Terry's stamp format, from his display preferences: `2026-08-19 02:56pm`.
+    stamp = f"{when:%Y-%m-%d %I:%M:%S}" + f"{when:%p}".lower()
+    message = (
+        f"Board: automatic snapshot {stamp}\n\n"
+        "Written by serve.py's autopush thread, not by a person. The card's own\n"
+        "history array carries the per-move audit, so this commit exists for\n"
+        "durability rather than for granularity.\n")
+    add = _git(["add", "--", str(board_path)], cwd)
+    if add.returncode != 0:
+        return False, f"git add failed: {add.stderr.strip()[:200]}"
+    commit = _git(["commit", "-m", message, "--", str(board_path)], cwd)
+    if commit.returncode != 0:
+        return False, f"git commit failed: {commit.stderr.strip()[:200]}"
+    push = _git(["push"], cwd)
+    if push.returncode != 0:
+        # **The commit STANDS when the push fails, deliberately.** The change is safe on
+        # disk and in local history; the next successful push carries it. Rolling it back
+        # would throw away the only durable copy that did succeed.
+        return False, f"committed, but push failed: {push.stderr.strip()[:200]}"
+    return True, "committed and pushed"
+
+
+def _push_loop(board_path: pathlib.Path) -> None:
+    """Watch the board file and push once it goes quiet.
+
+    **DEBOUNCE, in one sentence: every write restarts a short timer, and the push
+    happens when the timer runs out.** Terry drags ten cards in thirty seconds and
+    GitHub receives ONE commit about five seconds after the last drag.
+
+    **Without it, ten drags mean ten commits and ten pushes**, each taking seconds, and
+    they queue up behind each other.
+
+    **It starts armed.** The first pass reconciles whatever changed while no server was
+    running, which is exactly the window this card exists to cover.
+    """
+    why = push_unavailable(board_path)
+    if why:
+        _set_push("off", why)
+        print(f"  autopush  : OFF -- {why}", flush=True)
+        return
+    print(f"  autopush  : on, {_PUSH_QUIET_S:.0f}s after the last board write", flush=True)
+    _set_push("ok", "armed")
+    try:
+        seen = board_path.stat().st_mtime
+    except OSError:
+        seen = 0.0
+    dirty_at: float | None = time.time()
+    while True:
+        time.sleep(_PUSH_TICK_S)
+        try:
+            now_mtime = board_path.stat().st_mtime
+        except OSError:
+            continue
+        if now_mtime != seen:
+            seen = now_mtime
+            dirty_at = time.time()
+            _set_push("pending", "board changed; waiting for it to go quiet")
+            continue
+        if dirty_at is None or time.time() - dirty_at < _PUSH_QUIET_S:
+            continue
+        dirty_at = None
+        ok, detail = push_board(board_path)
+        _set_push("ok" if ok else "failed", detail)
+        if not ok:
+            print(f"  AUTOPUSH FAILED: {detail}", flush=True)
+
 
 # Far below the time a human takes to switch windows, and a stat() against a local file
 # rather than anything on a network.
@@ -792,6 +941,15 @@ PAGE = """<!doctype html>
   #restart { display: none; background: var(--p1); color: #000000; font-weight: 700;
              padding: 2px 8px; border-radius: 4px; white-space: nowrap; }
   #restart.show { display: inline-block; }
+  /* **THE BOARD IS NOT BACKED UP. That is a `--p0` matter, and it earns red.**
+     `#stale` and `#restart` describe a stale VIEW -- annoying, and nothing is lost.
+     This one means the only copy of the board is on a NAS. Card #0013.
+     **It appears on `failed` and on NOTHING else.** `off`, `pending` and `ok` are all
+     states Terry cannot act on, and a pill he cannot act on is the scenery the
+     loudness rule exists to prevent. */
+  #push { display: none; background: var(--p0); color: #FFFFFF; font-weight: 700;
+          padding: 2px 8px; border-radius: 4px; white-space: nowrap; }
+  #push.show { display: inline-block; }
 </style>
 </head>
 <body>
@@ -807,6 +965,7 @@ PAGE = """<!doctype html>
       title="The server process is running older code than the files on disk. A browser
 reload CANNOT fix this -- Python holds the old modules. Stop the server and start it
 again."></span>
+    <span id="push"></span>
     <label id="alerts-wrap"><input type="checkbox" id="alerts"> Alerts</label>
     <span id="badge"
       title="Green means Python read and parsed the board file in the last 5s.">LIVE</span>
@@ -1572,6 +1731,7 @@ let serverBuild = null;
 // #0052 -- both of those ids freeze at their own start, so a stale server makes them
 // AGREE and the reload flag stays hidden.
 let codeStale = false;
+let pushState = null;
 const WARN_MS  = 15000;  // ~37 polls missed at 400ms. Nothing benign lasts this long.
 
 // **The dot's 2s breathing cycle is CSS, not JavaScript, and it is cosmetic.**
@@ -1658,6 +1818,28 @@ function renderLive() {
   const restart = document.getElementById('restart');
   restart.textContent = 'RESTART SERVER  \\u00b7  code changed on disk';
   restart.classList.toggle('show', !!codeStale);
+
+  // **A THIRD flag, and this one is about the DATA rather than the view.** Card #0013.
+  //
+  // `#stale` and `#restart` both say "what you are looking at is out of date". Nothing
+  // is lost in either case. **This one says the board exists in exactly one place**,
+  // which is the condition the private remote was created to end.
+  //
+  // **It shows on `failed` and on nothing else.** `off` is a legitimate configuration,
+  // `pending` is the normal state five seconds a day, and `ok` is the resting state --
+  // **none of the three is something Terry can act on**, and a pill he cannot act on
+  // becomes scenery. Same loudness rule the toolchain banner runs on.
+  //
+  // **It is placed BEFORE the `lastOk` return, like `#restart`.** A dead poll and an
+  // unpushed board are independent, and hiding this one during the other is exactly
+  // the bug that put the restart flag here.
+  const push = document.getElementById('push');
+  const pushFailed = !!pushState && pushState.state === 'failed';
+  if (pushFailed) {
+    push.textContent = 'NOT BACKED UP  \\u00b7  push failed';
+    push.title = String(pushState.detail || 'git push failed');
+  }
+  push.classList.toggle('show', pushFailed);
 
   if (!lastOk) {
     // **`Build` leads here TOO, and it did not before.** This branch never reached
@@ -1752,6 +1934,9 @@ async function tick() {
     // stale process and an unreadable board are independent and either can be true
     // while the other is.
     codeStale = !!meta.codeStale;
+    // **Captured on BOTH paths for the third time, and for the same reason.** A board
+    // that cannot be read and a board that cannot be pushed are independent failures.
+    pushState = meta.push || null;
     // **`ok: false` does NOT refresh `lastOk`.** The server answered, but it
     // could not read the board -- and a reachable server serving an unreadable
     // file is exactly the state that must not look healthy.
@@ -1964,7 +2149,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
                 # them apart while one of them is happening.
                 self._json({"ok": False, "mtime": 0, "stamp": "unreadable",
                             "build": BUILD, "codeStale": code_is_stale(),
-                            "error": str(exc)})
+                            "push": push_status(), "error": str(exc)})
                 return
             stamp = (datetime.datetime.fromtimestamp(mtime, tz=datetime.UTC)
                      .astimezone().strftime("%H:%M:%S"))
@@ -1972,7 +2157,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
             # reason.** An unreadable board and a stale process are independent
             # failures, and either can be true while the other is.
             self._json({"ok": True, "mtime": mtime, "stamp": stamp, "build": BUILD,
-                        "codeStale": code_is_stale()})
+                        "codeStale": code_is_stale(), "push": push_status()})
         elif route == "/data":
             self._send(payload(), "application/json")
         elif route in FONTS:
@@ -2036,9 +2221,15 @@ class Handler(http.server.BaseHTTPRequestHandler):
                     result = board.move(str(body["id"]), str(body["to"]), "terry")
                 elif route == "/assign":
                     # **No permission check, deliberately.** Ownership is a label, so
-                    # either actor may assign it either way -- card #0053. `assign()`
-                    # validates the NAME and refuses anything that is not an actor.
-                    result = board.assign(str(body["id"]), str(body["owner"]), "terry")
+                    # either actor may assign it either way -- card #0053.
+                    #
+                    # **`as_actor` narrows the BROWSER'S string at this boundary.** It
+                    # used to pass `str(...)` into a parameter annotated `Actor`, which
+                    # let any value the page cared to post reach the board and told
+                    # pyright the guard inside `assign()` could never fire. Both halves
+                    # were one bug, found 2026-08-19.
+                    result = board.assign(
+                        str(body["id"]), status.as_actor(str(body["owner"])), "terry")
                 elif route == "/create":
                     state = str(body["state"])
                     subject = str(body["subject"]).strip()
@@ -2124,6 +2315,13 @@ def main() -> None:
     print("  Terry may drag:")
     for a, b in sorted(status.TERRY_EDGES):
         print(f"      {a} -> {b}")
+    # **A DAEMON thread, so Ctrl+C still stops the server.** A push in flight is a
+    # `git` subprocess that finishes on its own; the worst case at shutdown is a commit
+    # that lands without its push, and the next start reconciles that because the loop
+    # begins armed.
+    threading.Thread(target=_push_loop, args=(BOARD_PATH,),
+                     name="autopush", daemon=True).start()
+
     print(f"Listening on {HOST}:{port}. Press Ctrl+C to stop.", flush=True)
     http.server.ThreadingHTTPServer((HOST, port), Handler).serve_forever()
 

@@ -94,6 +94,34 @@ MIN_PORT, MAX_PORT = 1, 65535
 Actor = Literal["terry", "claude"]
 ACTORS: tuple[str, ...] = ("terry", "claude")
 
+
+def as_actor(value: str) -> Actor:
+    """Turn a caller-supplied string into an `Actor`, or refuse it. Card #0013's
+    side finding.
+
+    **THE ONE PLACE A STRING BECOMES AN ACTOR**, and it exists because pyright found
+    the same defect from two directions at once on 2026-08-19.
+
+    `serve.py`'s `/assign` route passed `str(body["owner"])` straight into `assign()`,
+    whose parameter is annotated `Actor`. **The annotation was a lie at that call
+    site**, and the browser could name any owner it liked. Meanwhile pyright reported
+    `assign()`'s own `if owner not in ACTORS` guard as UNREACHABLE -- because the
+    annotation promised the check could never fire.
+
+    **Those are one bug.** The runtime guard was the only thing keeping the route safe,
+    and the type system had been told it was redundant.
+
+    **It returns the literals explicitly rather than the argument.** Returning `value`
+    after an `in` test relies on the checker's narrowing of a `str`, which varies by
+    version; returning `"terry"` cannot be misread by any of them.
+    """
+    name = value.strip().lower()
+    if name == "terry":
+        return "terry"
+    if name == "claude":
+        return "claude"
+    raise BoardError(f"unknown actor {value!r}; want one of {', '.join(ACTORS)}")
+
 # **THREE STATES MEAN "NOT MOVING", AND TERRY DREW THE LINES HIMSELF.** They get
 # confused constantly, and the whole value of the board is that a stalled card says WHO
 # is holding it.
@@ -1376,10 +1404,7 @@ def _do_create(board: Board, args: argparse.Namespace) -> str:
 
 
 def _do_assign(board: Board, args: argparse.Namespace) -> str:
-    owner = args.assign[1].lower()
-    if owner not in ("terry", "claude"):
-        raise BoardError(f"unknown owner {args.assign[1]!r}; want terry or claude")
-    return board.assign(args.assign[0], owner, "claude")
+    return board.assign(args.assign[0], as_actor(args.assign[1]), "claude")
 
 
 def _do_set_project(board: Board, args: argparse.Namespace) -> str:
