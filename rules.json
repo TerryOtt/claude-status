@@ -104,6 +104,12 @@
       "note": "Claude may take a backlog card to Needs Terry and NOWHERE else. Terry, 2026-08-18: \"that way if I comment in backlog, you can reply with a clarify question and move it to Needs Terry.\" The edge names its destination, so raising a question is expressible without granting Claude any power to advance its own queue."
     },
     {
+      "actor": "terry",
+      "from": "backlog",
+      "to": "needs_terry_action",
+      "note": "Terry pulling one of his own someday cards forward as a REMINDER TO HIMSELF. Terry, 2026-08-19: \"add a state machine perms rule to allow terry to move from Backlog to Needs Terry... Trying to leave myself a reminder.\" The lane note frames this lane as \"Claude is STOPPED until Terry answers\", and this row widens it by one reading: Needs Terry is the only lane the title bar counts as HIS call to action, so it is where a thing he must personally do belongs, whether or not Claude waits on it. It grants no power he lacked -- he already owned backlog->ready_for_claude and backlog->in_progress -- it grants the honest destination."
+    },
+    {
       "actor": "claude",
       "from": "ready_for_claude",
       "to": "backlog",
@@ -132,6 +138,12 @@
       "from": "ready_for_claude",
       "to": "needs_terry_action",
       "note": ""
+    },
+    {
+      "actor": "terry",
+      "from": "ready_for_claude",
+      "to": "needs_terry_action",
+      "note": "Terry parking a queued card on himself. Same reminder use as the backlog row above."
     },
     {
       "actor": "claude",
@@ -222,6 +234,12 @@
       "from": "blocked",
       "to": "needs_terry_action",
       "note": ""
+    },
+    {
+      "actor": "terry",
+      "from": "blocked",
+      "to": "needs_terry_action",
+      "note": "Terry deciding a blocked card is his move after all. Blocked means NEITHER of us can act, so this row is how he corrects that reading once he can."
     },
     {
       "actor": "claude",
