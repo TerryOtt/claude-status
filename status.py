@@ -975,6 +975,33 @@ class Board:
         item.priority = priority
         return f"{item.label} priority: {was} -> {priority} (by {by})"
 
+    def set_detail(self, item_id: str, detail: str, by: Actor) -> str:
+        """Replace one card's description. Card #0028's second lesson.
+
+        **A description was WRITE-ONCE until 2026-08-19, and that was an accident.**
+        Terry read card #0028 and answered *"wall of text ELI5, try again in human
+        readable fashion"*. Nothing could try again. Claude could only apologize in a
+        comment under the wall, which leaves the wall.
+
+        **No history entry, for the reason `set_priority` gives.** `verify()` replays
+        LANES and OWNERS, and prose is neither. **The audit trail for the text is git**
+        -- the board file is committed after every write, so the old description is one
+        `git diff` away and never rides in the JSON twice.
+
+        **An empty description is REFUSED.** Blanking a card is far more likely to be a
+        shell that ate the argument than a thing somebody meant, and the old text is
+        gone either way.
+        """
+        text = detail.rstrip("\n")
+        if not text.strip():
+            raise BoardError("refusing to blank a description; pass real text")
+        item = self.find(item_id)
+        was = len(item.detail)
+        if item.detail == text:
+            return f"{item.label} description is already that text"
+        item.detail = text
+        return f"{item.label} description: {was} -> {len(text)} chars (by {by})"
+
     def assign(self, item_id: str, owner: Actor, by: Actor) -> str:
         """Reassign one card's owner, appending to its history. Card #0053.
 
@@ -1258,6 +1285,15 @@ def main() -> None:
     # card to P1 and there was no way to do it. Card #0060.
     ap.add_argument("--set-priority", nargs=2, metavar=("ID", "PRIORITY"),
                     help="change one card's priority")
+    # **A card's description was WRITE-ONCE until 2026-08-19.** Terry read one and
+    # said *"wall of text ELI5, try again in human readable fashion"* -- and there was
+    # no way to try again. Only comments could be added, so a bad description could be
+    # apologized for and never fixed.
+    #
+    # **Takes its text from `--detail` or `--detail-file`, the same pair `--create`
+    # uses**, so the shell-quoting lesson is inherited rather than repeated.
+    ap.add_argument("--set-detail", metavar="ID",
+                    help="replace one card's description; use --detail or --detail-file")
     ap.add_argument("--create", nargs=2, metavar=("ID", "SUBJECT"),
                     help="add one card; needs --state")
     # **`choices` is the lanes Claude may CREATE in, not every lane.** argparse then
@@ -1381,6 +1417,7 @@ HANDLERS: dict[str, Callable[[Board, argparse.Namespace], str]] = {
     "set_project": _do_set_project,
     "set_priority": lambda b, a: b.set_priority(
         a.set_priority[0], a.set_priority[1].upper(), "claude"),
+    "set_detail": lambda b, a: b.set_detail(a.set_detail, _detail_text(a), "claude"),
 }
 
 MUTATIONS = tuple(HANDLERS)
