@@ -857,6 +857,33 @@ PAGE = """<!doctype html>
   #p-owner.terry { color: var(--terry); border-color: var(--terry); }
   #p-owner.claude { color: var(--claude); border-color: var(--claude); }
   #p-owner:disabled { opacity: .5; cursor: wait; }
+  /* **The priority SELECT wears the chip's colors, card #0062.** It inherits `.pri`
+     for the background and the weight; these rules only undo what a browser adds to a
+     `<select>` -- its own border, its native font, and the arrow well.
+
+     `appearance: none` removes the platform arrow. **A `<select>` is still keyboard
+     and screen-reader complete without it**, which a hand-built dropdown would not
+     be, and that is why this is a real select rather than a styled div. */
+  /* **The caret is not decoration -- without it the control is undiscoverable.**
+     `appearance: none` takes the platform arrow away, and the first version of this
+     shipped looking exactly like the read-only chip it replaced. Terry would have had
+     to click a thing that gave him no reason to.
+
+     **It hangs off a WRAPPER rather than off the select**, because `::before` and
+     `::after` on a `<select>` do not render in any current browser -- the control is
+     replaced. `pointer-events: none` keeps the glyph from swallowing the click that
+     opens the list. */
+  #panel .pri-wrap { position: relative; display: inline-flex; align-items: center; }
+  #panel .pri-wrap::after { content: '\\25BE'; position: absolute; right: 5px;
+                            color: #FFFFFF; font-size: 9px; line-height: 1;
+                            pointer-events: none; }
+  #p-pri { appearance: none; -webkit-appearance: none; font: inherit; font-size: 10px;
+           font-weight: 700; border: 0; cursor: pointer;
+           padding: 2px 16px 2px 6px; line-height: 1.35; }
+  #p-pri:disabled { opacity: .5; cursor: wait; }
+  /* The list itself is drawn by the OS and cannot inherit a white-on-color chip, so
+     the options are given readable defaults rather than left half-styled. */
+  #p-pri option { color: var(--ink); background: #FFFFFF; font-weight: 600; }
   #panel .body { overflow-y: auto; padding: 16px 20px 24px; flex: 1; }
   #panel h3 { font-size: 11px; text-transform: uppercase; letter-spacing: .06em;
               color: var(--dim); margin: 22px 0 8px; }
@@ -1008,7 +1035,17 @@ again."></span>
     <header>
       <button id="close" title="Close">&times;</button>
       <div class="head">
-        <span class="pri" id="p-pri"></span>
+        <!-- **A SELECT rather than a toggle, and the count is the reason.** Owner has
+             exactly two values so a click that flips it is honest; priority has six,
+             and cycling P0 to P5 one click at a time would be six clicks to undo a
+             mis-click. Card #0062.
+
+             **It keeps the `pri` class**, so it wears the same color here as the chip
+             on the card face. One meaning, one color -- the rule the owner chip
+             already follows. -->
+        <span class="pri-wrap"><select class="pri" id="p-pri"
+          title="Priority. Either of us can change it, and the change is recorded in
+the audit trail."></select></span>
         <span id="p-tix"></span>
       </div>
       <h1 id="p-subject"></h1>
@@ -1212,8 +1249,26 @@ function openCard(id) {
     box.value = drafts[id] || '';
   }
   openId = id;
+  // **The priority control, card #0062.** Options come from `data.priorities`, which
+  // the server builds from `rules.json` -- the same source `lanes()` ranks by, so a
+  // value offered here can never be one the sort does not know.
   const pri = document.getElementById('p-pri');
-  pri.textContent = it.priority;
+  const prios = (data.priorities || []);
+  if (pri.options.length !== prios.length) {
+    pri.replaceChildren();
+    for (const p of prios) {
+      const o = document.createElement('option');
+      o.value = p.id;
+      o.textContent = p.id + '  \\u00b7  ' + p.label;
+      pri.appendChild(o);
+    }
+  }
+  // **NEVER write to this control while Terry is inside it.** paint() calls openCard()
+  // on every board change, twice a second, and assigning `.value` to a select whose
+  // dropdown is open closes it. That is #0029's defect wearing a different hat: a
+  // repaint may redraw anything the SERVER has a copy of, and an interaction in
+  // progress is the one thing it does not.
+  if (document.activeElement !== pri) pri.value = it.priority;
   pri.className = 'pri ' + it.priority;
   pri.title = it.priorityLabel;
   // **The ticket moved OUT of the sub line and up to the top right**, matching what
@@ -1402,6 +1457,45 @@ document.getElementById('p-owner').addEventListener('click', async () => {
     toast('Could not reach the board: ' + err, true);
   } finally {
     own.disabled = false;
+  }
+});
+
+// **Change the priority. Card #0062.**
+//
+// **`change`, not `input`.** On a `<select>` the two fire together in every current
+// browser, and `change` is the one that means "a choice was made" -- so a future
+// keyboard-driven select that fires `input` per arrow key cannot POST five times on
+// the way from P0 to P5.
+//
+// **The old value is read off `data`, never off the control**, for the same reason
+// the owner toggle does it: a repaint between opening the card and choosing cannot
+// make this send the wrong thing. On refusal the control is put back from `data`
+// rather than left showing a value the board never accepted.
+document.getElementById('p-pri').addEventListener('change', async (ev) => {
+  if (!openId) return;
+  const pri = ev.target;
+  const wanted = pri.value;
+  pri.disabled = true;
+  try {
+    const res = await fetch('/priority', {
+      method: 'POST', headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({id: openId, priority: wanted}),
+    });
+    const out = await res.json();
+    if (!res.ok) {
+      toast(out.error || 'Priority change refused', true);
+      const it = itemById(openId);
+      if (it) pri.value = it.priority;
+      return;
+    }
+    toast(out.result);
+    seen = null;
+  } catch (err) {
+    toast('Could not reach the board: ' + err, true);
+    const it = itemById(openId);
+    if (it) pri.value = it.priority;
+  } finally {
+    pri.disabled = false;
   }
 });
 
@@ -2475,14 +2569,14 @@ class Handler(http.server.BaseHTTPRequestHandler):
             self.send_error(404)
 
     def do_POST(self) -> None:
-        """`/move`, `/comment` and `/create`. **All act as `terry`, and that is a
-        FACT here.**
+        """`/move`, `/comment`, `/create`, `/assign` and `/priority`. **All act as
+        `terry`, and that is a FACT here.**
 
         The server binds to loopback, so the request came from his machine. That is
         the property the Trello route could not offer at any price.
         """
         route = self.path.partition("?")[0]
-        if route not in ("/move", "/comment", "/create", "/assign"):
+        if route not in ("/move", "/comment", "/create", "/assign", "/priority"):
             self.send_error(404)
             return
         body = self._read_json()
@@ -2513,6 +2607,18 @@ class Handler(http.server.BaseHTTPRequestHandler):
                     # were one bug, found 2026-08-19.
                     result = board.assign(
                         str(body["id"]), status.as_actor(str(body["owner"])), "terry")
+                elif route == "/priority":
+                    # **No permission check, and `set_priority` has none either.** Terry
+                    # decides what matters; Claude files cards and guesses wrong
+                    # sometimes. A permission here would only make a correction need a
+                    # round trip -- card #0062, and the same reasoning as `/assign`.
+                    #
+                    # **`set_priority` validates the string against `PRIORITIES`**, so a
+                    # crafted POST gets a `BoardError` and a 409 rather than writing an
+                    # unknown priority that `lanes()` would then sort to the bottom
+                    # forever.
+                    result = board.set_priority(
+                        str(body["id"]), str(body["priority"]), "terry")
                 elif route == "/create":
                     state = str(body["state"])
                     subject = str(body["subject"]).strip()
