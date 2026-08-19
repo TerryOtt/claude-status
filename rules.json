@@ -32,9 +32,10 @@
     {
       "id": "backlog",
       "label": "Backlog",
-      "note": "Someday. Terry's queue, and the only lane Claude may CREATE in besides Ready for Claude.",
+      "note": "Someday. Terry's queue, and the only lane Claude may CREATE in besides Ready for Claude. Terry gained create here on 2026-08-19 for the + button in the lane header (card #0038). He could always ADD a card -- by asking Claude to run the CLI -- so this grants him the keystroke rather than the power.",
       "create": [
-        "claude"
+        "claude",
+        "terry"
       ],
       "in": {
         "needs_terry_action": {
@@ -81,9 +82,10 @@
     {
       "id": "ready_for_claude",
       "label": "Ready for Claude",
-      "note": "Do this next, in priority order. Terry fills it; Claude empties it. CREATING here is not PROMOTING here -- Claude files a card he just asked for in chat, but only Terry moves one in from the backlog, so Claude can never advance its own queue.",
+      "note": "Do this next, in priority order. Terry fills it; Claude empties it. CREATING here is not PROMOTING here -- Claude files a card he just asked for in chat, but only Terry moves one in from the backlog, so Claude can never advance its own queue. Terry gained create here on 2026-08-19 for the + button (card #0038). CREATING here is still not PROMOTING here: the create right and the backlog->ready_for_claude edge are separate entries, and Claude has the first unconditionally and the second only per-ticket.",
       "create": [
-        "claude"
+        "claude",
+        "terry"
       ],
       "in": {
         "backlog": {

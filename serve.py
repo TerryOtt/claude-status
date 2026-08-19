@@ -443,6 +443,56 @@ PAGE = """<!doctype html>
   .card .marks .n { min-width: 2ch; text-align: right;
                     font-variant-numeric: tabular-nums; }
 
+  /* **The + sits in the lane header, and ONLY on the lanes a card may be BORN in.**
+     `laneEl` asks `data.creatable`, which the server derives from `may_create`, so
+     the button appears exactly where the permission model already allows it rather
+     than restating the rule in the page. Adding a lane to `create` in `rules.json`
+     grows a + with no code change. */
+  .lane h2 .add { border: 0; background: transparent; color: var(--dim);
+                  font-size: 1.05em; font-weight: 700; line-height: 1;
+                  cursor: pointer; padding: 0 4px; border-radius: 4px; }
+  .lane h2 .add:hover { background: #FFFFFF; color: var(--terry); }
+
+  /* **A CENTERED MODAL, unlike the card drawer, and the difference is the job.** The
+     drawer keeps the board visible because a card is read IN CONTEXT. This form is
+     composition -- Terry is looking at the field, not at the lanes -- and a modal
+     stops a repaint two columns away from pulling his eye off a paragraph. */
+  #mkscrim { position: fixed; inset: 0; background: rgba(9,30,66,.45); display: none;
+             z-index: 40; }
+  #mkscrim.show { display: block; }
+  #mk { position: fixed; top: 50%; left: 50%; transform: translate(-50%,-50%);
+        width: 620px; max-width: 94vw; max-height: 88vh; background: #FFFFFF;
+        border-radius: 8px; z-index: 41; display: none; flex-direction: column;
+        box-shadow: 0 12px 40px rgba(9,30,66,.35); }
+  #mk.show { display: flex; }
+  #mk header { padding: 16px 20px 12px; border-bottom: 1px solid var(--line); }
+  #mk h1 { margin: 0; font-size: 17px; letter-spacing: -.01em; }
+  #mk .where { color: var(--dim); font-size: 12px; margin-top: 5px; }
+  #mk .body { padding: 16px 20px; overflow-y: auto; flex: 1; }
+  #mk label { display: block; font-size: 11px; text-transform: uppercase;
+              letter-spacing: .06em; color: var(--dim); font-weight: 700;
+              margin: 0 0 5px; }
+  #mk .field { margin-bottom: 16px; }
+  #mk input[type=text], #mk select, #mk textarea {
+        width: 100%; box-sizing: border-box; font: inherit; font-size: 13px;
+        border: 1px solid var(--line); border-radius: 5px; padding: 7px 9px;
+        background: #FFFFFF; color: var(--ink); }
+  #mk textarea { min-height: 190px; resize: vertical; line-height: 1.45; }
+  /* **The hint is not decoration.** The comment box posts on Enter and this field
+     does not, so two multi-line fields on one page disagree about the same key.
+     Terry chose that deliberately -- a comment is one thought, a description is
+     several -- and the hand does not read a decision. See cards #0039 and #0040. */
+  #mk .hint { font-size: 11px; color: var(--dim); margin-top: 5px; }
+  #mk footer { padding: 12px 20px 16px; border-top: 1px solid var(--line);
+               display: flex; gap: 10px; align-items: center; }
+  #mk footer .grow { flex: 1; }
+  #mk button { font: inherit; font-size: 13px; font-weight: 600; cursor: pointer;
+               border-radius: 5px; padding: 7px 14px; border: 1px solid var(--line);
+               background: #FFFFFF; color: var(--ink); }
+  #mk button.go { background: var(--terry); border-color: var(--terry);
+                  color: #FFFFFF; }
+  #mk button:disabled { opacity: .5; cursor: not-allowed; }
+
   /* The detail panel. A drawer rather than a modal, so the board stays visible and
      a card's lane is still legible while you read it. */
   #scrim { position: fixed; inset: 0; background: rgba(9,30,66,.45); display: none;
@@ -583,6 +633,40 @@ PAGE = """<!doctype html>
       <div class="trail" id="p-trail"></div>
     </div>
   </aside>
+  <div id="mkscrim"></div>
+  <!-- **NO <form> ELEMENT, and that is the mechanism rather than an omission.**
+       Terry, 2026-08-19: the description takes Enter as a newline and only the
+       button submits. A <form> gives a single-line input an implicit submit on
+       Enter that has to be fought with preventDefault in a handler somebody can
+       delete. **No form means the key has nothing to submit.** Card #0040. -->
+  <div id="mk" role="dialog" aria-modal="true" aria-labelledby="mk-title">
+    <header>
+      <h1 id="mk-title">New card</h1>
+      <div class="where" id="mk-where"></div>
+    </header>
+    <div class="body">
+      <div class="field">
+        <label for="mk-subject">Title</label>
+        <input type="text" id="mk-subject" maxlength="200"
+               placeholder="What needs doing, in one line">
+      </div>
+      <div class="field">
+        <label for="mk-priority">Priority</label>
+        <select id="mk-priority"></select>
+      </div>
+      <div class="field">
+        <label for="mk-detail">Description</label>
+        <textarea id="mk-detail"
+                  placeholder="The reasoning, the constraints, the traps..."></textarea>
+        <div class="hint">Enter adds a new line. Use Add card to submit.</div>
+      </div>
+    </div>
+    <footer>
+      <span class="grow"></span>
+      <button id="mk-cancel">Cancel</button>
+      <button id="mk-go" class="go">Add card</button>
+    </footer>
+  </div>
   <div id="toast"></div>
 
 <script>
@@ -724,7 +808,13 @@ function closeCard() {
 document.getElementById('close').addEventListener('click', closeCard);
 document.getElementById('scrim').addEventListener('click', closeCard);
 document.addEventListener('keydown', ev => {
-  if (ev.key === 'Escape') closeCard();
+  // **The new-card dialog wins while it is open**, because it sits on top and it is
+  // the only thing here holding text the server has no copy of. `closeMake(false)`
+  // asks before discarding; `closeCard()` never needs to, because it STASHES the
+  // comment draft rather than dropping it.
+  if (ev.key !== 'Escape') return;
+  if (mkOpen) { closeMake(false); return; }
+  closeCard();
 });
 
 document.getElementById('post').addEventListener('click', async () => {
@@ -743,6 +833,112 @@ document.getElementById('post').addEventListener('click', async () => {
   toast(out.result);
   seen = null;
 });
+
+// ---- the new-card dialog -------------------------------------------------
+//
+// **THE DRAFT IS THE WHOLE RISK, and it is the same one #0029 cost him four
+// comments over.** A description is several paragraphs where a comment is a
+// sentence, so the fuse is longer and the loss is bigger.
+//
+// **This form is SAFE BY CONSTRUCTION rather than by a guard**, and that is worth
+// more than a rule somebody has to remember. `paint()` rebuilds `#board` and
+// nothing else. `#mk` lives outside `#board`, so a repaint cannot reach it -- the
+// element is never replaced, so its values, its focus and its caret all survive a
+// poll for free. Same property the `#say` textarea already relies on.
+//
+// **`mkOpen` is still kept**, because the lane a card is being written for has to
+// outlive the repaint too.
+let mkOpen = null;
+
+function mkDirty() {
+  return !!(document.getElementById('mk-subject').value.trim()
+         || document.getElementById('mk-detail').value.trim());
+}
+
+function openMake(lane) {
+  mkOpen = lane.state;
+  document.getElementById('mk-where').textContent =
+    'It will be created in ' + lane.label + ', by Terry.';
+  const pri = document.getElementById('mk-priority');
+  // **Priorities come from `rules.json` via /data.** P0 exists and a range typed
+  // into the page would be a second copy of the list. Card #0047.
+  pri.innerHTML = '';
+  for (const p of data.priorities) {
+    const o = document.createElement('option');
+    o.value = p.id;
+    o.textContent = p.id + '  ' + p.label;
+    if (p.id === data.defaultPriority) o.selected = true;
+    pri.appendChild(o);
+  }
+  document.getElementById('mkscrim').classList.add('show');
+  document.getElementById('mk').classList.add('show');
+  document.getElementById('mk-subject').focus();
+}
+
+function closeMake(force) {
+  // **Cancelling with text in it ASKS FIRST.** The whole card is about not losing
+  // typing, and a stray Escape is one keypress from a paragraph.
+  if (!force && mkDirty()
+      && !window.confirm('Discard this card? What you typed will be lost.')) {
+    return;
+  }
+  mkOpen = null;
+  document.getElementById('mk-subject').value = '';
+  document.getElementById('mk-detail').value = '';
+  document.getElementById('mkscrim').classList.remove('show');
+  document.getElementById('mk').classList.remove('show');
+}
+
+document.getElementById('mkscrim').addEventListener('click', () => closeMake(false));
+document.getElementById('mk-cancel').addEventListener('click', () => closeMake(false));
+
+// **Enter in the TITLE moves to the description. It does not submit.** A
+// single-line input's default is to submit its form, which is exactly the
+// behavior card #0040 refuses -- and there is no form here, so the default is
+// already nothing. This makes the key do something USEFUL instead of nothing,
+// and it matches how the form is actually filled.
+document.getElementById('mk-subject').addEventListener('keydown', ev => {
+  if (ev.key === 'Enter' && !ev.isComposing) {
+    ev.preventDefault();
+    document.getElementById('mk-detail').focus();
+  }
+});
+
+async function submitMake() {
+  const subject = document.getElementById('mk-subject').value.trim();
+  if (!mkOpen || !subject) {
+    toast('A card needs a title', true);
+    document.getElementById('mk-subject').focus();
+    return;
+  }
+  const go = document.getElementById('mk-go');
+  go.disabled = true;
+  try {
+    const res = await fetch('/create', {
+      method: 'POST', headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({
+        state: mkOpen,
+        subject: subject,
+        detail: document.getElementById('mk-detail').value,
+        priority: document.getElementById('mk-priority').value,
+      }),
+    });
+    const out = await res.json();
+    if (!res.ok) { toast(out.error || 'Card refused', true); return; }
+    // **Only cleared once the server has it.** Clearing on click would throw the
+    // text away on a refusal, which is the same defect as the repaint wipe
+    // arriving through the submit path instead.
+    closeMake(true);
+    toast(out.result);
+    seen = null;
+  } catch (err) {
+    toast('Could not reach the board: ' + err, true);
+  } finally {
+    go.disabled = false;
+  }
+}
+
+document.getElementById('mk-go').addEventListener('click', submitMake);
 
 // ---- the board -----------------------------------------------------------
 
@@ -798,6 +994,18 @@ function laneEl(lane) {
   el.querySelector('.nm').textContent = lane.label;
   el.querySelector('.n').textContent = lane.items.length;
   el.querySelector('.owner').textContent = lane.ownerLabel;
+  // **The + exists only where the SERVER says a card may be born.** `lane.creatable`
+  // comes from `may_create("terry", state)`, so this asks the permission model
+  // rather than carrying a copy of it. Card #0038.
+  if (lane.creatable) {
+    const add = document.createElement('button');
+    add.className = 'add';
+    add.type = 'button';
+    add.textContent = '+';
+    add.title = 'Add a card to ' + lane.label;
+    add.addEventListener('click', ev => { ev.stopPropagation(); openMake(lane); });
+    el.querySelector('h2').appendChild(add);
+  }
   const cards = el.querySelector('.cards');
   for (const item of lane.items) cards.appendChild(card(item));
 
@@ -1252,6 +1460,11 @@ def payload() -> bytes:
             "label": lane.label,
             "css": lane.css,
             "ownerLabel": lane.owner_label,
+            # **Where the `+` appears, decided by the same predicate the write path
+            # enforces.** `may_create` is what `/create` calls, so the button cannot
+            # offer a lane the POST would refuse. Adding a lane to `create` in
+            # `rules.json` grows a `+` with no code change here or in the page.
+            "creatable": status.may_create("terry", lane.state),
             "items": [{
                 "id": item.id,
                 "ticket": item.label,
@@ -1283,13 +1496,46 @@ def payload() -> bytes:
             } for item in lane.items],
         } for lane in lanes],
         "edges": sorted(status.TERRY_EDGES),
+        # **The priority list ships from `rules.json`, never typed into the page.**
+        # A range written in HTML is a second copy that goes stale silently -- and it
+        # already nearly did: card #0047 was specified as "P1-P5" while `P0` exists.
+        "priorities": [{"id": p, "label": status.PRIORITY_LABEL.get(p, "")}
+                       for p in status.PRIORITIES],
+        "defaultPriority": status.DEFAULT_PRIORITY,
         "counts": counts,
         "error": "; ".join(drift) if drift else None,
     }).encode("utf-8")
 
 
+SLUG_MAX = 48
+
+
+def slug_for(board: status.Board, subject: str) -> str:
+    """A card id derived from its title, unique on this board.
+
+    **The CLI makes Claude type a slug and the web form MUST NOT.** Terry is writing
+    a title, and asking him for a second machine-readable name would be asking him to
+    do the computer's job -- `find()` already accepts the ticket number, which is the
+    handle he actually says out loud.
+
+    **A collision is broken with the ticket number the card is ABOUT to get**, not
+    with a counter of its own. `-2` would be a second numbering scheme that means
+    nothing; the ticket is already on the card and already unique. So a second
+    `Dark status bar` becomes `dark-status-bar-0051`.
+
+    **Zero-padded, because the house rule says pad anything that will ever sort.**
+    """
+    base = re.sub(r"[^a-z0-9]+", "-", subject.lower()).strip("-")[:SLUG_MAX].strip("-")
+    # A title of nothing but punctuation still needs an id. The caller has already
+    # refused an EMPTY subject, so this is the "###" case rather than the blank one.
+    base = base or "card"
+    if not any(item.id == base for item in board.items):
+        return base
+    return f"{base}-{board.next_ticket:04d}"
+
+
 class Handler(http.server.BaseHTTPRequestHandler):
-    """The page, the board, a timestamp to poll, the fonts, and two write routes."""
+    """The page, the board, a timestamp to poll, the fonts, and three write routes."""
 
     def _send(self, body: bytes, ctype: str, code: int = 200) -> None:
         self.send_response(code)
@@ -1374,13 +1620,14 @@ class Handler(http.server.BaseHTTPRequestHandler):
             self.send_error(404)
 
     def do_POST(self) -> None:
-        """`/move` and `/comment`. **Both act as `terry`, and that is a FACT here.**
+        """`/move`, `/comment` and `/create`. **All act as `terry`, and that is a
+        FACT here.**
 
         The server binds to loopback, so the request came from his machine. That is
         the property the Trello route could not offer at any price.
         """
         route = self.path.partition("?")[0]
-        if route not in ("/move", "/comment"):
+        if route not in ("/move", "/comment", "/create"):
             self.send_error(404)
             return
         body = self._read_json()
@@ -1400,6 +1647,16 @@ class Handler(http.server.BaseHTTPRequestHandler):
             with status.edit(BOARD_PATH) as board:
                 if route == "/move":
                     result = board.move(str(body["id"]), str(body["to"]), "terry")
+                elif route == "/create":
+                    state = str(body["state"])
+                    subject = str(body["subject"]).strip()
+                    if not subject:
+                        raise status.BoardError("a card needs a title")
+                    result = board.create(
+                        slug_for(board, subject), subject, state, "terry",
+                        priority=str(body.get("priority") or status.DEFAULT_PRIORITY),
+                        detail=str(body.get("detail") or ""),
+                    )
                 else:
                     result = board.comment(str(body["id"]), str(body["text"]), "terry")
         except KeyError as exc:
