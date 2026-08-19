@@ -371,6 +371,24 @@ FIGURE_SPACE = "\u2007"
 # `code`, **bold** and *italic* and nothing else. A markdown library for one field would
 # be a dependency for a job this size.
 INLINE = (
+    # **` -- ` becomes an em dash. Card #0079**, and Terry's report was exact: *"double
+    # dash renders with a gap in the middle. Not sure if it's a property of our typeface
+    # or an issue within our control."* **It is both.**
+    #
+    # **Measured in the browser at 13px:** one hyphen is 8.44px wide, `--` is 16.86px --
+    # exactly double, so no ligature fires -- and Inter's hyphen carries wide side
+    # bearings, which is the notch he can see. An em dash is 13.00px and solid, so the
+    # replacement is NARROWER as well as unbroken.
+    #
+    # **SPACES ON BOTH SIDES ARE REQUIRED, and that is the whole safety of it.** The
+    # board is full of `--verify`, `--set-detail`, `--comment`: 87 of them, and every
+    # one keeps its hyphens because nothing follows the `--` but a letter. The two
+    # `-->` arrows survive for the same reason. 530 real em dashes are converted.
+    #
+    # **The DATA is not touched.** Terry writes `--` and the JSON stays ASCII and
+    # greppable; only the rendering changes. Storing the glyph would make the file
+    # harder to search for the sake of a screen.
+    (re.compile(r"(?<=\s)--(?=\s)"), "—"),
     (re.compile(r"`([^`]+)`"), r"<code>\1</code>"),
     (re.compile(r"\*\*([^*]+)\*\*"), r"<strong>\1</strong>"),
     (re.compile(r"\*([^*]+)\*"), r"<em>\1</em>"),
