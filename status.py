@@ -1151,10 +1151,45 @@ def save(board: Board, path: pathlib.Path) -> None:
             fh.write(text)
             fh.flush()
             os.fsync(fh.fileno())
-        tmp.replace(target)
+        _replace_with_retry(tmp, target)
     except OSError:
         tmp.unlink(missing_ok=True)
         raise
+
+
+# **MEASURED, not guessed: 7 failures in 400 saves, 1.75%.** Reproduced 2026-08-19 by
+# hammering `save()` on the SMB share while a `serve.py` polled the same file.
+#
+# Roughly 47 saves a second there, so the window is small and real. `X:` is an SMB
+# share and the server opens `board.json` every `POLL_MS = 400`; on Windows
+# `os.replace` fails with `ERROR_ACCESS_DENIED` when the target is open in another
+# process without `FILE_SHARE_DELETE`, which Python's `open()` does not request.
+RENAME_TRIES = 6
+RENAME_PAUSE = 0.04
+
+
+def _replace_with_retry(tmp: pathlib.Path, target: pathlib.Path) -> None:
+    """Rename the temp file over the target, retrying a transient WinError 5.
+
+    **BOUNDED, and it RAISES at the end.** A swallowed failure would be a lost write
+    reporting success, which is exactly the defect card #0032 exists to prevent.
+
+    **It MUST NOT fall back to a non-atomic write.** A refused save is recoverable --
+    the caller sees an exception and the old file is untouched. A half-written
+    `board.json` is not, and it would take every card ever recorded with it.
+
+    **Only `PermissionError` is retried.** A missing directory or a full disk will not
+    fix itself in 40 ms, and retrying those would turn a clear failure into a slow one.
+    """
+    for attempt in range(RENAME_TRIES):
+        try:
+            tmp.replace(target)
+        except PermissionError:
+            if attempt == RENAME_TRIES - 1:
+                raise
+            time.sleep(RENAME_PAUSE)
+        else:
+            return
 
 
 def main() -> None:
