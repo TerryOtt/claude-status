@@ -54,9 +54,10 @@
         },
         "ready_for_review": {
           "actors": [
-            "terry"
+            "terry",
+            "claude"
           ],
-          "note": ""
+          "note": "Claude may push a card BACKWARDS. Terry, 2026-08-19: \"yes claude can push backwards from RFW to backlog. In progress to Backlog or RFW. from blocked to any swimlane left of it. from needs terry to any lane left of it.\" Setting work down is not advancing a queue, which is what the forward edges guard."
         },
         "in_progress": {
           "actors": [
@@ -125,9 +126,10 @@
         },
         "ready_for_review": {
           "actors": [
-            "terry"
+            "terry",
+            "claude"
           ],
-          "note": ""
+          "note": "Claude may push a card BACKWARDS. Terry, 2026-08-19: \"yes claude can push backwards from RFW to backlog. In progress to Backlog or RFW. from blocked to any swimlane left of it. from needs terry to any lane left of it.\" Setting work down is not advancing a queue, which is what the forward edges guard."
         },
         "in_progress": {
           "actors": [
@@ -266,6 +268,12 @@
             "claude"
           ],
           "note": ""
+        },
+        "ready_for_review": {
+          "actors": [
+            "claude"
+          ],
+          "note": "Claude may push a card BACKWARDS. Terry, 2026-08-19: \"yes claude can push backwards from RFW to backlog. In progress to Backlog or RFW. from blocked to any swimlane left of it. from needs terry to any lane left of it.\" Setting work down is not advancing a queue, which is what the forward edges guard."
         }
       },
       "out": {
@@ -408,7 +416,8 @@
       "out": {
         "backlog": {
           "actors": [
-            "terry"
+            "terry",
+            "claude"
           ],
           "note": "Rejected, and not next either."
         },
@@ -433,9 +442,16 @@
         },
         "ready_for_claude": {
           "actors": [
-            "terry"
+            "terry",
+            "claude"
           ],
           "note": "Rejected, redo it now."
+        },
+        "blocked": {
+          "actors": [
+            "claude"
+          ],
+          "note": "Claude may push a card BACKWARDS. Terry, 2026-08-19: \"yes claude can push backwards from RFW to backlog. In progress to Backlog or RFW. from blocked to any swimlane left of it. from needs terry to any lane left of it.\" Setting work down is not advancing a queue, which is what the forward edges guard."
         }
       }
     },
