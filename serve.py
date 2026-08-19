@@ -432,6 +432,29 @@ FONTS = {
 }
 
 
+#: The tab icon. **Card #0080**, and Terry called it what it is: "visual nicety".
+#:
+#: **Three bars of different heights, which is what this board looks like from across
+#: the room.** An icon has about 16 CSS pixels to say what a tab is, so it carries the
+#: SHAPE of the thing rather than a picture of it -- unequal lanes on a dark field.
+#:
+#: **SVG rather than an `.ico` file**, so it stays text in the repository, scales to
+#: every tab-bar density, and adds no binary to a tool whose whole point is being
+#: readable. Every current browser accepts one.
+#:
+#: **The colors are the board's own.** `--barbg` for the field, then the two actor
+#: colors and the live green -- so the tab and the page agree without a second palette
+#: to keep in step.
+FAVICON = (
+    '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32">'
+    '<rect width="32" height="32" rx="7" fill="#1D2125"/>'
+    '<rect x="6"  y="8"  width="5" height="16" rx="2.5" fill="#0052CC"/>'
+    '<rect x="13.5" y="13" width="5" height="11" rx="2.5" fill="#E2A100"/>'
+    '<rect x="21" y="18" width="5" height="6"  rx="2.5" fill="#4BCE97"/>'
+    "</svg>"
+)
+
+
 def inline(text: str) -> str:
     """Escape HTML, THEN apply the three inline spans.
 
@@ -553,6 +576,9 @@ PAGE = """<!doctype html>
 <head>
 <meta charset="utf-8">
 <title>%TITLE%</title>
+<!-- **Card #0080.** Named explicitly rather than left to the browser's `/favicon.ico`
+     guess, which this server does not serve and would answer 404 on every load. -->
+<link rel="icon" type="image/svg+xml" href="/favicon.svg">
 <style>
   /* Inter, served from this repository. See the FONTS note in serve.py. */
   @font-face {
@@ -2946,6 +2972,17 @@ class Handler(http.server.BaseHTTPRequestHandler):
                         "codeStale": code_is_stale(), "push": push_status()})
         elif route == "/data":
             self._send(payload(), "application/json")
+        elif route == "/favicon.svg":
+            # **Cached, unlike everything else here.** The no-store rule on `_send`
+            # exists so a live view never shows a stale board; an icon is not the board
+            # and re-fetching it twice a second would be silly.
+            blob = FAVICON.encode("utf-8")
+            self.send_response(200)
+            self.send_header("Content-Type", "image/svg+xml")
+            self.send_header("Content-Length", str(len(blob)))
+            self.send_header("Cache-Control", "public, max-age=86400")
+            self.end_headers()
+            self.wfile.write(blob)
         elif route in FONTS:
             # The font is immutable and 133 KB; letting the browser cache it is the
             # one thing on this server that SHOULD be cached.
