@@ -1985,6 +1985,23 @@ def payload() -> bytes:
     # `move()`, and that is exactly the news a board must not keep to itself.
     drift = board.verify()
     lanes = board.lanes()
+
+    # **Card #0028. Relationships reach the page as LABELS, never as slugs.** The stored
+    # row names `id`s because those are stable; Terry says "#0028" out loud, so the wire
+    # carries what he says. `subject` rides along so a link is readable without a lookup.
+    by_id = {i.id: i for i in board.items}
+
+    def related(item_id: str) -> list[dict[str, str]]:
+        """Every relationship this card has, including the derived direction."""
+        return [{"kind": kind, "ticket": by_id[other].label,
+                 "subject": by_id[other].subject}
+                for kind, other in board.links_for(item_id) if other in by_id]
+
+    kids: dict[str, list[dict[str, str]]] = {}
+    for child in board.items:
+        if child.parent:
+            kids.setdefault(child.parent, []).append(
+                {"ticket": child.label, "subject": child.subject})
     counts: dict[str, int] = {lane.state: len(lane.items) for lane in lanes}
     counts["open"] = sum(len(lane.items) for lane in lanes
                          if lane.state != "completed")
@@ -2010,6 +2027,13 @@ def payload() -> bytes:
                 "priority": item.priority,
                 "priorityLabel": status.PRIORITY_LABEL.get(item.priority, ""),
                 "detail": inline(item.detail),
+                # Card #0028. Omitted when empty so a board of unrelated cards stays
+                # the same size on the wire as it was before relationships existed.
+                **({"links": related(item.id)} if board.links_for(item.id) else {}),
+                **({"parent": {"ticket": by_id[item.parent].label,
+                               "subject": by_id[item.parent].subject}}
+                   if item.parent and item.parent in by_id else {}),
+                **({"children": kids[item.id]} if item.id in kids else {}),
                 # **A LABEL, never a permission.** Card #0053, Terry: *"It's just a
                 # label, not permissions model."* Nothing in the page may branch on
                 # this to allow or refuse a move -- `draggable` below and `allowed()`

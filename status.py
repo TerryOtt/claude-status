@@ -52,6 +52,7 @@ import datetime
 import json
 import os
 import pathlib
+import re
 import time
 from collections.abc import Callable, Iterator
 from dataclasses import dataclass, field
@@ -121,6 +122,82 @@ def as_actor(value: str) -> Actor:
     if name == "claude":
         return "claude"
     raise BoardError(f"unknown actor {value!r}; want one of {', '.join(ACTORS)}")
+
+
+# ---------------------------------------------------------------------------
+# RELATIONSHIPS BETWEEN CARDS. Card #0028.
+#
+# **Terry: *"update data model for status board to be able to note ticket relationships
+# 'related, parent, child, referenced by, etc.'"*** He asked for the set to come from a
+# survey rather than from taste, and the survey changed the shape of the answer.
+#
+# **Jira, Linear and GitHub all SPLIT hierarchy from relations**, and none of them models
+# a parent as one more link type. GitHub caps a sub-issue at one parent and an open
+# request to allow several is still unfulfilled. Terry approved the split: *"recommendation
+# accepted and approved for work."*
+#
+# **So `parent` is a FIELD on the card and everything here is a symmetric pair.** A tree
+# needs "one parent" and "no cycles", and neither is expressible in a symmetric table.
+#
+# `clones` is deliberately absent. It exists in Jira because Jira has a Clone button, and
+# a relationship naming a feature this board does not have would never be written.
+LINK_INVERSE: dict[str, str] = {
+    "blocks": "blocked_by",
+    "blocked_by": "blocks",
+    "duplicates": "duplicated_by",
+    "duplicated_by": "duplicates",
+    "references": "referenced_by",
+    "referenced_by": "references",
+    # **Its own inverse, and that is not a special case to remove.** "A relates to B"
+    # and "B relates to A" are the same claim, which is why all three products ship one
+    # symmetric `related` rather than a pair.
+    "relates_to": "relates_to",
+}
+
+# **One direction of each pair is STORED and the other is DERIVED.** `--link 5 blocked_by
+# 28` is normalized to `28 blocks 5` at the door, so the file only ever holds one spelling.
+LINK_CANONICAL: tuple[str, ...] = ("blocks", "duplicates", "references", "relates_to")
+
+
+@dataclass(frozen=True)
+class Link:
+    """One relationship, stored ONCE. Card #0028.
+
+    **TERRY'S HARDEST REQUIREMENT DISSOLVES HERE RATHER THAN BEING ENFORCED.** His words:
+    *"the two halves RFC-MUST be done atomically while holding file lock. Both halves get
+    relationship or neither get it. Inconsistent relationships where only one of the two
+    get updated MUST NOT be allowed to be possible."*
+
+    **He described writing a copy onto each card**, which needs a lock, an atomic write,
+    and an API shaped so that "add one half" cannot be expressed. All three are real work
+    and all three can be got wrong.
+
+    **A single row has no halves.** The other direction is computed by `LINK_INVERSE` when
+    something reads it, so a one-sided link is not merely forbidden -- there is nowhere to
+    put one. **That is the same lesson `rules.json` is being flattened for on card #0064**:
+    the bug class disappears when the fact stops being stored twice.
+    """
+
+    frm: str
+    kind: str
+    to: str
+
+    def to_json(self) -> dict[str, str]:
+        return {"from": self.frm, "kind": self.kind, "to": self.to}
+
+    @classmethod
+    def from_json(cls, raw: Any, where: str) -> Self:  # noqa: ANN401 -- untrusted input
+        if not isinstance(raw, dict):
+            raise BoardError(f"{where}: a link is {type(raw).__name__}, want object")
+        missing = [k for k in ("from", "kind", "to") if not raw.get(k)]
+        if missing:
+            raise BoardError(f"{where}: link is missing {', '.join(missing)}")
+        kind = str(raw["kind"])
+        if kind not in LINK_CANONICAL:
+            raise BoardError(
+                f"{where}: link kind {kind!r} is not stored form; "
+                f"want one of {', '.join(LINK_CANONICAL)}")
+        return cls(frm=str(raw["from"]), kind=kind, to=str(raw["to"]))
 
 # **THREE STATES MEAN "NOT MOVING", AND TERRY DREW THE LINES HIMSELF.** They get
 # confused constantly, and the whole value of the board is that a stalled card says WHO
@@ -631,6 +708,15 @@ class Item:
     # corrected the moment the work starts; one that lands on Terry sits in his lane
     # until he notices.
     owner: str = "claude"
+    # **HIERARCHY IS A FIELD, NOT A RELATIONSHIP. Card #0028.**
+    #
+    # Jira, Linear and GitHub all keep parent/child out of their relationship table, and
+    # Terry approved following them. **A tree needs two rules a symmetric table cannot
+    # state**: a card has at most ONE parent, and the chain must not loop. Both are
+    # checked in `Board.from_json` and in `set_parent`.
+    #
+    # It holds the parent's `id`, and `None` means top level.
+    parent: str | None = None
     history: list[Change] = field(default_factory=list)
     comments: list[Comment] = field(default_factory=list)
 
@@ -675,6 +761,9 @@ class Item:
             "owner": self.owner,
             "history": [c.to_json() for c in self.history],
         }
+        # Omitted at top level, so 60-odd parentless cards stay readable.
+        if self.parent:
+            out["parent"] = self.parent
         # Omitted when empty, so a board full of comment-less cards stays readable.
         if self.comments:
             out["comments"] = [c.to_json() for c in self.comments]
@@ -712,9 +801,53 @@ class Item:
             # *"if in doubt, assign to claude."* No synthetic history entry is written
             # for them, because initial ownership is not an audit event.
             owner=owner,
+            # **Existence and cycles are checked in `Board.from_json`, not here.** An item
+            # cannot see its siblings, so this only records what the file said.
+            parent=str(raw["parent"]) if raw.get("parent") else None,
             history=[Change.from_json(h, where) for h in raw.get("history", [])],
             comments=[Comment.from_json(c, where) for c in raw.get("comments", [])],
         )
+
+
+def _links_from_json(raw: Any, known: set[str], where: str) -> list[Link]:  # noqa: ANN401
+    """Validate the board's link table. **Extracted from `Board.from_json`**, which ruff
+    correctly called too branchy once this landed in it. Card #0028."""
+    if not isinstance(raw, list):
+        raise BoardError(f"{where}: 'links' is not a list")
+    links: list[Link] = []
+    pairs: set[tuple[str, str, str]] = set()
+    for index, link_raw in enumerate(raw):
+        link = Link.from_json(link_raw, f"{where}: links[{index}]")
+        for end in (link.frm, link.to):
+            if end not in known:
+                raise BoardError(f"{where}: links[{index}] names unknown card {end!r}")
+        if link.frm == link.to:
+            raise BoardError(f"{where}: links[{index}] joins {link.frm!r} to itself")
+        # **A duplicate is checked in BOTH directions, because `relates_to` is its own
+        # inverse.** `a relates_to b` and `b relates_to a` are one claim written two
+        # ways, and letting both in would show the relationship on each card twice.
+        key = (link.frm, link.kind, link.to)
+        mirror = (link.to, link.kind, link.frm)
+        if key in pairs or (link.kind == "relates_to" and mirror in pairs):
+            raise BoardError(f"{where}: links[{index}] repeats an existing link")
+        pairs.add(key)
+        links.append(link)
+    return links
+
+
+def _check_parents(board: "Board", known: set[str], where: str) -> None:
+    """Refuse a parent that does not exist or that closes a loop. Card #0028.
+
+    **It runs once the whole board exists**, because a parent is a sibling and no item
+    can validate its own.
+    """
+    for item in board.items:
+        if item.parent is None:
+            continue
+        if item.parent not in known:
+            raise BoardError(f"{where}: {item.label} names unknown parent {item.parent!r}")
+        if cycle := board.parent_cycle(item):
+            raise BoardError(f"{where}: parent cycle {' -> '.join(cycle)}")
 
 
 @dataclass
@@ -745,16 +878,25 @@ class Board:
     # immediately, the second as soon as the highest-numbered card goes.
     next_ticket: int = 1
 
+    # **Every relationship on the board, each stored ONCE.** See `Link` for why this is
+    # here rather than a copy on each card. Card #0028.
+    links: list[Link] = field(default_factory=list)
+
     # ---- serialization -------------------------------------------------------
 
     def to_json(self) -> dict[str, Any]:
-        return {
+        out: dict[str, Any] = {
             "schema": SCHEMA,
             "project": self.project,
             "port": self.port,
             "nextTicket": self.next_ticket,
             "items": [item.to_json() for item in self.items],
         }
+        # **Omitted while empty, which is also the migration.** Every board written before
+        # card #0028 simply has no `links` key, and reads back as a board with no links.
+        if self.links:
+            out["links"] = [link.to_json() for link in self.links]
+        return out
 
     @classmethod
     def from_json(cls, raw: Any, where: str) -> Self:  # noqa: ANN401 -- untrusted input
@@ -807,8 +949,11 @@ class Board:
                 f"{where}: nextTicket is {next_ticket} but ticket "
                 f"#{max(tickets):04d} already exists -- the counter went backwards")
 
-        return cls(project=str(raw.get("project", "")), port=port, items=items,
-                   next_ticket=next_ticket)
+        board = cls(project=str(raw.get("project", "")), port=port, items=items,
+                    next_ticket=next_ticket,
+                    links=_links_from_json(raw.get("links", []), seen, where))
+        _check_parents(board, seen, where)
+        return board
 
     # ---- reading -------------------------------------------------------------
 
@@ -1003,6 +1148,126 @@ class Board:
         item.priority = priority
         return f"{item.label} priority: {was} -> {priority} (by {by})"
 
+    # ---- relationships, card #0028 -------------------------------------------
+
+    def parent_cycle(self, item: Item) -> list[str] | None:
+        """The loop this card's parent chain falls into, or None. Card #0028.
+
+        **A tree is the one shape a symmetric relationship table cannot express**, and
+        this is half the reason `parent` is a field rather than a link kind. The other
+        half is "at most one parent", which the field gives for free.
+
+        **It walks rather than recurses, and it stops on the first repeat**, so a board
+        that somehow reaches disk with a loop reports it instead of hanging.
+        """
+        by_id = {i.id: i for i in self.items}
+        seen: list[str] = [item.id]
+        at = item.parent
+        while at is not None:
+            if at in seen:
+                return [*seen, at]
+            seen.append(at)
+            nxt = by_id.get(at)
+            if nxt is None:
+                return None
+            at = nxt.parent
+        return None
+
+    def set_parent(self, child_id: str, parent_ref: str | None, by: Actor) -> str:
+        """Give a card a parent, or clear it with `None`. Card #0028.
+
+        **No history entry**, for the reason `set_priority` gives: `verify()` replays
+        LANES and OWNERS, and a third shape would have to be taught to it. Git is the
+        trail.
+        """
+        child = self.find(child_id)
+        if parent_ref is None:
+            if child.parent is None:
+                return f"{child.label} already has no parent"
+            was = child.parent
+            child.parent = None
+            return f"{child.label} parent cleared (was {was}, by {by})"
+
+        parent = self.find(parent_ref)
+        if parent.id == child.id:
+            raise BoardError(f"{child.label} cannot be its own parent")
+        was_parent = child.parent
+        child.parent = parent.id
+        # **Set it, then check, then put it back.** Testing the loop before the write
+        # would have to simulate the new edge anyway, and this way the check reads the
+        # same board every other caller does.
+        if cycle := self.parent_cycle(child):
+            child.parent = was_parent
+            raise BoardError(f"that would make a parent cycle: {' -> '.join(cycle)}")
+        return f"{child.label} parent: {was_parent or 'none'} -> {parent.id} (by {by})"
+
+    def link(self, a_ref: str, kind: str, b_ref: str, by: Actor) -> str:
+        """Relate two cards. **There is no way to write one half.** Card #0028.
+
+        **It takes BOTH cards, which is the structural answer to Terry's requirement**
+        that an inconsistent relationship *"MUST NOT be allowed to be possible"*. A
+        function taking one card and one direction could write a dangling half; this one
+        cannot express that.
+
+        **An inverse spelling is normalized to the stored one.** `--link 5 blocked_by 28`
+        becomes `28 blocks 5`, so the file holds exactly one spelling of each fact.
+        """
+        if kind not in LINK_INVERSE:
+            raise BoardError(
+                f"unknown relationship {kind!r}; want one of "
+                f"{', '.join(sorted(LINK_INVERSE))}")
+        a, b = self.find(a_ref), self.find(b_ref)
+        if a.id == b.id:
+            raise BoardError(f"{a.label} cannot be related to itself")
+        frm, to, stored = a, b, kind
+        if kind not in LINK_CANONICAL:
+            frm, to, stored = b, a, LINK_INVERSE[kind]
+        if self.find_link(frm.id, stored, to.id) is not None:
+            return f"{a.label} already {kind} {b.label}"
+        self.links.append(Link(frm=frm.id, kind=stored, to=to.id))
+        return f"{a.label} {kind} {b.label} (by {by})"
+
+    def find_link(self, frm: str, kind: str, to: str) -> Link | None:
+        """The stored row for this relationship, in either spelling, or None."""
+        for link in self.links:
+            if link.kind != kind:
+                continue
+            if (link.frm, link.to) == (frm, to):
+                return link
+            # `relates_to` is its own inverse, so the row may be written either way.
+            if kind == "relates_to" and (link.frm, link.to) == (to, frm):
+                return link
+        return None
+
+    def unlink(self, a_ref: str, kind: str, b_ref: str, by: Actor) -> str:
+        """Remove a relationship. Removing one half removes the whole thing, because
+        there is only one row. Card #0028."""
+        if kind not in LINK_INVERSE:
+            raise BoardError(f"unknown relationship {kind!r}")
+        a, b = self.find(a_ref), self.find(b_ref)
+        frm, to, stored = a, b, kind
+        if kind not in LINK_CANONICAL:
+            frm, to, stored = b, a, LINK_INVERSE[kind]
+        found = self.find_link(frm.id, stored, to.id)
+        if found is None:
+            return f"{a.label} is not {kind} {b.label}"
+        self.links.remove(found)
+        return f"{a.label} no longer {kind} {b.label} (by {by})"
+
+    def links_for(self, item_id: str) -> list[tuple[str, str]]:
+        """`(relationship as this card sees it, other card's id)`, sorted. Card #0028.
+
+        **This is where the second half comes from.** A row saying `28 blocks 5` is read
+        by card 5 as `blocked_by 28`, computed through `LINK_INVERSE` rather than stored.
+        """
+        out: list[tuple[str, str]] = []
+        for link in self.links:
+            if link.frm == item_id:
+                out.append((link.kind, link.to))
+            elif link.to == item_id:
+                out.append((LINK_INVERSE[link.kind], link.frm))
+        return sorted(out)
+
     def set_detail(self, item_id: str, detail: str, by: Actor) -> str:
         """Replace one card's description. Card #0028's second lesson.
 
@@ -1117,7 +1382,55 @@ class Board:
             raise BoardError("a comment needs text")
         item = self.find(item_id)
         item.comments.append(Comment(at=now(), by=by, text=text.strip()))
-        return f"{item_id}: comment by {by}"
+        made, missing = self._links_from_text(item, text, by)
+        note = ""
+        if made:
+            note += f"; references {', '.join(made)}"
+        # **A TYPO IS REPORTED, NOT SWALLOWED.** Card #0028 asks what happens when the
+        # named ticket does not exist, and silence is the wrong answer: the comment
+        # stands either way, so a quiet miss looks exactly like a link that worked.
+        if missing:
+            note += f"; NO SUCH TICKET: {', '.join(missing)}"
+        return f"{item_id}: comment by {by}{note}"
+
+    # **`#0028` and `#28` both count, and a bare `28` does not.** Requiring the hash keeps
+    # ordinary prose -- "28 tests", "step 12" -- from silently wiring cards together.
+    TICKET_MENTION = re.compile(r"#(\d{1,6})\b")
+
+    def _links_from_text(self, item: Item, text: str,
+                         by: Actor) -> tuple[list[str], list[str]]:
+        """Add a `references` link for each `#nnnn` a comment names. Card #0028.
+
+        **Terry's example, verbatim:** *"If I tag ticket 9876 in a comment with 'See
+        #9876' that should add a 'references #9876' in source ticket auto add a
+        'referenced by' relationship to ticket 9876."*
+
+        **Only one row is written**, and card 9876 reads it as `referenced_by` through
+        `LINK_INVERSE`. The second half needs no code.
+
+        **A comment is append-only, so a link it created is never retracted here.** That
+        answers the card's second open question by construction rather than by policy:
+        there is no edit path that could trigger a retraction.
+        """
+        made: list[str] = []
+        missing: list[str] = []
+        for hit in self.TICKET_MENTION.finditer(text):
+            ref = hit.group(1)
+            try:
+                other = self.find(ref)
+            except BoardError:
+                label = f"#{int(ref):04d}"
+                if label not in missing:
+                    missing.append(label)
+                continue
+            if other.id == item.id:
+                continue
+            if self.find_link(item.id, "references", other.id) is not None:
+                continue
+            self.links.append(Link(frm=item.id, kind="references", to=other.id))
+            made.append(other.label)
+        del by
+        return made, missing
 
 
 def load(path: pathlib.Path) -> Board:
@@ -1322,6 +1635,16 @@ def main() -> None:
     # uses**, so the shell-quoting lesson is inherited rather than repeated.
     ap.add_argument("--set-detail", metavar="ID",
                     help="replace one card's description; use --detail or --detail-file")
+    # **Card #0028. Both cards in one call, always.** The relationship is stored once and
+    # the other direction is derived, so there is no call shape that writes half of one.
+    ap.add_argument("--link", nargs=3, metavar=("ID", "KIND", "OTHER"),
+                    help=f"relate two cards; KIND is one of {', '.join(sorted(LINK_INVERSE))}")
+    ap.add_argument("--unlink", nargs=3, metavar=("ID", "KIND", "OTHER"),
+                    help="remove a relationship between two cards")
+    ap.add_argument("--set-parent", nargs=2, metavar=("CHILD", "PARENT"),
+                    help="put one card under another; refuses a cycle")
+    ap.add_argument("--clear-parent", metavar="CHILD",
+                    help="move a card back to the top level")
     ap.add_argument("--create", nargs=2, metavar=("ID", "SUBJECT"),
                     help="add one card; needs --state")
     # **`choices` is the lanes Claude may CREATE in, not every lane.** argparse then
@@ -1443,6 +1766,11 @@ HANDLERS: dict[str, Callable[[Board, argparse.Namespace], str]] = {
     "set_priority": lambda b, a: b.set_priority(
         a.set_priority[0], a.set_priority[1].upper(), "claude"),
     "set_detail": lambda b, a: b.set_detail(a.set_detail, _detail_text(a), "claude"),
+    "link": lambda b, a: b.link(a.link[0], a.link[1].lower(), a.link[2], "claude"),
+    "unlink": lambda b, a: b.unlink(a.unlink[0], a.unlink[1].lower(), a.unlink[2],
+                                    "claude"),
+    "set_parent": lambda b, a: b.set_parent(a.set_parent[0], a.set_parent[1], "claude"),
+    "clear_parent": lambda b, a: b.set_parent(a.clear_parent, None, "claude"),
 }
 
 MUTATIONS = tuple(HANDLERS)
