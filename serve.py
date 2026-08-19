@@ -59,6 +59,7 @@ do not. **Half the change appearing is more disorienting than none of it.**
 import argparse
 import contextlib
 import datetime
+import hashlib
 import html
 import http.server
 import json
@@ -111,6 +112,94 @@ def build_id() -> str:
 # would report whatever the checkout says NOW, so a `git pull` under a running server would
 # make a genuinely stale process claim to be current -- the exact lie being detected.
 BUILD = build_id()
+
+# ---------------------------------------------------------------------------
+# IS THIS PROCESS RUNNING THE CODE THAT IS ON DISK?
+#
+# **`BUILD` above cannot answer that, and the reason is the comment right above it.**
+# It freezes at import so it can honestly describe the loaded code -- which is
+# correct, and which means **a stale SERVER makes the tab and the server AGREE.**
+# `drifted` is false and `#stale` stays hidden.
+#
+# **That is not theoretical. It bit twice on 2026-08-19.** `serve.py` was edited,
+# committed and pushed while the process kept serving the old page with no flag. Then
+# `rules.json` gained an actor and the board went on showing the old lane owners --
+# **Terry noticed before any instrument did**, and his first guess was that the rule
+# had never been written.
+#
+# **Card #0052, under his standing order: RESOLVE if possible, ELSE alert.** The
+# `rules.json` half IS resolvable and card #0051 resolved it. **This half is not** --
+# Python holds the old module objects, and only a restart replaces them. So this
+# detects and alerts, and **the alert MUST say RESTART rather than RELOAD.**
+#
+# **A wrong instruction is worse than none**: reloading re-fetches the same old page
+# from the same old process, so it looks like it was followed and nothing changes.
+#
+# **A FORCED RELOAD IS NOT "POSITIVE ACTION" HERE and MUST NOT be added.** It destroys
+# `drafts`, which this file calls "the one thing on this page the SERVER does not have
+# a copy of" -- reintroducing #0029's P0 through a door the repaint guard does not
+# watch.
+#
+# **mtime first, hash only when it moves.** Hashing 120 KB twice a second to answer a
+# question that is almost always "no" is waste; a `stat` is not. And hashing rather
+# than trusting mtime alone means a `touch`, or an edit reverted before saving, does
+# not raise a banner Terry cannot act on -- **the same reason the toolchain check
+# refuses to shout on anything it has not confirmed.**
+# `module.__file__` is `str | None` to a type checker -- None for a namespace package,
+# which `status` is not. Falling back to this file keeps the annotation honest without
+# pretending the impossible case cannot be typed.
+CODE_FILES = (pathlib.Path(__file__).resolve(),
+              pathlib.Path(status.__file__ or __file__).resolve())
+
+
+def _code_stamp() -> tuple[tuple[float, str], ...]:
+    """(mtime, digest) per source file. A digest of "" means it could not be read."""
+    out: list[tuple[float, str]] = []
+    for path in CODE_FILES:
+        try:
+            out.append((path.stat().st_mtime,
+                        hashlib.sha256(path.read_bytes()).hexdigest()))
+        except OSError:
+            out.append((0.0, ""))
+    return tuple(out)
+
+
+_BOOT_CODE = _code_stamp()
+
+# **Per-file state, so the answer is REMEMBERED rather than recomputed.** The mtime
+# says when to look; these say what was found. Without them a changed file would be
+# re-hashed on every poll forever, which is the cost the mtime check exists to avoid.
+_seen_code_mtimes = [m for m, _ in _BOOT_CODE]
+_code_differs = [False] * len(CODE_FILES)
+
+
+def code_is_stale() -> bool:
+    """True when a source file on disk differs from the one this process loaded.
+
+    **An UNREADABLE file reports stale, which is the safe direction.** The three-state
+    doctrine applies to network answers, where offline is not stale; a source file
+    that has stopped being readable is a real reason to look rather than an absence of
+    evidence.
+
+    **An edit reverted before the next poll CLEARS the flag**, because the verdict is
+    the digest comparison rather than "has the mtime ever moved".
+    """
+    for i, path in enumerate(CODE_FILES):
+        try:
+            mtime = path.stat().st_mtime
+        except OSError:
+            _code_differs[i] = True
+            continue
+        if mtime == _seen_code_mtimes[i]:
+            continue
+        _seen_code_mtimes[i] = mtime
+        try:
+            digest = hashlib.sha256(path.read_bytes()).hexdigest()
+        except OSError:
+            _code_differs[i] = True
+            continue
+        _code_differs[i] = digest != _BOOT_CODE[i][1]
+    return any(_code_differs)
 
 # Far below the time a human takes to switch windows, and a stat() against a local file
 # rather than anything on a network.
@@ -666,6 +755,14 @@ PAGE = """<!doctype html>
   #stale { display: none; background: var(--p0); color: #FFFFFF; font-weight: 700;
            padding: 2px 8px; border-radius: 4px; white-space: nowrap; }
   #stale.show { display: inline-block; }
+  /* **A DIFFERENT staleness needs a DIFFERENT color as well as a different word.**
+     `#stale` is `--p0` red and means "reload this tab". This one means "restart the
+     process", which a reload cannot achieve -- so making them look alike would invite
+     the wrong reflex. `--p1` orange is the next step down the hazard ramp this
+     palette already uses. Card #0052. */
+  #restart { display: none; background: var(--p1); color: #000000; font-weight: 700;
+             padding: 2px 8px; border-radius: 4px; white-space: nowrap; }
+  #restart.show { display: inline-block; }
 </style>
 </head>
 <body>
@@ -677,6 +774,10 @@ PAGE = """<!doctype html>
     <span id="live">connecting...</span>
     <span id="stale"
       title="This tab is running older code than the server. Reload with Ctrl+Shift+R."></span>
+    <span id="restart"
+      title="The server process is running older code than the files on disk. A browser
+reload CANNOT fix this -- Python holds the old modules. Stop the server and start it
+again."></span>
     <label id="alerts-wrap"><input type="checkbox" id="alerts"> Alerts</label>
     <span id="badge"
       title="Green means Python read and parsed the board file in the last 5s.">LIVE</span>
@@ -1368,6 +1469,11 @@ const LIVE_MS  = 5000;   // Terry's number: "read that file within last 5 second
 // the symptom as a bad fix, and twenty minutes went into a defect that was not there.
 const PAGE_BUILD = '%BUILD%';
 let serverBuild = null;
+// **Whether the SERVER is running older code than the files on disk.** A different
+// question from `serverBuild !== PAGE_BUILD`, and one nothing measured until card
+// #0052 -- both of those ids freeze at their own start, so a stale server makes them
+// AGREE and the reload flag stays hidden.
+let codeStale = false;
 const WARN_MS  = 15000;  // ~37 polls missed at 400ms. Nothing benign lasts this long.
 
 // **The dot's 2s breathing cycle is CSS, not JavaScript, and it is cosmetic.**
@@ -1437,6 +1543,23 @@ function renderLive() {
     stale.textContent = 'RELOAD  \\u00b7  page ' + PAGE_BUILD + '  \\u00b7  server ' + serverBuild;
   }
   stale.classList.toggle('show', drifted);
+
+  // **A SECOND, DIFFERENT STALENESS, and it needs a DIFFERENT INSTRUCTION.** Card
+  // #0052.
+  //
+  // `#stale` above compares the TAB to the SERVER, and its remedy is a reload. This
+  // compares the SERVER to the code on DISK, and **a reload cannot fix it** -- the tab
+  // would re-fetch the same page from the same process holding the same old modules.
+  //
+  // **A wrong instruction is worse than no instruction**, because it looks like it was
+  // followed and nothing changes. So this says RESTART.
+  //
+  // **It does NOT auto-reload, deliberately.** `location.reload()` destroys `drafts`,
+  // which is the one thing on this page the server has no copy of -- #0029's P0
+  // arriving through a door the repaint guard does not watch.
+  const restart = document.getElementById('restart');
+  restart.textContent = 'RESTART SERVER  \\u00b7  code changed on disk';
+  restart.classList.toggle('show', !!codeStale);
 
   if (!lastOk) {
     el.textContent = 'Last update: never  ·  ' + nowTxt;
@@ -1510,6 +1633,10 @@ async function tick() {
     // **Captured before the ok check**, because a stale tab and an unreadable board
     // are independent failures and either can be true while the other is.
     if (meta.build) serverBuild = meta.build;
+    // **Captured beside `build`, on both the ok and the failure path**, because a
+    // stale process and an unreadable board are independent and either can be true
+    // while the other is.
+    codeStale = !!meta.codeStale;
     // **`ok: false` does NOT refresh `lastOk`.** The server answered, but it
     // could not read the board -- and a reachable server serving an unreadable
     // file is exactly the state that must not look healthy.
@@ -1711,11 +1838,16 @@ class Handler(http.server.BaseHTTPRequestHandler):
                 # stale tab are independent problems, and the page must be able to tell
                 # them apart while one of them is happening.
                 self._json({"ok": False, "mtime": 0, "stamp": "unreadable",
-                            "build": BUILD, "error": str(exc)})
+                            "build": BUILD, "codeStale": code_is_stale(),
+                            "error": str(exc)})
                 return
             stamp = (datetime.datetime.fromtimestamp(mtime, tz=datetime.UTC)
                      .astimezone().strftime("%H:%M:%S"))
-            self._json({"ok": True, "mtime": mtime, "stamp": stamp, "build": BUILD})
+            # **`codeStale` rides on BOTH paths, like `build` and for the same
+            # reason.** An unreadable board and a stale process are independent
+            # failures, and either can be true while the other is.
+            self._json({"ok": True, "mtime": mtime, "stamp": stamp, "build": BUILD,
+                        "codeStale": code_is_stale()})
         elif route == "/data":
             self._send(payload(), "application/json")
         elif route in FONTS:
