@@ -296,10 +296,10 @@ PAGE = """<!doctype html>
          color: var(--barink); color-scheme: dark;
          border-bottom: 1px solid #000000; font-size: 12px; }
   #bar .grow { flex: 1; }
-  /* **Only the QUIET half of the bar is repainted.** The CTA pills and the stale
-     flag carry their own background, so the ground behind them never mattered --
-     which is the bar's own rule working: "Zero is plain text; non-zero is a hazard
-     pill." The half that had no ground of its own is the half that needed one. */
+  /* **The metadata stays dim while #0055 is discussed.** Terry asked for ALL gray
+     in this bar to go white; Claude's counter-argument is on that card and it is in
+     Needs Terry. **The CTAs went white in #0054 and the metadata did not**, so the
+     bar currently has two tiers on purpose rather than by omission. */
   #bar #live, #bar #alerts-wrap, #bar .meta { color: var(--bardim); }
   #title { font-weight: 700; letter-spacing: -.01em; color: var(--barink); }
   /* **ONLY CALLS TO ACTION LIVE HERE.** Terry: "No other stats up there, just
@@ -322,8 +322,17 @@ PAGE = """<!doctype html>
                  user-select: none; white-space: nowrap; }
   #alerts-wrap.blocked { cursor: not-allowed; opacity: .55; }
   #alerts { margin: 0; cursor: inherit; }
+  /* **A zero-state CTA is WHITE, not dim.** Terry, 2026-08-19: "CTA entries at 0
+     should be rendered white to stand out against dark title bar." Card #0054.
+
+     **The bar's rule still holds and its wording needed sharpening.** It reads
+     "Zero is plain text; non-zero is a hazard pill" -- and the word carrying the
+     distinction is PILL, not the color. A saturated `#FFD400` ground under black
+     text against plain white text is a bigger step than two grays ever were.
+
+     **This is the CTA row only.** The metadata beside it stays dim; see #0055. */
   .cta { font-size: 11px; font-weight: 700; letter-spacing: .03em;
-         color: var(--bardim); padding: 3px 8px; border-radius: 4px; }
+         color: var(--barink); padding: 3px 8px; border-radius: 4px; }
   /* **Warning-sign yellow, not highlighter yellow.** Terry asked for higher
      contrast, and the lever is SATURATION rather than contrast ratio -- black on
      the old #F5CD47 already measured about 11:1, well past AAA, so the pill was
