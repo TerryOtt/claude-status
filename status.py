@@ -379,7 +379,11 @@ def reload_rules_if_changed() -> str | None:
     # two files to satisfy a rule about a single function that exists precisely to
     # rebind them. **The blast radius of the fix exceeds the blast radius of the
     # finding**, and the function is short, documented, and the only writer.
-    global LANES, RULES, PRIORITIES, PRIORITY_LABEL, DEFAULT_PRIORITY  # noqa: PLW0603
+    # **The first line carries no `noqa` and the second does, which looks wrong and is
+    # not.** PLW0603 does not fire on names bound only by TUPLE UNPACKING, and every
+    # name on the first line is. Adding a matching directive there is an unused `noqa`,
+    # which `RUF100` then reports -- so the asymmetry is ruff's, not a slip.
+    global LANES, RULES, PRIORITIES, PRIORITY_LABEL, DEFAULT_PRIORITY
     global STATES, LANE_LABEL, TERRY_EDGES, CLAUDE_EDGES, _rules_mtime  # noqa: PLW0603
 
     try:
