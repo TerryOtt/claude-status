@@ -337,9 +337,10 @@
         },
         "ready_for_review": {
           "actors": [
-            "claude"
+            "claude",
+            "terry"
           ],
-          "note": ""
+          "note": "OBE. His words: \"I looked at Needs Terry cards and realized it was OBE and should be closed.\" Answering a question and finding the question moot are different acts, and only one of them produces work."
         }
       }
     },
@@ -364,9 +365,10 @@
         },
         "needs_terry_action": {
           "actors": [
-            "claude"
+            "claude",
+            "terry"
           ],
-          "note": ""
+          "note": "OBE. His words: \"I looked at Needs Terry cards and realized it was OBE and should be closed.\" Answering a question and finding the question moot are different acts, and only one of them produces work."
         }
       },
       "out": {
