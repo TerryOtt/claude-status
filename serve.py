@@ -442,13 +442,23 @@ FONTS = {
 #: every tab-bar density, and adds no binary to a tool whose whole point is being
 #: readable. Every current browser accepts one.
 #:
-#: **The colors are the board's own.** `--barbg` for the field, then the two actor
-#: colors and the live green -- so the tab and the page agree without a second palette
-#: to keep in step.
+#: **The colors are the board's own.** `--barbg` for the field, then the actor colors
+#: and the live green -- so the tab and the page agree without a second palette to keep
+#: in step.
+#:
+#: **THE BLUE IS THE LIGHT VARIANT, and that is not a whim.** Terry looked at the icon
+#: and said the blue was too dark against the black. Measured against the `#1D2125`
+#: field: `#0052CC` contrasts at **2.37**, while the amber is **7.20** and the green
+#: **8.16** -- three times darker, so one bar of three receded. `#85B8FF` lands at
+#: **7.94**, between the other two, and the three bars now carry equal weight.
+#:
+#: **`--terry` stays `#0052CC` everywhere else**, because everywhere else it sits on
+#: white. A color is only dark or light relative to what is behind it, and this is the
+#: one surface here with a dark ground.
 FAVICON = (
     '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32">'
     '<rect width="32" height="32" rx="7" fill="#1D2125"/>'
-    '<rect x="6"  y="8"  width="5" height="16" rx="2.5" fill="#0052CC"/>'
+    '<rect x="6"  y="8"  width="5" height="16" rx="2.5" fill="#85B8FF"/>'
     '<rect x="13.5" y="13" width="5" height="11" rx="2.5" fill="#E2A100"/>'
     '<rect x="21" y="18" width="5" height="6"  rx="2.5" fill="#4BCE97"/>'
     "</svg>"
