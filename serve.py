@@ -241,7 +241,40 @@ PAGE = """<!doctype html>
     --bg: #F4F5F7; --lane: #EBECF0; --card: #FFFFFF;
     --ink: #172B4D; --dim: #5E6C84; --line: #DFE1E6;
     --terry: #0052CC; --claude: #E2A100; --handoff: #1F845A; --done: #5E6C84;
-    --live: #14663F;
+    /* **THE BAR IS DARK AND THE APP IS LIGHT.** Terry, 2026-08-19: "the top title
+     bar for the app blurs/blends with my chrome bookmarks bar. Go dark (something
+     from dark gray to pure black, your call) with high contrast (maybe white?)
+     text." One 1px hairline was the entire boundary between the browser and the
+     app, and both sides of it were white.
+
+     **`#1D2125` is Atlassian's darkest neutral**, so the bar goes dark without
+     importing a color from nowhere -- this whole palette is theirs. **Pure black was
+     considered and refused**: it makes a hard edge that pulls the eye UP into the
+     browser, and it leaves nowhere darker to go for a more severe state.
+
+     **This is a dark HEADER on a light app, not a dark mode.** The lanes, the cards
+     and the drawer stay light. */
+  --barbg: #1D2125; --barink: #FFFFFF; --bardim: #9AA0A6;
+  /* **The LIVE badge's ground had to lighten, and that is the dark bar's real
+     cost.** `#14663F` on `#1D2125` is dark-on-dark: the badge stopped reading as a
+     badge, and this is the one element whose job is to be believed at a glance.
+
+     **`#1F845A` was picked by MEASUREMENT, not by eye, because two thresholds pull
+     against each other.** A darker green reads better under white text and worse
+     against the bar; a lighter one does the reverse. Measured in the page:
+
+         #216E4E   badge vs bar 2.63   white on badge 6.17   FAILS the 3:1 block rule
+         #1F845A   badge vs bar 3.48   white on badge 4.66   passes both
+         #22A06B   badge vs bar 4.87   white on badge 3.33   FAILS AA on the text
+
+     **`#1F845A` is also already in this palette as `--handoff`**, so the bar gains
+     no color from nowhere. */
+  --live: #1F845A;
+  /* **The dot INVERTS on dark, and a mechanical port would have made it
+     invisible.** It idles at `opacity: .10` and breathes up; a dark green at 10%
+     on near-black is nothing at all. A bright green is dim when faded and obvious
+     when lit, which is what the heartbeat needs. */
+  --livedot: #4BCE97;
     /* **The comment badge's ground.** Atlassian's dark neutral, chosen so the badge
      is unmistakably darker than the P3 pill (`#5E6C84`) and cannot be mistaken for
      a priority. White on it measures about 7.5:1. */
@@ -254,11 +287,21 @@ PAGE = """<!doctype html>
          font: 14px/1.5 'Inter', 'Segoe UI', system-ui, sans-serif;
          font-feature-settings: 'cv05' 1, 'tnum' 1; }
 
+  /* **`color-scheme: dark` is load-bearing and is NOT decoration.** The alerts
+     control is a native `<input type="checkbox">`, and a native control paints
+     itself light-on-light against a dark parent unless the scheme is declared. **It
+     keeps WORKING, which is exactly why it would have shipped broken.** */
   #bar { position: sticky; top: 0; z-index: 20; display: flex; gap: 14px;
-         align-items: center; padding: 9px 14px; background: #FFFFFF;
-         border-bottom: 1px solid var(--line); font-size: 12px; }
+         align-items: center; padding: 9px 14px; background: var(--barbg);
+         color: var(--barink); color-scheme: dark;
+         border-bottom: 1px solid #000000; font-size: 12px; }
   #bar .grow { flex: 1; }
-  #title { font-weight: 700; letter-spacing: -.01em; }
+  /* **Only the QUIET half of the bar is repainted.** The CTA pills and the stale
+     flag carry their own background, so the ground behind them never mattered --
+     which is the bar's own rule working: "Zero is plain text; non-zero is a hazard
+     pill." The half that had no ground of its own is the half that needed one. */
+  #bar #live, #bar #alerts-wrap, #bar .meta { color: var(--bardim); }
+  #title { font-weight: 700; letter-spacing: -.01em; color: var(--barink); }
   /* **ONLY CALLS TO ACTION LIVE HERE.** Terry: "No other stats up there, just
      calls to action." Open counts and in-progress counts were noise -- the lane
      headers already carry them, and a number that never asks for anything trains
@@ -280,7 +323,7 @@ PAGE = """<!doctype html>
   #alerts-wrap.blocked { cursor: not-allowed; opacity: .55; }
   #alerts { margin: 0; cursor: inherit; }
   .cta { font-size: 11px; font-weight: 700; letter-spacing: .03em;
-         color: var(--dim); padding: 3px 8px; border-radius: 4px; }
+         color: var(--bardim); padding: 3px 8px; border-radius: 4px; }
   /* **Warning-sign yellow, not highlighter yellow.** Terry asked for higher
      contrast, and the lever is SATURATION rather than contrast ratio -- black on
      the old #F5CD47 already measured about 11:1, well past AAA, so the pill was
@@ -318,7 +361,7 @@ PAGE = """<!doctype html>
     50%  { opacity: 1; }
     100% { opacity: .10; }
   }
-  #dot { width: 13px; height: 13px; border-radius: 50%; background: var(--live);
+  #dot { width: 13px; height: 13px; border-radius: 50%; background: var(--livedot);
          flex: 0 0 auto; opacity: .10; transition: background .2s; }
   #dot.alive { animation: breathe 4s linear infinite; }
   /* Solid, not breathing. A stopped heart does not pulse. */
