@@ -668,11 +668,35 @@ class Change:
     # and no existing card needs a synthetic one.
     owner_frm: str | None = None
     owner_to: str | None = None
+    # **A PRIORITY change is the third shape, added 2026-08-19 on card #0070.** Terry
+    # dropped #0037 to P5, watched it move up the lane in the page, opened it, and found
+    # nothing explaining why: *"no breadcrumbs of it in Audit Log."*
+    #
+    # **`set_priority` used to write no entry on purpose**, and this reverses that. The
+    # old reasoning was that `verify()` replays LANES and a third shape would have to be
+    # taught to it -- true, and it valued the checker's simplicity over the one reader
+    # the log exists for.
+    priority_frm: str | None = None
+    priority_to: str | None = None
 
     @property
-    def is_owner_change(self) -> bool:
-        """True for an ownership entry, which moves no lane."""
-        return self.owner_to is not None
+    def kind(self) -> str:
+        """`"lane"`, `"owner"` or `"priority"`. **The one place the shape is decided.**
+
+        **This replaced `is_owner_change`, and the reason is a bug that already
+        happened.** `replayed_state()` read `history[-1].to` and returned `""` for any
+        card whose last event was a reassignment -- a wrong lane, silently. The fix there
+        was a filter, and the filter had to be repeated at each reader.
+
+        **A second discriminant would have meant checking two booleans everywhere**, and
+        the third shape is exactly when that stops being remembered. Readers now ask for
+        the kind they want.
+        """
+        if self.owner_to is not None:
+            return "owner"
+        if self.priority_to is not None:
+            return "priority"
+        return "lane"
 
     def to_json(self) -> dict[str, str]:
         out = {"at": self.at, "to": self.to, "by": self.by}
@@ -682,23 +706,32 @@ class Change:
             out["ownerTo"] = self.owner_to
         if self.owner_frm is not None:
             out["ownerFrom"] = self.owner_frm
+        if self.priority_to is not None:
+            out["priorityTo"] = self.priority_to
+        if self.priority_frm is not None:
+            out["priorityFrom"] = self.priority_frm
         return out
 
     @classmethod
     def from_json(cls, raw: dict[str, Any], where: str) -> Self:
         owner_to = raw.get("ownerTo")
-        # **`to` is required on a LANE entry and absent on an OWNERSHIP one.** Checking
-        # it unconditionally would refuse every board written after this change.
-        required = ("at", "by") if isinstance(owner_to, str) else ("at", "to", "by")
+        priority_to = raw.get("priorityTo")
+        # **`to` is required on a LANE entry and absent on the other two.** Checking it
+        # unconditionally would refuse every board written after either change.
+        moves_lane = not isinstance(owner_to, str) and not isinstance(priority_to, str)
+        required = ("at", "to", "by") if moves_lane else ("at", "by")
         for key in required:
             if not isinstance(raw.get(key), str) or not raw[key]:
                 raise BoardError(f"{where}: history entry has no {key}")
         frm = raw.get("from")
         owner_frm = raw.get("ownerFrom")
+        priority_frm = raw.get("priorityFrom")
         return cls(at=raw["at"], to=raw.get("to", ""), by=raw["by"],
                    frm=frm if isinstance(frm, str) else None,
                    owner_frm=owner_frm if isinstance(owner_frm, str) else None,
-                   owner_to=owner_to if isinstance(owner_to, str) else None)
+                   owner_to=owner_to if isinstance(owner_to, str) else None,
+                   priority_frm=priority_frm if isinstance(priority_frm, str) else None,
+                   priority_to=priority_to if isinstance(priority_to, str) else None)
 
 
 @dataclass
@@ -809,7 +842,7 @@ class Item:
         its own replay; **the filter was applied there and not here**, which is the
         instance being fixed rather than the class.
         """
-        lanes = [c for c in self.history if not c.is_owner_change]
+        lanes = [c for c in self.history if c.kind == "lane"]
         return lanes[-1].to if lanes else None
 
     def to_json(self) -> dict[str, Any]:
@@ -1100,17 +1133,25 @@ class Board:
             if not item.history:
                 continue
 
-            # **OWNERSHIP ENTRIES MOVE NO LANE, so they are removed before the replay.**
-            # Card #0053. Replaying one as a transition would break the chain check on
-            # every reassignment, and a permission model that refuses the board after an
-            # ownership change is worse than no ownership field at all.
+            # **ONLY LANE ENTRIES ARE REPLAYED.** Cards #0053 and #0070. Replaying an
+            # ownership or priority entry as a transition would break the chain check on
+            # every reassignment, and a model that refuses the board after somebody
+            # changed a label is worse than not recording the label at all.
             #
-            # **They are checked on their own terms instead**, below.
-            lane_history = [c for c in item.history if not c.is_owner_change]
+            # **Asking for the kind rather than excluding known others is what makes a
+            # FOURTH shape safe.** `not c.is_owner_change` silently began replaying
+            # priority entries the moment they existed; `== "lane"` cannot.
+            #
+            # **The other kinds are checked on their own terms instead**, below.
+            lane_history = [c for c in item.history if c.kind == "lane"]
             problems.extend(
                 f"{item.id}: history reassigns to {c.owner_to!r}, which is not an actor"
                 for c in item.history
-                if c.is_owner_change and c.owner_to not in ("terry", "claude"))
+                if c.kind == "owner" and c.owner_to not in ("terry", "claude"))
+            problems.extend(
+                f"{item.id}: history sets priority {c.priority_to!r}, which is not one"
+                for c in item.history
+                if c.kind == "priority" and c.priority_to not in PRIORITIES)
             if not lane_history:
                 continue
 
@@ -1188,17 +1229,28 @@ class Board:
         return f"created {item.label} {item_id} in {state} (by {by})"
 
     def set_priority(self, item_id: str, priority: str, by: Actor) -> str:
-        """Change one card's priority. Card #0060.
+        """Change one card's priority, and RECORD IT. Cards #0060 and #0070.
 
-        **No history entry, and no permission check.** Priority is a sorting key, not
-        a state transition -- the same reasoning that keeps ownership out of the lane
-        replay and a project rename out of the trail. **`verify()` replays LANES**, and
-        an entry with neither a lane nor an owner would be a third shape for it to
-        learn.
+        **This used to write no history entry, and Terry caught it.** He dropped #0037
+        to P5, saw it move up its lane in the page, opened the card, and found nothing
+        explaining the move: *"no breadcrumbs of it in Audit Log."*
 
-        **Either actor may set it.** Terry decides what matters; Claude files cards and
-        gets the guess wrong sometimes. A permission here would only make a correction
-        need a round trip.
+        **The old reasoning was real and it was outweighed.** An entry with neither a
+        lane nor an owner is a third shape for `verify()` to learn -- true, and it valued
+        the checker's simplicity over the one reader the log exists for. **A card that
+        moves for no visible reason is exactly what an audit trail is supposed to
+        prevent.**
+
+        **Write the log first, then the field**, for the same reason `move()` and
+        `assign()` do: a change that never reached the trail is indistinguishable from
+        tampering.
+
+        **A no-op writes NOTHING.** Setting P3 on a P3 card is not an event, and the
+        same rule already governs reassignment.
+
+        **Either actor may set it, and there is no permission check.** Terry decides what
+        matters; Claude files cards and gets the guess wrong sometimes. A permission here
+        would only make a correction need a round trip.
         """
         if priority not in PRIORITIES:
             raise BoardError(
@@ -1207,6 +1259,8 @@ class Board:
         was = item.priority
         if was == priority:
             return f"{item.label} is already {priority}"
+        item.history.append(Change(at=now(), to="", by=by,
+                                   priority_frm=was, priority_to=priority))
         item.priority = priority
         return f"{item.label} priority: {was} -> {priority} (by {by})"
 
@@ -1473,9 +1527,23 @@ class Board:
         **A comment is append-only, so a link it created is never retracted here.** That
         answers the card's second open question by construction rather than by policy:
         there is no edit path that could trigger a retraction.
+
+        **IT RUNS FOR TERRY AND NOT FOR CLAUDE**, which is his call and the right one:
+        *"Can we turn auto link off for Claude and not Terry?"*
+
+        **The feature demonstrated the problem on its own first use.** Claude's closing
+        comment on card #0028 mentioned four ticket numbers in passing -- one inside a
+        code example -- and linked all four. **Terry types `#0028` when he means that
+        card. Claude types it while explaining something**, in tables, in examples, in
+        prose about other work.
+
+        **Claude keeps `--link`, which is explicit.** Nothing is lost except the ability
+        to create a relationship by accident.
         """
         made: list[str] = []
         missing: list[str] = []
+        if by != "terry":
+            return made, missing
         for hit in self.TICKET_MENTION.finditer(text):
             ref = hit.group(1)
             try:
@@ -1491,7 +1559,6 @@ class Board:
                 continue
             self.links.append(Link(frm=item.id, kind="references", to=other.id))
             made.append(other.label)
-        del by
         return made, missing
 
 

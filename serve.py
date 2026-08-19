@@ -1177,6 +1177,13 @@ function openCard(id) {
     if (h.ownerTo) {
       what.textContent = 'Ticket ownership change: '
         + name(h.ownerFrom) + ' \\u2192 ' + name(h.ownerTo);
+    } else if (h.priorityTo) {
+      // **A THIRD entry shape, card #0070.** Terry dropped #0037 to P5, watched it move
+      // up its lane, opened the card and found nothing: "no breadcrumbs of it in Audit
+      // Log." A card that moves for no visible reason is what an audit trail exists to
+      // prevent.
+      what.textContent = 'Ticket priority change: '
+        + h.priorityFrom + ' \\u2192 ' + h.priorityTo;
     } else {
       what.textContent = h.from ? (h.fromLabel + ' \\u2192 ' + h.toLabel)
                                 : ('created in ' + h.toLabel);
@@ -2061,7 +2068,10 @@ def payload() -> bytes:
                              "fromLabel": status.LANE_LABEL.get(h.frm or "", ""),
                              "toLabel": status.LANE_LABEL.get(h.to, h.to),
                              "ownerFrom": h.owner_frm,
-                             "ownerTo": h.owner_to}
+                             "ownerTo": h.owner_to,
+                             # Card #0070, the third entry shape.
+                             "priorityFrom": h.priority_frm,
+                             "priorityTo": h.priority_to}
                             for h in reversed(item.history)],
             } for item in lane.items],
         } for lane in lanes],
