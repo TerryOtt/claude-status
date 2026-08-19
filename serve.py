@@ -587,8 +587,20 @@ PAGE = """<!doctype html>
 <meta charset="utf-8">
 <title>%TITLE%</title>
 <!-- **Card #0080.** Named explicitly rather than left to the browser's `/favicon.ico`
-     guess, which this server does not serve and would answer 404 on every load. -->
-<link rel="icon" type="image/svg+xml" href="/favicon.svg">
+     guess, which this server does not serve and would answer 404 on every load.
+
+     **The build hash is in the URL because THIS ICON ALREADY CHANGED ONCE.** Its blue
+     was too dark against the field and was relit the same afternoon, and the route
+     serves it with `max-age=86400` on purpose. Without a version key Terry would have
+     kept seeing yesterday's icon for a day.
+
+     **Keying it on `%BUILD%` makes it self-busting**: any change to the server is a new
+     URL. The route ignores the query string, so this costs nothing to serve.
+
+     **It is NOT here to fix a missing icon.** One appeared to be missing and was simply
+     Chrome fetching favicons asynchronously -- it arrived a moment later, with the
+     server having answered 200 the whole time. -->
+<link rel="icon" type="image/svg+xml" href="/favicon.svg?v=%BUILD%">
 <style>
   /* Inter, served from this repository. See the FONTS note in serve.py. */
   @font-face {
@@ -651,8 +663,26 @@ PAGE = """<!doctype html>
      is unmistakably darker than the P3 pill (`#5E6C84`) and cannot be mistaken for
      a priority. White on it measures about 7.5:1. */
   --mark: #42526E;
-  --p0: #C9372C; --p1: #E56910; --p2: #B77600;
-    --p3: #5E6C84; --p4: #8993A4; --p5: #B3BAC5;
+  /* **A LIGHTNESS RAMP, not only a hue ramp. Card #0088.** Terry asked whether these
+     colors were inclusive, after being burned presenting to a red-green colorblind
+     colonel.
+
+     **Two defects turned up and the second one was everybody's.** P1, P2, P4 and P5 all
+     FAILED WCAG AA against their own white text -- 3.30, 3.75, 3.10 and 1.95. That is a
+     readability bug for every reader, not only for a dichromat.
+
+     **Measured under simulated protanopia, deuteranopia and tritanopia**, the old P1 and
+     P2 sat 11 apart out of 255. Indistinguishable. P0 and P2 sat 33 apart.
+
+     **Hue is the channel dichromacy takes away; lightness is the one it leaves.** Each
+     step is now clearly darker or lighter than its neighbor, and the worst ADJACENT
+     separation across all three simulations is 56 rather than 11.
+
+     **The hues barely move**, because Terry reads red-to-amber-to-gray fluently already
+     and nothing here asks him to relearn it. The old red simply slides from P0 down to
+     P1, and P0 takes a deeper one. */
+  --p0: #8C1D12; --p1: #C9372C; --p2: #FFAB00;
+    --p3: #5E6C84; --p4: #8993A4; --p5: #C7CDD6;
   }
   * { box-sizing: border-box; }
   body { margin: 0; background: var(--bg); color: var(--ink);
@@ -871,9 +901,19 @@ PAGE = """<!doctype html>
   .card:hover { background: #FAFBFC; }
   .pri { font-size: 10px; font-weight: 700; color: #FFFFFF; border-radius: 3px;
          padding: 1px 5px; letter-spacing: .02em; flex: 0 0 auto; margin-top: 1px; }
+  /* **The badge PICKS its text color, and that is what unlocked the ramp. Card #0088.**
+     Forcing white on every badge is what made four of the six unreadable, and it also
+     pinned every color into the narrow dark band where white works -- which is exactly
+     the band where red, orange and amber collapse into each other for a dichromat.
+
+     **Letting a light badge carry ink text buys the whole lightness range**, and the
+     ramp that defeats color blindness becomes possible. Measured: the worst badge now
+     reads at 4.55:1 against 1.95:1 before. */
   .pri.P0 { background: var(--p0); } .pri.P1 { background: var(--p1); }
-  .pri.P2 { background: var(--p2); } .pri.P3 { background: var(--p3); }
-  .pri.P4 { background: var(--p4); } .pri.P5 { background: var(--p5); }
+  .pri.P3 { background: var(--p3); }
+  .pri.P2 { background: var(--p2); color: var(--ink); }
+  .pri.P4 { background: var(--p4); color: var(--ink); }
+  .pri.P5 { background: var(--p5); color: var(--ink); }
   /* **Three rows: badge and ticket, subject, then the comment count.** Terry:
      "display card number on same line as P1/P2 with description below it", then
      "drop the # in front of ticket number, move ticket number to top right and
