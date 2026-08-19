@@ -403,6 +403,11 @@ PAGE = """<!doctype html>
      as one group rather than as a continuation of the title. Terry: "CTA's should
      stand in a group." */
   #counts { display: flex; gap: 8px; align-items: center; margin-left: 22px; }
+  /* **With every CTA at zero this element has no children and the margin would still
+     be there** -- a 22px hole between the project name and nothing. Card #0056 hides
+     a zero pill, so the all-quiet board is now a reachable state rather than a
+     theoretical one. */
+  #counts:empty { margin-left: 0; }
   /* A persistent toggle rather than a button that vanishes. See the note on
      `syncAlerts` for why the browser permission and this preference are two
      different things. */
@@ -1482,13 +1487,31 @@ function paint() {
   // needs-signoff means the work is done and a tick is outstanding. **Reading order
   // is severity order**, so the leftmost pill that is lit is the worst thing on the
   // board.
+  // **A ZERO CTA IS NOT SHOWN AT ALL.** Terry, 2026-08-19: "if any of the CTA's on
+  // title bar are zero count, do not show them. Having a CTA that cannot be actioned
+  // defeats the fucking purpose." Card #0056.
+  //
+  // **This is his own doctrine, applied where it was previously only stated.** The bar
+  // already said "a number that never asks for anything trains the eye to skip the
+  // whole bar" -- and a zero is exactly a number that never asks for anything.
+  //
+  // **THE COUNT MUST BE KNOWN, NOT MERELY FALSY, and that distinction is the whole
+  // guard.** When the board cannot be read, `payload()` returns `counts: {}` -- so
+  // `c.blocked || 0` would render 0, and hiding on 0 would make EVERY pill vanish and
+  // the bar read as "nothing to do" at the exact moment nothing is known.
+  //
+  // **A CTA that is absent because it is zero must not be confusable with one that is
+  // absent because the number never arrived.** So a missing key is skipped rather
+  // than treated as zero, and the dead poll is reported by the dot and the badge --
+  // which are the elements whose job that is.
   for (const pair of [
-    ['BLOCKED', c.blocked || 0],
-    ['WAITING FOR TERRY', c.needs_terry_action || 0],
-    ['NEEDS SIGNOFF', c.ready_for_review || 0],
+    ['BLOCKED', c.blocked],
+    ['WAITING FOR TERRY', c.needs_terry_action],
+    ['NEEDS SIGNOFF', c.ready_for_review],
   ]) {
+    if (typeof pair[1] !== 'number' || pair[1] <= 0) continue;
     const s = document.createElement('span');
-    s.className = pair[1] > 0 ? 'cta hot' : 'cta';
+    s.className = 'cta hot';
     s.textContent = pair[0] + ': ' + pair[1];
     counts.appendChild(s);
   }
@@ -1625,7 +1648,11 @@ function renderLive() {
   restart.classList.toggle('show', !!codeStale);
 
   if (!lastOk) {
-    el.textContent = 'Last update: never  ·  ' + nowTxt;
+    // **`Build` leads here TOO, and it did not before.** This branch never reached
+    // the `parts` list, so the build id vanished exactly when the poll was dead --
+    // the moment somebody most needs to know which code they are looking at.
+    // Cards #0043 and #0049.
+    el.textContent = 'Build ' + PAGE_BUILD + '  ·  JSON file read: never  ·  ' + nowTxt;
     badge.className = 'dead';
     badge.textContent = 'NO DATA';
     dot.classList.add('stale');
@@ -1646,14 +1673,27 @@ function renderLive() {
   // could be either; a running clock explains itself.
   const age = nowMs - lastOk;
   const parts = [];
-  if (fileMs) parts.push('File written: ' + agoOf(fileMs));
-  parts.push('Last update: ' + agoOf(lastOk));
+  // **`Build` LEADS, and it is capitalized.** Terry, 2026-08-19: "Move 'build (hash)'
+  // to left of 'File written'. Separate with dot to stay consistent, capitalize
+  // 'Build'." Card #0043. The separator was already the dot he wanted.
+  //
+  // **It shows even when it AGREES with the server, and that is deliberate.** A check
+  // that is invisible while healthy is indistinguishable from one that was never wired
+  // up -- the failure this whole bar exists to refuse. It sits in the proof-of-life
+  // span rather than beside the counts, because it is EVIDENCE and not a call to
+  // action.
+  parts.push('Build ' + PAGE_BUILD);
+  // **Both labels renamed, and the pair gets DISAMBIGUATED.** Card #0049. One said
+  // *written* and the other said *update* -- two words for one idea, neither saying
+  // WHAT was written or updated.
+  //
+  // **The distinction was already documented here and invisible on screen:** the
+  // file's age and the poll's age are different facts. A board nobody has touched for
+  // two hours is normal; a poll that has not answered for two hours is not. **One
+  // going quiet is fine and the other is a fault, and now the labels say which.**
+  if (fileMs) parts.push('Last card update: ' + agoOf(fileMs));
+  parts.push('JSON file read: ' + agoOf(lastOk));
   parts.push(nowTxt);
-  // **The build id shows even when it AGREES, and that is deliberate.** A check that is
-  // invisible while healthy is indistinguishable from one that was never wired up, which
-  // is the failure this whole bar exists to refuse. It sits in the proof-of-life span
-  // rather than beside the counts, because it is evidence and not a call to action.
-  parts.push('build ' + PAGE_BUILD);
   el.textContent = parts.join('  ·  ');
 
   // **The badge flips at LIVE_MS, not at WARN_MS.** It carries a single claim --
