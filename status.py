@@ -621,8 +621,20 @@ class Item:
 
         `None` when there is no history to replay -- migrated cards have none, and an
         absent trail is not evidence of a wrong state.
+
+        **OWNERSHIP ENTRIES ARE SKIPPED, and forgetting that was a real defect.** Card
+        #0053 gave `Change` an ownership form that carries no lane, so `to` is `""` on
+        those. This read `history[-1].to` and returned `""` for any card whose most
+        recent event was a reassignment -- **a wrong lane, silently, rather than an
+        error.**
+
+        **Caught 2026-08-19 on card #0003**, whose last entry was Terry handing it
+        back. `verify()` was never affected because it filters the same entries before
+        its own replay; **the filter was applied there and not here**, which is the
+        instance being fixed rather than the class.
         """
-        return self.history[-1].to if self.history else None
+        lanes = [c for c in self.history if not c.is_owner_change]
+        return lanes[-1].to if lanes else None
 
     def to_json(self) -> dict[str, Any]:
         out: dict[str, Any] = {
