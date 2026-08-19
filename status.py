@@ -49,6 +49,7 @@ either. **It would have added a dependency and moved the rules, not enforced the
 import argparse
 import contextlib
 import datetime
+import itertools
 import json
 import os
 import pathlib
@@ -698,6 +699,177 @@ def now() -> str:
     return datetime.datetime.now().astimezone().isoformat(timespec="seconds")
 
 
+#: What an undated card sorts as. **The oldest moment a comparison can produce**, so
+#: cards that predate the creation-entry mechanism sort to the top of their priority.
+#: Aware rather than naive, because a naive value cannot be compared with an aware one
+#: and every real stamp here carries an offset.
+_BEGINNING_OF_TIME = datetime.datetime.min.replace(tzinfo=datetime.UTC)
+
+
+def created_key(item: "Item") -> datetime.datetime:
+    """A total, comparable creation time for one card. **Card #0047.**
+
+    **Terry asked to sort by creation date, and the field is not the clean key it looks
+    like.** Four problems were measured on the live board on 2026-08-19, and this
+    function is the answer to all four rather than a parse.
+
+    ## 1. SEVEN CARDS HAVE NO CREATION ENTRY, and they sort OLDEST
+
+    #0001, #0003, #0006, #0007, #0008, #0011 and #0012 predate the mechanism. Their
+    histories open on a MOVE.
+
+    **Undated means oldest here because it is TRUE, not because the bottom was
+    inconvenient** -- a card with no creation entry is one written before creation
+    entries existed, so it really is older than everything that has one. Every ticket
+    number in that list is low, which is the corroboration.
+
+    ## 2. THE HUMAN FORMAT IS REAL AND CURRENTLY UNREACHABLE
+
+    #0012 carries `2026-08-18 12:40 ET` against ISO 8601 everywhere else. **It sits on a
+    MOVE entry, not a creation entry**, so this function never actually parses it today.
+    The handling stays because the string is in the data and `fromisoformat` refuses it;
+    the trailing zone word is dropped and the remainder read as local time.
+
+    **The DATA is left alone.** Repairing the stamp would rewrite a history entry, and
+    this file's own rule is that history is *"appended, never edited, never removed."*
+
+    ## 3. TIMESTAMPS TIE
+
+    #0039 and #0040 both read `2026-08-19T10:27:01-04:00`, because one command created
+    them. **This function does not break the tie** -- `lanes()` does, with `ticket` as
+    the final term. Stated here so nobody adds a sub-second fudge to this key.
+
+    ## 4. A CORRECTION, kept because the reasoning error is the valuable part
+
+    **Card #0047 claimed FOUR undated cards, a human-format CREATION stamp on #0012, and
+    that #0003 was created 1 h 43 min before #0001.** All three came from reading each
+    card's FIRST HISTORY ENTRY as its creation.
+
+    **It is not.** #0003's opening entry is Terry moving it out of `backlog`; #0001's is
+    Terry completing it. Those are move times, and comparing them says nothing about
+    creation order. **A creation entry is the one with `frm is None`**, which is what
+    `Item.created_at` asks for -- and by that test neither card has one.
+
+    **So the headline evidence that ticket numbers contradict creation order does not
+    exist.** Measured 2026-08-19 against the live board.
+
+    **Naive stamps are read as this machine's local zone**, matching `stamp()`, which
+    writes local time with an offset.
+    """
+    raw = item.created_at
+    if raw is None:
+        return _BEGINNING_OF_TIME
+
+    text = raw.strip()
+    parsed: datetime.datetime | None = None
+
+    try:
+        parsed = datetime.datetime.fromisoformat(text)
+    except ValueError:
+        # **A trailing zone WORD, as on #0012.** `fromisoformat` handles a numeric
+        # offset and refuses an abbreviation, and abbreviations are ambiguous besides
+        # -- so the word is dropped and the remainder read as local time.
+        head = text.rsplit(" ", 1)[0] if " " in text else text
+        try:
+            parsed = datetime.datetime.fromisoformat(head)
+        except ValueError:
+            parsed = None
+
+    if parsed is None:
+        # **Unparseable sorts oldest, exactly like absent.** A card MUST NOT vanish from
+        # a lane or crash a repaint because one string is malformed, and the board is
+        # rendered every 400 ms.
+        return _BEGINNING_OF_TIME
+
+    if parsed.tzinfo is None:
+        return parsed.astimezone()
+    return parsed
+
+
+def self_test_sort() -> list[str]:
+    """Exercise `created_key` on every shape the board has produced. **Card #0047.**
+
+    **Both polarities, because a parser validated in one direction is half-validated.**
+    Four inputs MUST produce a real moment and two MUST fall back to the beginning of
+    time, and a function that returned the fallback for everything would pass a
+    one-directional test while destroying the sort.
+
+    Returns a list of failures, empty when it all holds.
+    """
+    problems: list[str] = []
+
+    def key_of(raw: str | None) -> datetime.datetime:
+        item = Item(id="self-test", ticket=0, subject="self-test", state=STATES[0])
+        if raw is not None:
+            item.history.append(Change(at=raw, to=STATES[0], by="claude"))
+        return created_key(item)
+
+    # MUST parse to a real moment.
+    must_parse = ("2026-08-19T10:27:01-04:00",  # the ordinary case
+                  "2026-08-18 12:40 ET",        # #0012's human format
+                  "2026-08-18T16:02:45",        # naive, no offset
+                  "2026-08-18")                 # a bare date
+    problems.extend(f"created_key failed to parse {raw!r}"
+                    for raw in must_parse if key_of(raw) == _BEGINNING_OF_TIME)
+
+    # MUST fall back, and MUST NOT raise.
+    must_fall_back: tuple[str | None, ...] = (None, "utter nonsense")
+    problems.extend(f"created_key should have fallen back on {raw!r}"
+                    for raw in must_fall_back if key_of(raw) != _BEGINNING_OF_TIME)
+
+    # **Ordering, not just parsing.** A key that parses everything and compares
+    # backwards would pass every check above.
+    if key_of("2026-08-18T09:00:00-04:00") >= key_of("2026-08-19T09:00:00-04:00"):
+        problems.append("created_key does not order two ordinary stamps")
+    if key_of("2026-08-18T09:00:00-04:00") <= _BEGINNING_OF_TIME:
+        problems.append("an undated card does not sort oldest")
+
+    return problems
+
+
+def report_sort_health(board: "Board") -> list[str]:
+    """Run both sort checks, print the outcome, and hand back the failures.
+
+    **Extracted from `main()` rather than inlined**, because inlining it pushed that
+    function to 14 branches and `ruff` refused at 12. The limit is doing its job here:
+    `main()` is a dispatcher, and a block that prints a report is a different concern.
+    """
+    problems = self_test_sort() + total_order_problems(board)
+    if problems:
+        print(f"  SORT IS BROKEN, {len(problems)} problem(s):")
+        for problem in problems:
+            print(f"      {problem}")
+    else:
+        print("  Sort self-test passed, and every lane is strictly ordered.")
+    return problems
+
+
+def total_order_problems(board: "Board") -> list[str]:
+    """Report any lane whose cards do not compare STRICTLY increasing. **Card #0047.**
+
+    **This is the requirement the card states in capitals**, and it is about the screen
+    rather than about tidiness. The page repaints every 400 ms; two cards that compare
+    equal can swap between frames, which is a card moving under Terry's cursor as he
+    reaches for it.
+
+    **Checked against the real board rather than asserted in a comment**, because the
+    key is only total while `ticket` stays unique -- and nothing else here enforces that.
+    """
+    problems: list[str] = []
+
+    def rank(item: Item) -> int:
+        return (PRIORITIES.index(item.priority)
+                if item.priority in PRIORITIES else len(PRIORITIES))
+
+    for lane in board.lanes():
+        keys = [(rank(i), created_key(i), i.ticket) for i in lane.items]
+        problems.extend(
+            f"{lane.label}: #{before[2]:04d} and #{after[2]:04d} do not order"
+            for before, after in itertools.pairwise(keys) if before >= after)
+
+    return problems
+
+
 @dataclass
 class Change:
     """One entry in an item's history. Appended, never edited, never removed.
@@ -867,6 +1039,23 @@ class Item:
     parent: str | None = None
     history: list[Change] = field(default_factory=list)
     comments: list[Comment] = field(default_factory=list)
+
+    @property
+    def created_at(self) -> str | None:
+        """The raw `at` string of this card's creation entry, or `None`.
+
+        **A creation entry is a LANE change with no `frm`.** `Change.frm` is documented
+        as `None` exactly there, so no type field is needed and none is invented here.
+
+        **Ownership and priority entries are skipped**, because both carry `frm = None`
+        too and neither is a creation. That is the same trap `replayed_state()` already
+        fell into once -- a reassignment read as a lane event returned a wrong lane
+        silently. Asking for `kind == "lane"` is what makes this immune.
+        """
+        for change in self.history:
+            if change.kind == "lane" and change.frm is None:
+                return change.at
+        return None
 
     @property
     def label(self) -> str:
@@ -1131,23 +1320,43 @@ class Board:
         raise BoardError(f"no item with id {ref!r}")
 
     def lanes(self) -> list[Lane]:
-        """One `Lane` per column, each sorted by priority then by file order.
+        """One `Lane` per column, sorted by priority, then oldest first, then ticket.
 
-        **Priority orders WITHIN a lane and nothing else.** Terry: *"the cards will be
-        priority order per swimlane, so claude knows to work top down."* So the top card
-        of `Ready For Work` is the next thing to pick up.
+        **Card #0047, and the spec is Terry's own words**: *"primary sort order priority
+        (P1-P5), secondary sort order: ticket creation date oldest to newest. If tickets
+        have same priority, ticket that's older wins priority."*
 
-        **`sorted` is stable**, so equal priorities keep the order the file gives them.
+        **`P0` is included even though the spec says `P1-P5`.** Terry, the same day:
+        *"I try to not think about P0 because it means shit be on fire."* The rank comes
+        from `PRIORITIES`, which `rules.json` supplies, so a range typed in prose can
+        never disagree with the list that is actually enforced.
+
+        **This replaced "priority then FILE ORDER", which was insertion order in the
+        JSON.** It tracked creation most of the time and nothing guaranteed it, so two
+        cards could swap places for a reason no reader could see.
+
+        ## THE COMPARATOR IS TOTAL, AND THAT IS A REQUIREMENT RATHER THAN TIDINESS
+
+        **The page repaints every 400 ms.** Two cards that compare equal under an
+        incomplete key can swap position between frames -- a card moving under Terry's
+        cursor as he reaches for it. **So the key ends in `ticket`, which is unique per
+        card**, and the order cannot depend on `sorted` being stable.
+
+        `created_key` handles the four measured data problems; its own docstring carries
+        them.
         """
         def rank(item: Item) -> int:
             return (PRIORITIES.index(item.priority)
                     if item.priority in PRIORITIES else len(PRIORITIES))
 
+        def order(item: Item) -> tuple[int, datetime.datetime, int]:
+            return (rank(item), created_key(item), item.ticket)
+
         buckets: dict[str, list[Item]] = {state: [] for state in STATES}
         for item in self.items:
             buckets.setdefault(item.state, []).append(item)
         return [Lane(state, label, lane_class(state), lane_owner_label(state),
-                     sorted(buckets.get(state, []), key=rank))
+                     sorted(buckets.get(state, []), key=order))
                 for state, label in LANES]
 
     def verify(self) -> list[str]:
@@ -2007,6 +2216,10 @@ def _report(board: Board, args: argparse.Namespace) -> None:
     elif args.verify:
         print("  Every item's history replays cleanly and matches its state.")
 
+    # **Card #0047.** `--verify` is the integrity command, so the sort's own checks
+    # belong here rather than on every mutation, where they would double the output.
+    sort_problems = report_sort_health(board) if args.verify else []
+
     print(f"\n{board.project}  ({len(board.items)} items, port {board.port})")
     for lane in board.lanes():
         if not lane.items:
@@ -2016,7 +2229,7 @@ def _report(board: Board, args: argparse.Namespace) -> None:
             note = f"  ({len(item.comments)} comment(s))" if item.comments else ""
             print(f"    {item.priority}  {item.subject}{note}")
 
-    if bad_edges or drift:
+    if bad_edges or drift or sort_problems:
         raise SystemExit(1)
 
 
