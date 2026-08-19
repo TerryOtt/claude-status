@@ -1172,6 +1172,16 @@ def main() -> None:
     # there is no lane-style restriction to encode here.
     ap.add_argument("--assign", nargs=2, metavar=("ID", "OWNER"),
                     help="reassign one card's owner between terry and claude")
+    # **Board METADATA gets a flag rather than a hand edit.** Card #0050. The standing
+    # order is that Claude writes to the board THROUGH THE LIBRARY, and the usual
+    # reasons -- `may_create`, `nextTicket`, the creation history entry -- do not reach
+    # a metadata field. **The rule still wins, for a different reason:** `--verify`
+    # replays card histories and cannot catch a bad metadata edit at all, which is an
+    # argument for keeping hands out of the file rather than a licence to reach in.
+    #
+    # **`port` has the same shape and will want the same treatment.**
+    ap.add_argument("--set-project", metavar="NAME",
+                    help="rename the board's project field")
     ap.add_argument("--create", nargs=2, metavar=("ID", "SUBJECT"),
                     help="add one card; needs --state")
     # **`choices` is the lanes Claude may CREATE in, not every lane.** argparse then
@@ -1191,7 +1201,7 @@ def main() -> None:
     if args.create and not args.state:
         ap.error("--create needs --state")
 
-    if args.move or args.comment or args.create:
+    if any(getattr(args, name) for name in MUTATIONS):
         # **The lock is held across load, mutate and save.** Reading first and
         # locking second would hand out a snapshot another writer can invalidate.
         #
@@ -1213,6 +1223,23 @@ def main() -> None:
         return
 
     _report(load(args.board), args)
+
+
+# **EVERY FLAG THAT WRITES, IN ONE PLACE, because listing them inline failed twice.**
+#
+# The dispatch used to read `if args.move or args.comment or args.create:` -- a literal
+# list that a new flag has to be remembered into. **`--assign` was added on 2026-08-19
+# and not remembered**, so `status.py --assign 3 terry` fell through to the REPORT
+# path: it printed the whole board and exited 0. **A write that silently becomes a
+# read, and reports success.**
+#
+# That is card #0032's defect wearing a new costume -- the CLI printing success for
+# something that did not happen -- and it survived a test suite that exercised the HTTP
+# route thoroughly and never ran the flag.
+#
+# **`_apply` raises if it recognizes nothing**, so a flag added here and not handled
+# there fails loudly instead of doing nothing quietly.
+MUTATIONS = ("move", "comment", "create", "assign", "set_project")
 
 
 def _apply(board: Board, args: argparse.Namespace) -> str:
@@ -1244,12 +1271,31 @@ def _apply(board: Board, args: argparse.Namespace) -> str:
                             priority=args.priority, detail=_detail_text(args))
     if args.move:
         return board.move(args.move[0], args.move[1], "claude")
+    if args.set_project:
+        was = board.project
+        name = args.set_project.strip()
+        if not name:
+            raise BoardError("a project needs a name")
+        if name == was:
+            return f"project is already {name!r}"
+        board.project = name
+        # **No history entry, and that is consistent rather than lazy.** The trail
+        # belongs to CARDS -- `verify()` replays per-item histories -- and board
+        # metadata has no card to attach to. Same reasoning that keeps initial
+        # ownership out of the log: it is a property, not an event.
+        return f"project renamed: {was!r} -> {name!r}"
     if args.assign:
         owner = args.assign[1].lower()
         if owner not in ("terry", "claude"):
             raise BoardError(f"unknown owner {args.assign[1]!r}; want terry or claude")
         return board.assign(args.assign[0], owner, "claude")
-    return board.comment(args.comment[0], args.comment[1], "claude")
+    if args.comment:
+        return board.comment(args.comment[0], args.comment[1], "claude")
+    # **Unreachable via the dispatch above, and it MUST stay a raise anyway.** A flag
+    # added to `MUTATIONS` and not handled here would otherwise fall off the end and
+    # return `None`, which prints as `None` and saves an unchanged board -- a second
+    # silent no-op of exactly the kind this list exists to prevent.
+    raise BoardError(f"no mutation requested; one of {', '.join(MUTATIONS)} is needed")
 
 
 def _detail_text(args: argparse.Namespace) -> str:
