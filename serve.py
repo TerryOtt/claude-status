@@ -736,9 +736,19 @@ PAGE = """<!doctype html>
   .lane h2 { margin: 0; padding: 9px 12px 3px; font-size: 15px; font-weight: 700;
              text-transform: uppercase; letter-spacing: .02em;
              display: flex; gap: 8px; align-items: center; line-height: 1.15; }
+  /* **Card #0066: the count and the `+` grew into the space under them.** Terry:
+     "Increase size of swimlane badge for ticket count and + button... Have a whole
+     blank row to grow into below where they are."
+
+     **The header row is what grows, and that is the point.** These are flex children,
+     so a taller badge makes `h2` taller and pushes the owner line down -- which is the
+     blank row he was pointing at. Nothing else moves.
+
+     `.61em -> .95em` on the text, `1.64em -> 1.8em` on the circle. The circle is sized
+     in ITS OWN em, so both terms compound: about 15px across becomes about 26px. */
   .lane h2 .n { margin-left: auto; background: #FFFFFF; color: var(--dim);
-                font-size: .61em; font-weight: 600;
-                height: 1.64em; min-width: 1.64em; border-radius: 50%;
+                font-size: .95em; font-weight: 700;
+                height: 1.8em; min-width: 1.8em; border-radius: 50%;
                 display: inline-flex; align-items: center; justify-content: center;
                 padding: 0 .4em; box-sizing: border-box; }
   /* Ownership is stated in words under every lane title, not implied by a color.
@@ -848,9 +858,14 @@ PAGE = """<!doctype html>
      the button appears exactly where the permission model already allows it rather
      than restating the rule in the page. Adding a lane to `create` in `rules.json`
      grows a + with no code change. */
+  /* **Card #0066.** `1.05em -> 1.6em`, and a real hit area rather than a glyph with
+     4px of padding. A `+` you have to aim at is a `+` Terry reaches for twice. */
   .lane h2 .add { border: 0; background: transparent; color: var(--dim);
-                  font-size: 1.05em; font-weight: 700; line-height: 1;
-                  cursor: pointer; padding: 0 4px; border-radius: 4px; }
+                  font-size: 1.6em; font-weight: 700; line-height: 1;
+                  cursor: pointer; border-radius: 5px;
+                  width: 1.25em; height: 1.25em; padding: 0;
+                  display: inline-flex; align-items: center;
+                  justify-content: center; }
   .lane h2 .add:hover { background: #FFFFFF; color: var(--accent); }
 
   /* **A CENTERED MODAL, unlike the card drawer, and the difference is the job.** The
@@ -2482,7 +2497,7 @@ function renderLive() {
     // the `parts` list, so the build id vanished exactly when the poll was dead --
     // the moment somebody most needs to know which code they are looking at.
     // Cards #0043 and #0049.
-    el.textContent = 'Build ' + PAGE_BUILD + '  ·  JSON file read: never  ·  ' + nowTxt;
+    el.textContent = 'Build ' + PAGE_BUILD + '  ·  Last JSON file read: never  ·  ' + nowTxt;
     badge.className = 'dead';
     badge.textContent = 'NO DATA';
     dot.classList.add('stale');
@@ -2522,7 +2537,7 @@ function renderLive() {
   // two hours is normal; a poll that has not answered for two hours is not. **One
   // going quiet is fine and the other is a fault, and now the labels say which.**
   if (fileMs) parts.push('Last card update: ' + agoOf(fileMs));
-  parts.push('JSON file read: ' + agoOf(lastOk));
+  parts.push('Last JSON file read: ' + agoOf(lastOk));
   parts.push(nowTxt);
   el.textContent = parts.join('  ·  ');
 
