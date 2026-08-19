@@ -1177,7 +1177,7 @@ def main() -> None:
     # reasons -- `may_create`, `nextTicket`, the creation history entry -- do not reach
     # a metadata field. **The rule still wins, for a different reason:** `--verify`
     # replays card histories and cannot catch a bad metadata edit at all, which is an
-    # argument for keeping hands out of the file rather than a licence to reach in.
+    # argument for keeping hands out of the file rather than a license to reach in.
     #
     # **`port` has the same shape and will want the same treatment.**
     ap.add_argument("--set-project", metavar="NAME",
