@@ -966,6 +966,31 @@ PAGE = """<!doctype html>
   #close { position: absolute; top: 14px; right: 16px; border: 0;
            background: transparent; font-size: 20px;
            cursor: pointer; color: var(--dim); line-height: 1; }
+  /* **Cards #0081 and #0082: editing in place.**
+
+     The title input is styled to MATCH the h1 it replaces rather than to look like a
+     form field. A control that jumps in size when you click it makes you lose your
+     place on the line you are about to retype. */
+  #p-subject { cursor: text; }
+  #p-subject-edit { font: inherit; font-size: 18px; font-weight: 700;
+                    letter-spacing: -.01em; width: 100%; box-sizing: border-box;
+                    margin: 6px 0 0; padding: 1px 3px; color: var(--ink);
+                    border: 1px solid var(--accent); border-radius: 4px; }
+  /* A text button that reads as a link. It sits inside an `h3`, so it has to shed the
+     heading's own transform and spacing rather than inherit them. */
+  .linky { font: inherit; font-size: 10px; font-weight: 700; letter-spacing: .06em;
+           text-transform: uppercase; background: none; border: 0; cursor: pointer;
+           color: var(--accent); padding: 0 0 0 6px; }
+  .linky:hover { text-decoration: underline; }
+  #p-detail { cursor: text; }
+  #p-detail-text { width: 100%; box-sizing: border-box; min-height: 160px;
+                   font: inherit; font-size: 13px; padding: 7px 9px; resize: vertical;
+                   border: 1px solid var(--line); border-radius: 5px; color: var(--ink); }
+  .editrow { display: flex; gap: 10px; align-items: center; margin-top: 8px; }
+  .editrow .go { font: inherit; font-size: 12px; font-weight: 700; cursor: pointer;
+                 background: var(--accent); color: #FFFFFF; border: 0;
+                 border-radius: 5px; padding: 7px 12px; }
+  .editrow .go:disabled { opacity: .5; cursor: wait; }
   .detail-text { font-size: 13px; }
   .detail-text code { font-family: 'Cascadia Mono', Consolas, monospace;
                       font-size: 11.5px; background: #F4F5F7; padding: 0 3px;
@@ -1123,7 +1148,12 @@ again."></span>
 the audit trail."></select></span>
         <span id="p-tix"></span>
       </div>
-      <h1 id="p-subject"></h1>
+      <!-- **Card #0081.** The title is a button-shaped nothing until you click it: no
+           pencil icon competing with the text, and the whole line is the target. The
+           `title` attribute is the only affordance, which is the same weight the owner
+           chip carries. -->
+      <h1 id="p-subject" title="Click to rename. Enter saves, Escape cancels."></h1>
+      <input id="p-subject-edit" hidden aria-label="Card title">
       <div class="sub" id="p-sub"></div>
       <!-- **OWNER IS A LABEL, and the control says so by being a plain toggle rather
            than living beside anything that grants power.** Card #0053. Either actor
@@ -1136,8 +1166,21 @@ move any card whoever owns it. Click to hand it over."></button>
       </div>
     </header>
     <div class="body">
-      <h3>Description</h3>
-      <div class="detail-text" id="p-detail"></div>
+      <!-- **Card #0082.** The heading carries the control, so the description itself
+           stays a clean block of prose. -->
+      <h3>Description <button class="linky" id="p-detail-edit" type="button">edit</button></h3>
+      <div class="detail-text" id="p-detail"
+           title="Click to edit, or use the button above."></div>
+      <!-- **Enter adds a NEWLINE here and the button submits**, exactly like the
+           new-card dialog and exactly unlike the comment box. Terry drew that line on
+           cards #0039 and #0040: a comment is one thought, a description is several. -->
+      <div id="p-detail-editor" hidden>
+        <textarea id="p-detail-text" aria-label="Card description"></textarea>
+        <div class="editrow">
+          <button class="go" id="p-detail-save" type="button">Save description</button>
+          <button class="linky" id="p-detail-cancel" type="button">Cancel</button>
+        </div>
+      </div>
       <!-- **Card #0071. Hidden entirely when a card has no relationships**, which is
            most of them. A heading with nothing under it is noise on 70 cards to serve
            the few that have links. -->
@@ -1251,6 +1294,94 @@ function nextOwner(current) {
   return ids[(ids.indexOf(current) + 1) % ids.length];
 }
 
+// **Cards #0081 and #0082. Which field, if any, is being edited right now.**
+//
+// **One variable rather than two booleans**, because "both open at once" is a state
+// nobody wants and a pair of flags is a state machine that permits it.
+let editing = null;
+
+function closeEditors() {
+  editing = null;
+  document.getElementById('p-subject').hidden = false;
+  document.getElementById('p-subject-edit').hidden = true;
+  document.getElementById('p-detail').hidden = false;
+  document.getElementById('p-detail-editor').hidden = true;
+}
+
+function startSubjectEdit() {
+  const it = itemById(openId);
+  if (!it || editing) return;
+  editing = 'subject';
+  const box = document.getElementById('p-subject-edit');
+  // **Seeded from `data`, never from the rendered heading.** The heading is text the
+  // browser has already normalized; `it.subject` is what the board actually holds.
+  box.value = it.subject;
+  document.getElementById('p-subject').hidden = true;
+  box.hidden = false;
+  box.focus();
+  box.select();
+}
+
+async function saveSubject() {
+  const box = document.getElementById('p-subject-edit');
+  const wanted = box.value.trim();
+  if (!wanted) { toast('A card needs a title', true); return; }
+  const it = itemById(openId);
+  if (it && wanted === it.subject) { closeEditors(); return; }
+  box.disabled = true;
+  try {
+    const res = await fetch('/subject', {
+      method: 'POST', headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({id: openId, subject: wanted}),
+    });
+    const out = await res.json();
+    if (!res.ok) { toast(out.error || 'Rename refused', true); return; }
+    toast(out.result);
+    seen = null;
+    closeEditors();
+  } catch (err) {
+    toast('Could not reach the board: ' + err, true);
+  } finally {
+    box.disabled = false;
+  }
+}
+
+function startDetailEdit() {
+  const it = itemById(openId);
+  if (!it || editing) return;
+  editing = 'detail';
+  // **`detailRaw`, never `detail`.** The rendered form has been through `inline()` --
+  // escaped, with the markdown-ish bits turned into tags -- and editing THAT would
+  // store HTML, one round trip from unreadable.
+  document.getElementById('p-detail-text').value = it.detailRaw || '';
+  document.getElementById('p-detail').hidden = true;
+  document.getElementById('p-detail-editor').hidden = false;
+  document.getElementById('p-detail-text').focus();
+}
+
+async function saveDetail() {
+  const area = document.getElementById('p-detail-text');
+  const save = document.getElementById('p-detail-save');
+  const wanted = area.value;
+  if (!wanted.trim()) { toast('A description cannot be blank', true); return; }
+  save.disabled = true;
+  try {
+    const res = await fetch('/detail', {
+      method: 'POST', headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({id: openId, detail: wanted}),
+    });
+    const out = await res.json();
+    if (!res.ok) { toast(out.error || 'Edit refused', true); return; }
+    toast(out.result);
+    seen = null;
+    closeEditors();
+  } catch (err) {
+    toast('Could not reach the board: ' + err, true);
+  } finally {
+    save.disabled = false;
+  }
+}
+
 function toast(msg, bad) {
   const t = document.getElementById('toast');
   t.textContent = msg;
@@ -1348,6 +1479,10 @@ function openCard(id) {
     const box = document.getElementById('say');
     if (openId) drafts[openId] = box.value;
     box.value = drafts[id] || '';
+    // **A different card means the editors close.** Leaving one open would show card
+    // A's title in an input attached to card B, and saving it would rename the wrong
+    // one. Cards #0081 and #0082.
+    closeEditors();
   }
   openId = id;
   // **The priority control, card #0062.** Options come from `data.priorities`, which
@@ -1378,7 +1513,13 @@ function openCard(id) {
   // **No leading hash, for the same reason the card face strips it** -- #0021. The two
   // MUST agree; a number that gains a `#` when you open the card is two conventions.
   document.getElementById('p-tix').textContent = it.ticket.replace('#', '');
-  document.getElementById('p-subject').textContent = it.subject;
+  // **#0029's rule, third surface.** paint() reopens the card twice a second, so a
+  // field being edited MUST NOT be rewritten underneath the person typing in it. The
+  // priority select guards on focus; these guard on `editing`, because a textarea can
+  // lose focus to its own Save button and still hold unsent text.
+  if (editing !== 'subject') {
+    document.getElementById('p-subject').textContent = it.subject;
+  }
   document.getElementById('p-sub').textContent =
     it.laneLabel + '  \\u00b7  ' + it.id;
 
@@ -1388,8 +1529,10 @@ function openCard(id) {
   own.disabled = false;
 
   const detail = document.getElementById('p-detail');
-  if (it.detail) { detail.innerHTML = it.detail; detail.className = 'detail-text'; }
-  else { detail.textContent = 'No description.'; detail.className = 'empty'; }
+  if (editing !== 'detail') {
+    if (it.detail) { detail.innerHTML = it.detail; detail.className = 'detail-text'; }
+    else { detail.textContent = 'No description.'; detail.className = 'empty'; }
+  }
 
   paintRelations(it);
 
@@ -1534,6 +1677,28 @@ async function postComment() {
 }
 
 document.getElementById('post').addEventListener('click', postComment);
+
+// **Cards #0081 and #0082.** Click the text to edit it -- the whole line is the target,
+// so no icon competes with the title for the eye.
+document.getElementById('p-subject').addEventListener('click', startSubjectEdit);
+document.getElementById('p-detail').addEventListener('click', startDetailEdit);
+document.getElementById('p-detail-edit').addEventListener('click', startDetailEdit);
+document.getElementById('p-detail-save').addEventListener('click', saveDetail);
+document.getElementById('p-detail-cancel').addEventListener('click', closeEditors);
+
+// **Enter SAVES a title and Escape abandons it.** A title is one line, so the comment
+// box's rule applies rather than the description's -- cards #0039 and #0040 drew that
+// distinction and this follows it rather than inventing a third convention.
+document.getElementById('p-subject-edit').addEventListener('keydown', (ev) => {
+  if (ev.key === 'Enter') { ev.preventDefault(); saveSubject(); }
+  if (ev.key === 'Escape') { ev.preventDefault(); closeEditors(); }
+});
+
+// **Escape abandons the description too, and Enter does NOT save it.** A description is
+// several thoughts, so Enter is a newline and only the button submits.
+document.getElementById('p-detail-text').addEventListener('keydown', (ev) => {
+  if (ev.key === 'Escape') { ev.preventDefault(); closeEditors(); }
+});
 
 // **Hand the card over. A toggle, because there are exactly two actors.** Card #0053.
 //
@@ -2532,6 +2697,11 @@ def payload() -> bytes:
                 # twice a second, so a card ages out on its own without a reload.
                 **({"old": True} if is_old(item) else {}),
                 "detail": inline(item.detail),
+                # **The RAW text as well as the rendered form, card #0082.** `detail`
+                # has already been through `inline()` -- escaped, with the markdown-ish
+                # bits turned into tags -- and putting THAT into an editor would hand
+                # Terry HTML to edit and then store it, one round trip from unreadable.
+                "detailRaw": item.detail,
                 # Card #0028. Omitted when empty so a board of unrelated cards stays
                 # the same size on the wire as it was before relationships existed.
                 **({"links": related(item.id)} if board.links_for(item.id) else {}),
@@ -2748,7 +2918,8 @@ class Handler(http.server.BaseHTTPRequestHandler):
         the property the Trello route could not offer at any price.
         """
         route = self.path.partition("?")[0]
-        if route not in ("/move", "/comment", "/create", "/assign", "/priority"):
+        if route not in ("/move", "/comment", "/create", "/assign", "/priority",
+                         "/subject", "/detail"):
             self.send_error(404)
             return
         body = self._read_json()
@@ -2791,6 +2962,18 @@ class Handler(http.server.BaseHTTPRequestHandler):
                     # forever.
                     result = board.set_priority(
                         str(body["id"]), str(body["priority"]), status.BROWSER_USER)
+                elif route == "/subject":
+                    # **Cards #0081 and #0082.** Terry: *"Sometimes I want to change
+                    # ticket titles/descriptions, and I have no way to do that
+                    # currently."*
+                    #
+                    # **Both refuse empty text in the MODEL, not here**, so the CLI and
+                    # the page cannot disagree about what blanking a card means.
+                    result = board.set_subject(
+                        str(body["id"]), str(body["subject"]), status.BROWSER_USER)
+                elif route == "/detail":
+                    result = board.set_detail(
+                        str(body["id"]), str(body["detail"]), status.BROWSER_USER)
                 elif route == "/create":
                     state = str(body["state"])
                     subject = str(body["subject"]).strip()

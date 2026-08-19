@@ -1926,6 +1926,37 @@ class Board:
         item.detail = text
         return f"{item.label} description: {was} -> {len(text)} chars (by {by})"
 
+    def set_subject(self, item_id: str, subject: str, by: Actor) -> str:
+        """Rename one card. **Card #0081.** Terry: *"Sometimes I want to change ticket
+        titles, and I have no way to do that currently."*
+
+        **No history entry, for the reason `set_detail` gives.** `verify()` replays LANES
+        and OWNERS, and a title is neither. **The audit trail for text is git** -- the
+        board file is committed after every write, so the old title is one `git diff`
+        away and never rides in the JSON twice.
+
+        **THE `id` AND THE `ticket` DO NOT MOVE, and that is the whole safety of this.**
+        The slug was derived from the ORIGINAL title and stays put: Terry says *"ticket
+        137"* out loud, commit messages cite `#0016`, and `links` join on `id`. **A
+        rename that renumbered or re-slugged would break every one of those**, which is
+        exactly why `Item.id` is documented as stable and MUST NOT be reused.
+
+        **So a renamed card keeps a slug that no longer describes it.** That is
+        deliberate and it is the cheaper half of the trade.
+
+        **An empty title is REFUSED**, like an empty description: a card with no name is
+        unfindable in every view, and the old text is gone either way.
+        """
+        text = " ".join(subject.split())
+        if not text:
+            raise BoardError("refusing to blank a title; pass real text")
+        item = self.find(item_id)
+        if item.subject == text:
+            return f"{item.label} is already called that"
+        was = item.subject
+        item.subject = text
+        return f"{item.label}: {was!r} -> {text!r} (by {by})"
+
     def assign(self, item_id: str, owner: Actor, by: Actor) -> str:
         """Reassign one card's owner, appending to its history. Card #0053.
 
@@ -2287,6 +2318,11 @@ def main() -> None:
     # uses**, so the shell-quoting lesson is inherited rather than repeated.
     ap.add_argument("--set-detail", metavar="ID",
                     help="replace one card's description; use --detail or --detail-file")
+    # **Card #0081.** The web drawer is the surface Terry asked for; this exists so the
+    # CLI is not the one place a rename is impossible, which is the asymmetry `/priority`
+    # already closed in the other direction.
+    ap.add_argument("--set-subject", nargs=2, metavar=("ID", "TEXT"),
+                    help="rename one card; the id and ticket number do not move")
     # **Card #0069, and it is the CLI half of the dialog's new picker.** The default
     # stays `claude` because that is what `Item.owner` already did; his standing rule is
     # *"if in doubt, assign to claude."*
@@ -2424,6 +2460,8 @@ HANDLERS: dict[str, Callable[[Board, argparse.Namespace], str]] = {
     "set_priority": lambda b, a: b.set_priority(
         a.set_priority[0], a.set_priority[1].upper(), CLI_USER),
     "set_detail": lambda b, a: b.set_detail(a.set_detail, _detail_text(a), CLI_USER),
+    "set_subject": lambda b, a: b.set_subject(a.set_subject[0], a.set_subject[1],
+                                              CLI_USER),
     "link": lambda b, a: b.link(a.link[0], a.link[1].lower(), a.link[2], CLI_USER),
     "unlink": lambda b, a: b.unlink(a.unlink[0], a.unlink[1].lower(), a.unlink[2],
                                     CLI_USER),
