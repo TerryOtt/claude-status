@@ -53,7 +53,7 @@ import json
 import os
 import pathlib
 import time
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from dataclasses import dataclass, field
 from typing import Any, Literal, Self
 
@@ -952,6 +952,29 @@ class Board:
         self.items.append(item)
         return f"created {item.label} {item_id} in {state} (by {by})"
 
+    def set_priority(self, item_id: str, priority: str, by: Actor) -> str:
+        """Change one card's priority. Card #0060.
+
+        **No history entry, and no permission check.** Priority is a sorting key, not
+        a state transition -- the same reasoning that keeps ownership out of the lane
+        replay and a project rename out of the trail. **`verify()` replays LANES**, and
+        an entry with neither a lane nor an owner would be a third shape for it to
+        learn.
+
+        **Either actor may set it.** Terry decides what matters; Claude files cards and
+        gets the guess wrong sometimes. A permission here would only make a correction
+        need a round trip.
+        """
+        if priority not in PRIORITIES:
+            raise BoardError(
+                f"unknown priority {priority!r}; want one of {', '.join(PRIORITIES)}")
+        item = self.find(item_id)
+        was = item.priority
+        if was == priority:
+            return f"{item.label} is already {priority}"
+        item.priority = priority
+        return f"{item.label} priority: {was} -> {priority} (by {by})"
+
     def assign(self, item_id: str, owner: Actor, by: Actor) -> str:
         """Reassign one card's owner, appending to its history. Card #0053.
 
@@ -1229,6 +1252,12 @@ def main() -> None:
     # **`port` has the same shape and will want the same treatment.**
     ap.add_argument("--set-project", metavar="NAME",
                     help="rename the board's project field")
+    # **Priority was set-once until 2026-08-19.** `--priority` above only decorates
+    # `--create`, so a card filed at the wrong priority could not be corrected from the
+    # CLI at all -- and the drawer has no control for it either. Terry asked to move a
+    # card to P1 and there was no way to do it. Card #0060.
+    ap.add_argument("--set-priority", nargs=2, metavar=("ID", "PRIORITY"),
+                    help="change one card's priority")
     ap.add_argument("--create", nargs=2, metavar=("ID", "SUBJECT"),
                     help="add one card; needs --state")
     # **`choices` is the lanes Claude may CREATE in, not every lane.** argparse then
@@ -1272,23 +1301,6 @@ def main() -> None:
     _report(load(args.board), args)
 
 
-# **EVERY FLAG THAT WRITES, IN ONE PLACE, because listing them inline failed twice.**
-#
-# The dispatch used to read `if args.move or args.comment or args.create:` -- a literal
-# list that a new flag has to be remembered into. **`--assign` was added on 2026-08-19
-# and not remembered**, so `status.py --assign 3 terry` fell through to the REPORT
-# path: it printed the whole board and exited 0. **A write that silently becomes a
-# read, and reports success.**
-#
-# That is card #0032's defect wearing a new costume -- the CLI printing success for
-# something that did not happen -- and it survived a test suite that exercised the HTTP
-# route thoroughly and never ran the flag.
-#
-# **`_apply` raises if it recognizes nothing**, so a flag added here and not handled
-# there fails loudly instead of doing nothing quietly.
-MUTATIONS = ("move", "comment", "create", "assign", "set_project")
-
-
 def _apply(board: Board, args: argparse.Namespace) -> str:
     """Perform the one requested change and RETURN its description.
 
@@ -1313,36 +1325,65 @@ def _apply(board: Board, args: argparse.Namespace) -> str:
     which would be absurd for a local board. What it does is make the honest path
     the easy path and forgery a deliberate act.
     """
-    if args.create:
-        return board.create(args.create[0], args.create[1], args.state, "claude",
-                            priority=args.priority, detail=_detail_text(args))
-    if args.move:
-        return board.move(args.move[0], args.move[1], "claude")
-    if args.set_project:
-        was = board.project
-        name = args.set_project.strip()
-        if not name:
-            raise BoardError("a project needs a name")
-        if name == was:
-            return f"project is already {name!r}"
-        board.project = name
-        # **No history entry, and that is consistent rather than lazy.** The trail
-        # belongs to CARDS -- `verify()` replays per-item histories -- and board
-        # metadata has no card to attach to. Same reasoning that keeps initial
-        # ownership out of the log: it is a property, not an event.
-        return f"project renamed: {was!r} -> {name!r}"
-    if args.assign:
-        owner = args.assign[1].lower()
-        if owner not in ("terry", "claude"):
-            raise BoardError(f"unknown owner {args.assign[1]!r}; want terry or claude")
-        return board.assign(args.assign[0], owner, "claude")
-    if args.comment:
-        return board.comment(args.comment[0], args.comment[1], "claude")
-    # **Unreachable via the dispatch above, and it MUST stay a raise anyway.** A flag
-    # added to `MUTATIONS` and not handled here would otherwise fall off the end and
-    # return `None`, which prints as `None` and saves an unchanged board -- a second
-    # silent no-op of exactly the kind this list exists to prevent.
+    for name, handler in HANDLERS.items():
+        if getattr(args, name):
+            return handler(board, args)
+    # **Unreachable via `main`'s guard, and it MUST stay a raise anyway.** Falling off
+    # the end would return `None`, which prints as `None` and saves an unchanged
+    # board -- a silent no-op of exactly the kind this table exists to prevent.
     raise BoardError(f"no mutation requested; one of {', '.join(MUTATIONS)} is needed")
+
+
+def _do_create(board: Board, args: argparse.Namespace) -> str:
+    return board.create(args.create[0], args.create[1], args.state, "claude",
+                        priority=args.priority, detail=_detail_text(args))
+
+
+def _do_assign(board: Board, args: argparse.Namespace) -> str:
+    owner = args.assign[1].lower()
+    if owner not in ("terry", "claude"):
+        raise BoardError(f"unknown owner {args.assign[1]!r}; want terry or claude")
+    return board.assign(args.assign[0], owner, "claude")
+
+
+def _do_set_project(board: Board, args: argparse.Namespace) -> str:
+    """Rename the board. **No history entry, and that is consistent rather than lazy.**
+
+    The trail belongs to CARDS -- `verify()` replays per-item histories -- and board
+    metadata has no card to attach to. Same reasoning that keeps initial ownership out
+    of the log: a property, not an event.
+    """
+    was = board.project
+    name = args.set_project.strip()
+    if not name:
+        raise BoardError("a project needs a name")
+    if name == was:
+        return f"project is already {name!r}"
+    board.project = name
+    return f"project renamed: {was!r} -> {name!r}"
+
+
+# **ONE TABLE, so a write flag cannot be added in one place and forgotten in another.**
+#
+# This replaced a literal `if args.move or args.comment or args.create:` in `main` plus
+# a matching if-chain here. **`--assign` was added to argparse and to the chain and NOT
+# to the condition on 2026-08-19**, so it fell through to the REPORT path: it printed
+# the whole board and exited 0. A write that silently became a read, and reported
+# success.
+#
+# **`MUTATIONS` is now DERIVED from these keys rather than maintained beside them**, so
+# the two cannot disagree. The key is the argparse `dest`.
+HANDLERS: dict[str, Callable[[Board, argparse.Namespace], str]] = {
+    "create": _do_create,
+    "move": lambda b, a: b.move(a.move[0], a.move[1], "claude"),
+    "assign": _do_assign,
+    "comment": lambda b, a: b.comment(a.comment[0], a.comment[1], "claude"),
+    "set_project": _do_set_project,
+    "set_priority": lambda b, a: b.set_priority(
+        a.set_priority[0], a.set_priority[1].upper(), "claude"),
+}
+
+MUTATIONS = tuple(HANDLERS)
 
 
 def _detail_text(args: argparse.Namespace) -> str:
