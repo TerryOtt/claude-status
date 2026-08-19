@@ -408,6 +408,34 @@ def inline(text: str) -> str:
     return out
 
 
+#: How long a finished card stays on screen. **Terry's number, card #0063**: *"cards in
+#: COMPLETED for >= 24 hours should not be shown"*.
+OLD_AFTER = datetime.timedelta(hours=24)
+
+
+def is_old(item: "status.Item") -> bool:
+    """Whether a COMPLETED card has sat there long enough to hide. **Card #0063.**
+
+    **Measured from when it ENTERED `completed`, not from when it was created.** A card
+    filed in March and finished this morning is fresh; the question is how long the
+    result has been on screen.
+
+    **Only `completed` ages.** Nothing else on this board is finished, so nothing else
+    has a reason to disappear -- and a card that vanished from `Blocked` after a day
+    would be hiding exactly the thing that needs chasing.
+
+    **An unknown timestamp is NOT old.** `state_since` is `None` for a migrated card, and
+    the safe direction is to keep showing it: a card wrongly hidden is invisible, while a
+    card wrongly shown is merely one extra row.
+    """
+    if item.state != "completed":
+        return False
+    since = item.state_since
+    if since is None:
+        return False
+    return datetime.datetime.now().astimezone() - status.parse_stamp(since) >= OLD_AFTER
+
+
 def when(stamp: str) -> str:
     """An ISO stamp as `2026-08-18 2:56pm`, or unchanged if it will not parse.
 
@@ -685,6 +713,18 @@ PAGE = """<!doctype html>
      remember which color meant what. */
   .owner { padding: 0 12px 8px; font-size: 10px; font-weight: 600;
            letter-spacing: .02em; color: var(--dim); }
+  /* **Card #0063.** It sits under the owner line rather than in the `h2`, because that
+     row is already a flex container holding the title, the count and the `+`, and a
+     fourth item there would squeeze the lane name on the narrow columns.
+
+     Sized and colored like the owner line it follows -- this is a lane-level note, not
+     a call to action, and the hazard styling on this board is reserved for the three
+     counters that genuinely ask Terry for something. */
+  .unhide { display: flex; align-items: center; gap: 5px; cursor: pointer;
+            padding: 0 12px 8px; margin-top: -4px;
+            font-size: 10px; font-weight: 600; color: var(--dim); }
+  .unhide input { margin: 0; width: 11px; height: 11px; cursor: pointer; }
+  .unhide:hover { color: var(--ink); }
   .lane[data-css="terry"]   .owner { color: var(--terry); }
   .lane[data-css="handoff"] .owner { color: var(--handoff); }
 
@@ -1149,6 +1189,11 @@ let seen = null, openId = null;
 // nowhere else, so it is the one thing a repaint must route around rather than redraw.
 let drafts = {};
 let data = {lanes: [], edges: [], counts: {}, error: null};
+// **Card #0063. Off on every load, which is what "by default" means.** It lives here
+// rather than in localStorage on purpose: a board that remembered being unhidden would
+// need a second decision about when to forget, and Terry asked for a default rather
+// than a preference.
+let unhideOld = false;
 
 function toast(msg, bad) {
   const t = document.getElementById('toast');
@@ -1682,6 +1727,19 @@ function card(item) {
   return d;
 }
 
+// **ONE place decides which cards are on screen. Card #0063.**
+//
+// **This is not tidiness -- two copies were WRONG within a minute of being written.**
+// `laneEl` filtered the old completed cards out and set the badge to what it had drawn;
+// `applyFilter` then ran, as `paint()` always makes it, and reset every badge to
+// `lane.items.length`. The first render showed a lane reading 8 above zero cards.
+//
+// The search half had the same hole in the other direction: it counted a match on a
+// card that had been hidden and therefore had no element to highlight.
+function visibleItems(lane) {
+  return unhideOld ? lane.items : lane.items.filter(i => !i.old);
+}
+
 function laneEl(lane) {
   const el = document.createElement('section');
   el.className = 'lane';
@@ -1690,7 +1748,6 @@ function laneEl(lane) {
   el.innerHTML = '<h2><span class="nm"></span><span class="n"></span></h2>'
     + '<div class="owner"></div><div class="cards"></div>';
   el.querySelector('.nm').textContent = lane.label;
-  el.querySelector('.n').textContent = lane.items.length;
   el.querySelector('.owner').textContent = lane.ownerLabel;
   // **The + exists only where the SERVER says a card may be born.** `lane.creatable`
   // comes from `may_create("terry", state)`, so this asks the permission model
@@ -1704,8 +1761,38 @@ function laneEl(lane) {
     add.addEventListener('click', ev => { ev.stopPropagation(); openMake(lane); });
     el.querySelector('h2').appendChild(add);
   }
+  // **Card #0063. Old finished work is hidden by default.** Terry: "cards in COMPLETED
+  // for >= 24 hours should not be shown", with a checkbox to bring them back, and his
+  // word for it: "I like 'Unhide' vs 'Show' or 'Display' here."
+  //
+  // **The state is in memory, not in localStorage, and that is the point of "by
+  // default".** paint() runs twice a second and MUST NOT re-hide what Terry just
+  // unhid, which `unhideOld` handles. A reload starting hidden again is the requirement
+  // rather than a shortcoming.
+  const hiding = (lane.oldCount || 0) > 0;
+  if (hiding) {
+    const wrap = document.createElement('label');
+    wrap.className = 'unhide';
+    const box = document.createElement('input');
+    box.type = 'checkbox';
+    box.checked = unhideOld;
+    box.addEventListener('change', () => { unhideOld = box.checked; paint(); });
+    const text = document.createElement('span');
+    text.textContent = 'Unhide old (' + lane.oldCount + ')';
+    wrap.appendChild(box);
+    wrap.appendChild(text);
+    wrap.title = 'Cards finished more than 24 hours ago are hidden. '
+      + 'Tick to bring them back for this visit.';
+    el.querySelector('.owner').after(wrap);
+  }
+
+  const shown = visibleItems(lane);
+  // **The badge counts what is ON SCREEN.** A lane reading 8 above zero visible cards
+  // is a number that describes something the eye cannot find.
+  el.querySelector('.n').textContent = shown.length;
+
   const cards = el.querySelector('.cards');
-  for (const item of lane.items) cards.appendChild(card(item));
+  for (const item of shown) cards.appendChild(card(item));
 
   el.addEventListener('dragover', ev => {
     const src = document.querySelector('.card.dragging');
@@ -1912,11 +1999,14 @@ function applyFilter() {
   const board = document.getElementById('board');
   const findn = document.getElementById('findn');
   const q = query.trim().toLowerCase();
+  // **Both branches count `visibleItems`, never `lane.items`.** Card #0063: a card
+  // hidden for being old has no element to highlight, so counting it here would report
+  // matches the eye cannot find -- the same disagreement, arriving through the search.
   if (!q) {
     for (const el of board.querySelectorAll('.card.nomatch')) el.classList.remove('nomatch');
     for (const lane of data.lanes || []) {
       const el = board.querySelector('.lane[data-lane="' + lane.state + '"] .n');
-      if (el) { el.textContent = lane.items.length; el.title = ''; }
+      if (el) { el.textContent = visibleItems(lane).length; el.title = ''; }
     }
     findn.textContent = '';
     return;
@@ -1924,7 +2014,8 @@ function applyFilter() {
   let total = 0;
   for (const lane of data.lanes || []) {
     let shown = 0;
-    for (const item of lane.items) {
+    const pool = visibleItems(lane);
+    for (const item of pool) {
       const el = board.querySelector('.card[data-id="' + CSS.escape(item.id) + '"]');
       const hit = hay(item).includes(q);
       if (hit) shown += 1;
@@ -1934,7 +2025,7 @@ function applyFilter() {
     const n = board.querySelector('.lane[data-lane="' + lane.state + '"] .n');
     if (n) {
       n.textContent = shown;
-      n.title = shown + ' of ' + lane.items.length + ' match';
+      n.title = shown + ' of ' + pool.length + ' match';
     }
   }
   // **Zero is stated, not left blank.** "No cards match" and "the search has not run" are
@@ -2362,6 +2453,9 @@ def payload() -> bytes:
             # offer a lane the POST would refuse. Adding a lane to `create` in
             # `rules.json` grows a `+` with no code change here or in the page.
             "creatable": status.may_create("terry", lane.state),
+            # **Card #0063. Counted on the server, beside the flag it counts**, so the
+            # checkbox label and the hiding can never disagree about how many.
+            "oldCount": sum(1 for i in lane.items if is_old(i)),
             "items": [{
                 "id": item.id,
                 "ticket": item.label,
@@ -2370,6 +2464,10 @@ def payload() -> bytes:
                 "subject": item.subject,
                 "priority": item.priority,
                 "priorityLabel": status.PRIORITY_LABEL.get(item.priority, ""),
+                # **Card #0063.** Computed on the SERVER so one clock decides it, and
+                # so the 24-hour rule lives in exactly one place. The page re-fetches
+                # twice a second, so a card ages out on its own without a reload.
+                **({"old": True} if is_old(item) else {}),
                 "detail": inline(item.detail),
                 # Card #0028. Omitted when empty so a board of unrelated cards stays
                 # the same size on the wire as it was before relationships existed.

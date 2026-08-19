@@ -756,7 +756,19 @@ def created_key(item: "Item") -> datetime.datetime:
     **Naive stamps are read as this machine's local zone**, matching `stamp()`, which
     writes local time with an offset.
     """
-    raw = item.created_at
+    return parse_stamp(item.created_at)
+
+
+def parse_stamp(raw: str | None) -> datetime.datetime:
+    """One history `at` string as an aware datetime, or `_BEGINNING_OF_TIME`.
+
+    **Split out of `created_key` for card #0063**, which needs the same parsing for a
+    different question -- *when did this card enter its lane* rather than *when was it
+    created*. Two copies would have drifted the moment one of them learned a format.
+
+    **It NEVER raises.** A malformed stamp returns the fallback, because the board is
+    rendered every 400 ms and one bad string MUST NOT take a lane off the screen.
+    """
     if raw is None:
         return _BEGINNING_OF_TIME
 
@@ -776,9 +788,6 @@ def created_key(item: "Item") -> datetime.datetime:
             parsed = None
 
     if parsed is None:
-        # **Unparseable sorts oldest, exactly like absent.** A card MUST NOT vanish from
-        # a lane or crash a repaint because one string is malformed, and the board is
-        # rendered every 400 ms.
         return _BEGINNING_OF_TIME
 
     if parsed.tzinfo is None:
@@ -1054,6 +1063,25 @@ class Item:
         """
         for change in self.history:
             if change.kind == "lane" and change.frm is None:
+                return change.at
+        return None
+
+    @property
+    def state_since(self) -> str | None:
+        """When this card last ENTERED the lane it is in, or `None`. **Card #0063.**
+
+        **The LAST lane entry, not the first**, and the difference is the whole point: a
+        card completed, reopened and completed again entered `completed` twice, and only
+        the second one says how long it has been sitting there.
+
+        **Ownership and priority entries are skipped.** Both carry no lane, so counting
+        one would report a card as freshly arrived because somebody renamed its owner.
+
+        `None` when the history has no lane entry -- a migrated card, or one whose trail
+        predates the mechanism. Callers MUST treat that as unknown rather than as recent.
+        """
+        for change in reversed(self.history):
+            if change.kind == "lane":
                 return change.at
         return None
 
