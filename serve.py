@@ -436,6 +436,40 @@ def is_old(item: "status.Item") -> bool:
     return datetime.datetime.now().astimezone() - status.parse_stamp(since) >= OLD_AFTER
 
 
+def user_css() -> str:
+    """One color variable and four rules per configured user. **Card #0072.**
+
+    **The stylesheet named `terry` and `claude` in nine places until this card**, so a
+    third person would have rendered with no color at all -- their name gray in the
+    audit trail, their owner chip unstyled, their lane accent missing. None of that
+    fails loudly; it just looks broken for one person.
+
+    **`--accent` is the browser user's color**, and it is what every brand-colored
+    control uses: the post button, the create button, the drop outline. Those were
+    `var(--accent)` and they mean *this deployment's primary*, not *Terry*.
+
+    **Generated rather than templated, because the count is unknown.** Two users is
+    today; the whole point of the card is that it stops being a fixed number.
+    """
+    lines = [f"  --user-{u.id}: {u.color};" for u in status.USERS]
+    lines.append(f"  --accent: var(--user-{status.BROWSER_USER});")
+    out = [":root {", *lines, "}"]
+
+    for u in status.USERS:
+        var = f"var(--user-{u.id})"
+        out += [
+            # The lane accent, when a lane belongs to exactly this actor.
+            f'.lane[data-css="{u.id}"] {{ border-top-color: {var}; }}',
+            f'.lane[data-css="{u.id}"] .owner {{ color: {var}; }}',
+            # Their name, wherever it appears: the audit trail and a comment head.
+            f".trail .who.{u.id} {{ color: {var}; }}",
+            f".comment .head .who.{u.id} {{ color: {var}; }}",
+            # The owner chip in the drawer.
+            f"#p-owner.{u.id} {{ color: {var}; border-color: {var}; }}",
+        ]
+    return "\n".join(out)
+
+
 def when(stamp: str) -> str:
     """An ISO stamp as `2026-08-18 2:56pm`, or unchanged if it will not parse.
 
@@ -506,7 +540,7 @@ PAGE = """<!doctype html>
   :root {
     --bg: #F4F5F7; --lane: #EBECF0; --card: #FFFFFF;
     --ink: #172B4D; --dim: #5E6C84; --line: #DFE1E6;
-    --terry: #0052CC; --claude: #E2A100; --handoff: #1F845A; --done: #5E6C84;
+    --handoff: #1F845A; --done: #5E6C84;
     /* **THE BAR IS DARK AND THE APP IS LIGHT.** Terry, 2026-08-19: "the top title
      bar for the app blurs/blends with my chrome bookmarks bar. Go dark (something
      from dark gray to pure black, your call) with high contrast (maybe white?)
@@ -691,8 +725,7 @@ PAGE = """<!doctype html>
           flex: 1 1 0; min-width: 118px; max-width: 340px;
           display: flex; flex-direction: column;
           border-top: 3px solid var(--dim); }
-  .lane[data-css="terry"]   { border-top-color: var(--terry); }
-  .lane[data-css="claude"]  { border-top-color: var(--claude); }
+  /* **Per-user lane accents are GENERATED, card #0072.** See `user_css()`. */
   .lane[data-css="handoff"] { border-top-color: var(--handoff); }
   .lane[data-css="done"]    { border-top-color: var(--done); }
 
@@ -725,11 +758,11 @@ PAGE = """<!doctype html>
             font-size: 10px; font-weight: 600; color: var(--dim); }
   .unhide input { margin: 0; width: 11px; height: 11px; cursor: pointer; }
   .unhide:hover { color: var(--ink); }
-  .lane[data-css="terry"]   .owner { color: var(--terry); }
+
   .lane[data-css="handoff"] .owner { color: var(--handoff); }
 
   .cards { padding: 0 8px 10px; overflow-y: auto; flex: 1; }
-  .lane.over { outline: 2px solid var(--terry); outline-offset: -2px; }
+  .lane.over { outline: 2px solid var(--accent); outline-offset: -2px; }
   .lane.deny { outline: 2px dashed var(--p0); outline-offset: -2px; }
 
   /* **PRIORITY AND TITLE, NOTHING ELSE.** Terry: "for the cards, only show P1-P5 &
@@ -818,7 +851,7 @@ PAGE = """<!doctype html>
   .lane h2 .add { border: 0; background: transparent; color: var(--dim);
                   font-size: 1.05em; font-weight: 700; line-height: 1;
                   cursor: pointer; padding: 0 4px; border-radius: 4px; }
-  .lane h2 .add:hover { background: #FFFFFF; color: var(--terry); }
+  .lane h2 .add:hover { background: #FFFFFF; color: var(--accent); }
 
   /* **A CENTERED MODAL, unlike the card drawer, and the difference is the job.** The
      drawer keeps the board visible because a card is read IN CONTEXT. This form is
@@ -860,7 +893,7 @@ PAGE = """<!doctype html>
   #mk button { font: inherit; font-size: 13px; font-weight: 600; cursor: pointer;
                border-radius: 5px; padding: 7px 14px; border: 1px solid var(--line);
                background: #FFFFFF; color: var(--ink); }
-  #mk button.go { background: var(--terry); border-color: var(--terry);
+  #mk button.go { background: var(--accent); border-color: var(--accent);
                   color: #FFFFFF; }
   #mk button:disabled { opacity: .5; cursor: not-allowed; }
 
@@ -894,8 +927,7 @@ PAGE = """<!doctype html>
   #p-owner { font: inherit; font-size: 12px; font-weight: 700; cursor: pointer;
              border: 1px solid var(--line); border-radius: 4px; padding: 2px 9px;
              background: #FFFFFF; }
-  #p-owner.terry { color: var(--terry); border-color: var(--terry); }
-  #p-owner.claude { color: var(--claude); border-color: var(--claude); }
+
   #p-owner:disabled { opacity: .5; cursor: wait; }
   /* **The priority SELECT wears the chip's colors, card #0062.** It inherits `.pri`
      for the background and the weight; these rules only undo what a browser adds to a
@@ -967,8 +999,7 @@ PAGE = """<!doctype html>
   .trail .at { color: var(--dim); font-variant-numeric: tabular-nums;
                white-space: nowrap; }
   .trail .who { font-weight: 600; }
-  .trail .who.terry { color: var(--terry); }
-  .trail .who.claude { color: var(--claude); }
+  /* Per-user name colors are generated -- `user_css()`, card #0072. */
   .trail .what { color: var(--dim); }
   .trail .empty { grid-column: 1 / -1; }
 
@@ -976,12 +1007,11 @@ PAGE = """<!doctype html>
              margin-bottom: 8px; font-size: 13px; }
   .comment .head { font-size: 11px; color: var(--dim); margin-bottom: 3px; }
   .comment .head .who { font-weight: 700; }
-  .comment .head .who.terry { color: var(--terry); }
-  .comment .head .who.claude { color: var(--claude); }
+
   #say { width: 100%; min-height: 68px; font: inherit; font-size: 13px;
          padding: 8px 10px; border: 1px solid var(--line); border-radius: 6px;
          resize: vertical; }
-  #post { margin-top: 8px; background: var(--terry); color: #FFFFFF; border: 0;
+  #post { margin-top: 8px; background: var(--accent); color: #FFFFFF; border: 0;
           border-radius: 5px; padding: 7px 14px; font: inherit; font-weight: 600;
           font-size: 13px; cursor: pointer; }
 
@@ -1040,6 +1070,11 @@ PAGE = """<!doctype html>
   /* Hidden rather than removed, so `playFlip` measures a stable set and a card does not
      animate in from nowhere when the query is cleared. */
   .card.nomatch { display: none; }
+  /* **Generated per configured user, card #0072.** One color variable and four rules
+     each, plus `--accent` for the browser user. It goes LAST so a per-user rule wins
+     over the generic ones above, and it is built by `user_css()` rather than written
+     here because the number of people is configuration rather than code. */
+%USERCSS%
 </style>
 </head>
 <body>
@@ -1117,7 +1152,7 @@ move any card whoever owns it. Click to hand it over."></button>
            is one thought, a description is several -- and the HAND does not read a
            decision. Cards #0039 and #0040. -->
       <div class="keyhint">Enter posts. Shift+Enter adds a line break.</div>
-      <button id="post">Comment as Terry</button>
+      <button id="post">Comment</button>
       <h3>Audit trail</h3>
       <div class="trail" id="p-trail"></div>
     </div>
@@ -1194,6 +1229,27 @@ let data = {lanes: [], edges: [], counts: {}, error: null};
 // need a second decision about when to forget, and Terry asked for a default rather
 // than a preference.
 let unhideOld = false;
+
+// **Card #0072. The page knows no names.** `data.actors` comes from `rules.json`, so
+// every label here is configuration rather than markup.
+//
+// **An UNKNOWN id falls back to the id itself rather than to a name.** A card whose
+// history names somebody since removed from the config would otherwise render as
+// whichever person the old ternary happened to pick -- attributing one person's move to
+// another, silently. Showing the raw id is uglier and true.
+function userLabel(id) {
+  const u = (data.actors || []).find(a => a.id === id);
+  return u ? u.label : (id || '?');
+}
+
+// **The owner control CYCLES rather than flips**, because there may be more than two.
+// The old line read `owner === 'terry' ? 'claude' : 'terry'`, which is a flip and is
+// correct only for exactly two actors.
+function nextOwner(current) {
+  const ids = (data.actors || []).map(a => a.id);
+  if (!ids.length) return current;
+  return ids[(ids.indexOf(current) + 1) % ids.length];
+}
 
 function toast(msg, bad) {
   const t = document.getElementById('toast');
@@ -1327,7 +1383,7 @@ function openCard(id) {
     it.laneLabel + '  \\u00b7  ' + it.id;
 
   const own = document.getElementById('p-owner');
-  own.textContent = it.owner === 'terry' ? 'Terry' : 'Claude';
+  own.textContent = userLabel(it.owner);
   own.className = it.owner;
   own.disabled = false;
 
@@ -1350,7 +1406,7 @@ function openCard(id) {
     d.className = 'comment';
     d.innerHTML = '<div class="head"><span class="who ' + c.by + '"></span>'
       + '<span class="at"></span></div><div class="text">' + c.text + '</div>';
-    d.querySelector('.who').textContent = c.by === 'terry' ? 'Terry' : 'Claude';
+    d.querySelector('.who').textContent = userLabel(c.by);
     d.querySelector('.at').textContent = '  \\u00b7  ' + c.when;
     cs.appendChild(d);
   }
@@ -1372,7 +1428,7 @@ function openCard(id) {
 
     const who = document.createElement('div');
     who.className = 'who ' + h.by;
-    who.textContent = h.by === 'terry' ? 'Terry' : 'Claude';
+    who.textContent = userLabel(h.by);
 
     const what = document.createElement('div');
     what.className = 'what';
@@ -1381,7 +1437,7 @@ function openCard(id) {
     // row in a permanent record, which is worse than a missing one. Card #0053.
     //
     // **Terry's own wording for the line**: "Ticket ownership change: Terry -> Claude".
-    const name = (a) => a === 'terry' ? 'Terry' : 'Claude';
+    const name = userLabel;
     if (h.ownerTo) {
       what.textContent = 'Ticket ownership change: '
         + name(h.ownerFrom) + ' \\u2192 ' + name(h.ownerTo);
@@ -1492,7 +1548,7 @@ document.getElementById('p-owner').addEventListener('click', async () => {
   try {
     const res = await fetch('/assign', {
       method: 'POST', headers: {'Content-Type': 'application/json'},
-      body: JSON.stringify({id: openId, owner: it.owner === 'terry' ? 'claude' : 'terry'}),
+      body: JSON.stringify({id: openId, owner: nextOwner(it.owner)}),
     });
     const out = await res.json();
     if (!res.ok) { toast(out.error || 'Reassign refused', true); return; }
@@ -1587,7 +1643,7 @@ function mkDirty() {
 function openMake(lane) {
   mkOpen = lane.state;
   document.getElementById('mk-where').textContent =
-    'It will be created in ' + lane.label + ', by Terry.';
+    'It will be created in ' + lane.label + ', by ' + userLabel(data.browserUser) + '.';
   const pri = document.getElementById('mk-priority');
   // **Priorities come from `rules.json` via /data.** P0 exists and a range typed
   // into the page would be a second copy of the list. Card #0047.
@@ -1609,7 +1665,7 @@ function openMake(lane) {
     const o = document.createElement('option');
     o.value = a.id;
     o.textContent = a.label;
-    if (a.id === (data.defaultOwner || 'claude')) o.selected = true;
+    if (a.id === data.defaultOwner) o.selected = true;
     own.appendChild(o);
   }
   document.getElementById('mkscrim').classList.add('show');
@@ -2034,6 +2090,13 @@ function applyFilter() {
 }
 
 function paint() {
+  // **"Comment as Terry" was in the MARKUP until card #0072**, and dropping the name
+  // rather than configuring it would have lost something real: the button says who the
+  // comment gets attributed to, which is the one thing a shared board must not leave to
+  // guesswork.
+  document.getElementById('post').textContent =
+    'Comment as ' + userLabel(data.browserUser);
+
   const board = document.getElementById('board');
   const before = measureCards();
   board.replaceChildren();
@@ -2452,7 +2515,7 @@ def payload() -> bytes:
             # enforces.** `may_create` is what `/create` calls, so the button cannot
             # offer a lane the POST would refuse. Adding a lane to `create` in
             # `rules.json` grows a `+` with no code change here or in the page.
-            "creatable": status.may_create("terry", lane.state),
+            "creatable": status.may_create(status.BROWSER_USER, lane.state),
             # **Card #0063. Counted on the server, beside the flag it counts**, so the
             # checkbox label and the hiding can never disagree about how many.
             "oldCount": sum(1 for i in lane.items if is_old(i)),
@@ -2483,7 +2546,7 @@ def payload() -> bytes:
                 "owner": item.owner,
                 # **Computed on the SERVER from the same table the server enforces**,
                 # so the cursor and the answer cannot disagree.
-                "draggable": any(a == item.state for a, _ in status.TERRY_EDGES),
+                "draggable": any(a == item.state for a, _ in status.BROWSER_EDGES),
                 "comments": [{"by": c.by, "when": when(c.at),
                               "text": inline(c.text)} for c in item.comments],
                 # **Newest first.** Terry: "needs to be newest at top (most
@@ -2510,7 +2573,7 @@ def payload() -> bytes:
                             for h in reversed(item.history)],
             } for item in lane.items],
         } for lane in lanes],
-        "edges": sorted(status.TERRY_EDGES),
+        "edges": sorted(status.BROWSER_EDGES),
         # **The priority list ships from `rules.json`, never typed into the page.**
         # A range written in HTML is a second copy that goes stale silently -- and it
         # already nearly did: card #0047 was specified as "P1-P5" while `P0` exists.
@@ -2518,11 +2581,19 @@ def payload() -> bytes:
                        for p in status.PRIORITIES],
         "defaultPriority": status.DEFAULT_PRIORITY,
         # **The actor list ships from the server, never typed into the page.** Card
-        # #0069, and the same rule the priorities already follow. Card #0072 is about to
-        # make this configurable per project, and a page naming Terry and Claude in
-        # markup would go stale the day somebody else deploys this.
-        "actors": [{"id": a, "label": a.capitalize()} for a in status.ACTORS],
-        "defaultOwner": "claude",
+        # #0069, and the same rule the priorities already follow. **Card #0072 made it
+        # configurable**, so a page naming Terry and Claude in markup would go stale the
+        # day somebody else deploys this.
+        #
+        # **The LABEL now comes from config rather than from `a.capitalize()`.** That
+        # call worked for two lowercase ids and would have rendered `mcallister` as
+        # `Mcallister`, which is a name spelled wrong on every card that person touches.
+        "actors": [{"id": u.id, "label": u.label, "class": u.user_class,
+                    "color": u.color} for u in status.USERS],
+        # **Who the PAGE writes as.** It labels the comment button and the new-card
+        # note, both of which said "Terry" in markup until this card.
+        "browserUser": status.BROWSER_USER,
+        "defaultOwner": status.DEFAULT_OWNER,
         "counts": counts,
         "error": "; ".join(drift) if drift else None,
     }).encode("utf-8")
@@ -2661,6 +2732,9 @@ class Handler(http.server.BaseHTTPRequestHandler):
             # comparison. Fetching it later would just re-read the server and always agree.
             page = (PAGE.replace("%POLL%", str(POLL_MS))
                     .replace("%BUILD%", html.escape(BUILD))
+                    # **Built per request, not once at import**, so `reload_rules`
+                    # adding a user reaches the next page load without a restart.
+                    .replace("%USERCSS%", user_css())
                     .replace("%TITLE%", html.escape(title)))
             self._send(page.encode("utf-8"), "text/html; charset=utf-8")
         else:
@@ -2693,7 +2767,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
             # land on two handler threads.
             with status.edit(BOARD_PATH) as board:
                 if route == "/move":
-                    result = board.move(str(body["id"]), str(body["to"]), "terry")
+                    result = board.move(str(body["id"]), str(body["to"]), status.BROWSER_USER)
                 elif route == "/assign":
                     # **No permission check, deliberately.** Ownership is a label, so
                     # either actor may assign it either way -- card #0053.
@@ -2704,7 +2778,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
                     # pyright the guard inside `assign()` could never fire. Both halves
                     # were one bug, found 2026-08-19.
                     result = board.assign(
-                        str(body["id"]), status.as_actor(str(body["owner"])), "terry")
+                        str(body["id"]), status.as_actor(str(body["owner"])), status.BROWSER_USER)
                 elif route == "/priority":
                     # **No permission check, and `set_priority` has none either.** Terry
                     # decides what matters; Claude files cards and guesses wrong
@@ -2716,24 +2790,24 @@ class Handler(http.server.BaseHTTPRequestHandler):
                     # unknown priority that `lanes()` would then sort to the bottom
                     # forever.
                     result = board.set_priority(
-                        str(body["id"]), str(body["priority"]), "terry")
+                        str(body["id"]), str(body["priority"]), status.BROWSER_USER)
                 elif route == "/create":
                     state = str(body["state"])
                     subject = str(body["subject"]).strip()
                     if not subject:
                         raise status.BoardError("a card needs a title")
                     result = board.create(
-                        slug_for(board, subject), subject, state, "terry",
+                        slug_for(board, subject), subject, state, status.BROWSER_USER,
                         priority=str(body.get("priority") or status.DEFAULT_PRIORITY),
                         detail=str(body.get("detail") or ""),
                         # **`as_actor` narrows the browser's string here too.** Card
                         # #0069, and the same boundary lesson `/assign` paid for: a
                         # parameter annotated `Actor` fed a raw `str` is an annotation
                         # that lies at the call site.
-                        owner=status.as_actor(str(body.get("owner") or "claude")),
+                        owner=status.as_actor(str(body.get("owner") or status.DEFAULT_OWNER)),
                     )
                 else:
-                    result = board.comment(str(body["id"]), str(body["text"]), "terry")
+                    result = board.comment(str(body["id"]), str(body["text"]), status.BROWSER_USER)
         except KeyError as exc:
             self._json({"error": f"missing field {exc}"}, 400)
             return
@@ -2813,8 +2887,8 @@ def main() -> None:
 
     print(f"  view      : http://{HOST}:{port}/")
     print(f"  polling   : every {POLL_MS} ms, repaints only when the file changes")
-    print("  Terry may drag:")
-    for a, b in sorted(status.TERRY_EDGES):
+    print(f"  {status.USER_LABEL[status.BROWSER_USER]} may drag:")
+    for a, b in sorted(status.BROWSER_EDGES):
         print(f"      {a} -> {b}")
     # **A DAEMON thread, so Ctrl+C still stops the server.** A push in flight is a
     # `git` subprocess that finishes on its own; the worst case at shutdown is a commit

@@ -57,7 +57,7 @@ import re
 import time
 from collections.abc import Callable, Iterator
 from dataclasses import dataclass, field
-from typing import Any, Literal, Self
+from typing import Any, Self
 
 # **`dataclasses.asdict` was considered and REFUSED**, which is why every class here
 # hand-writes `to_json`. `asdict` walks nested dataclasses blindly: it would emit `frm`
@@ -77,7 +77,22 @@ SCHEMA = 1
 # **2 -> 3 the same afternoon**, when Terry split the grouped actors back apart: *"since
 # we add comments, let's split."* Schema 2 carried `actors` as a list; schema 3 carries
 # one `actor` per row so each can hold its own reason.
-RULES_SCHEMA = 3
+RULES_SCHEMA = 4
+
+
+class BoardError(ValueError):
+    """The board, or a request against it, is not something this version accepts.
+
+    **MOVED ABOVE `_load_rules`'s call site by card #0072, and it was a latent bug.**
+    The class used to be defined AFTER the module-level `_load_rules(RULES_PATH)` line.
+    Python resolves the name at raise time rather than at def time, so a well-formed
+    file never noticed -- and **every refusal path in the loader would have raised
+    `NameError: name 'BoardError' is not defined` instead of the message it wrote.**
+
+    **Found by bumping the schema**, which made the loader take one of those paths for
+    the first time. The error handling had never been executed, which is the same shape
+    as a check that cannot fail: it read as covered and was not.
+    """
 
 # **The default port, and it is a DEFAULT rather than the port.** Terry, 2026-08-18:
 # *"I want per-project config JSON that includes TCP port num; I want to be able to
@@ -106,12 +121,44 @@ MIN_PORT, MAX_PORT = 1, 65535
 # Six levels rather than three, because he wanted room to rank a long backlog without
 # every item collapsing to "medium". **The list itself is in `rules.json`.**
 
-Actor = Literal["terry", "claude"]
-ACTORS: tuple[str, ...] = ("terry", "claude")
+# **`Actor` WAS `Literal["terry", "claude"]` UNTIL CARD #0072**, and losing that is the
+# price of being deployable by anybody else. Terry, 2026-08-19: *"This is an open source
+# code repo and my buddy Scott is thinking about using it... The users and user class
+# should be part of per-project cfg like rules JSON."*
+#
+# **A `Literal` cannot name values that are read from a file at run time**, so the type
+# is now a plain `str` and `as_actor` is the only guard. **That is not a loss of safety,
+# it is a relocation of it** -- and the docstring below records why the runtime check was
+# always the thing doing the work.
+Actor = str
+
+HUMAN = "human"
+BOT = "bot"
+USER_CLASSES: tuple[str, ...] = (HUMAN, BOT)
+
+
+@dataclass(frozen=True)
+class User:
+    """One person or program that may act on this board. **Card #0072.**
+
+    **`user_class` is a real distinction rather than a label.** Card #0073 gates comment
+    auto-linking on it: Terry types `#0028` when he means that card, and Claude types it
+    while explaining something, so the feature has to tell a human from a bot. **It is
+    not derivable from a name**, which is exactly why it is configured.
+
+    **`color` is emitted as a CSS variable per user**, so a third person needs no
+    stylesheet edit. The page painted `--terry` blue and `--claude` amber from hard-coded
+    rules until this card.
+    """
+
+    id: str
+    label: str
+    user_class: str
+    color: str
 
 
 def as_actor(value: str) -> Actor:
-    """Turn a caller-supplied string into an `Actor`, or refuse it. Card #0013's
+    """Turn a caller-supplied string into a known actor, or refuse it. Card #0013's
     side finding.
 
     **THE ONE PLACE A STRING BECOMES AN ACTOR**, and it exists because pyright found
@@ -123,18 +170,19 @@ def as_actor(value: str) -> Actor:
     `assign()`'s own `if owner not in ACTORS` guard as UNREACHABLE -- because the
     annotation promised the check could never fire.
 
-    **Those are one bug.** The runtime guard was the only thing keeping the route safe,
-    and the type system had been told it was redundant.
+    **Those are one bug**, and only one of them was ever load-bearing: the runtime guard
+    was the thing keeping the route safe, and the type system had been told it was
+    redundant. **Card #0072 removed the `Literal` and this check is unchanged**, so the
+    protection that mattered is exactly where it was.
 
-    **It returns the literals explicitly rather than the argument.** Returning `value`
-    after an `in` test relies on the checker's narrowing of a `str`, which varies by
-    version; returning `"terry"` cannot be misread by any of them.
+    **It returns the CONFIGURED id rather than the caller's string.** Case and
+    surrounding whitespace are normalized away, so `" Terry "` and `terry` are one actor
+    and the board never stores two spellings of one person.
     """
     name = value.strip().lower()
-    if name == "terry":
-        return "terry"
-    if name == "claude":
-        return "claude"
+    for user in USERS:
+        if user.id == name:
+            return user.id
     raise BoardError(f"unknown actor {value!r}; want one of {', '.join(ACTORS)}")
 
 
@@ -247,8 +295,9 @@ class LaneRules:
     outbound: dict[str, frozenset[str]]
 
 
-TERRY = frozenset({"terry"})
-CLAUDE = frozenset({"claude"})
+# **`TERRY` and `CLAUDE` frozensets lived here and were DELETED by card #0072.**
+# Nothing had read either one since the flat rules table landed -- they were left over
+# from the version that spelled the permission model in Python. `NOBODY` is still used.
 NOBODY: frozenset[str] = frozenset()
 
 # **THE RULES LIVE IN `rules.json`, NOT HERE.** Terry, 2026-08-18: *"can we move
@@ -272,7 +321,7 @@ NOBODY: frozenset[str] = frozenset()
 RULES_PATH = pathlib.Path(__file__).resolve().parent / "rules.json"
 
 def _index_edges(
-    edges_raw: list[Any], known: set[str], path: pathlib.Path,
+    edges_raw: list[Any], known: set[str], actors: set[str], path: pathlib.Path,
 ) -> tuple[dict[str, dict[str, set[str]]], dict[str, dict[str, set[str]]]]:
     """Validate the flat edge list and index it both ways. Card #0064.
 
@@ -309,7 +358,10 @@ def _index_edges(
                 raise BoardError(f"{path}: {spot} names unknown lane {end!r}")
         if frm == to:
             raise BoardError(f"{path}: {spot} joins {frm!r} to itself")
-        if actor not in ACTORS:
+        # **Checked against the actors this FILE declares, never against a module
+        # global.** Card #0072: the user list now comes out of the same document, and a
+        # global would not exist yet on the first load.
+        if actor not in actors:
             raise BoardError(f"{path}: {spot} names unknown actor {actor!r}")
         # **ONE ROW PER (actor, from, to), not per (from, to).** Terry split them so each
         # actor carries its own reason: *"Tell me why actor X should be able to make this
@@ -327,13 +379,91 @@ def _index_edges(
 # he asked for: *"I like that the perms are (in/out, actor, source/dest)."* **The FILE was
 # flattened on 2026-08-19 by card #0064** -- one row per edge instead of a copy under each
 # lane -- and the shape he named survives as the in-memory index this builds.
-def _load_rules(path: pathlib.Path) -> tuple[
-    tuple[tuple[str, str], ...],
-    dict[str, LaneRules],
-    tuple[str, ...],
-    dict[str, str],
-    str,
-]:
+@dataclass(frozen=True)
+class Rules:
+    """Everything `rules.json` declares, in one object. **Card #0072.**
+
+    **It replaced a five-wide return tuple**, which users, `browserUser`, `cliUser` and
+    `defaultOwner` would have taken to nine. A tuple that long is positional trivia at
+    every call site, and `reload_rules` unpacks it twice.
+    """
+
+    lanes: tuple[tuple[str, str], ...]
+    table: dict[str, LaneRules]
+    priorities: tuple[str, ...]
+    priority_label: dict[str, str]
+    default_priority: str
+    users: tuple[User, ...]
+    browser_user: str
+    cli_user: str
+    default_owner: str
+
+
+def _parse_users(doc: dict[str, Any], path: pathlib.Path) -> tuple[User, ...]:
+    """Read and validate the `users` block. **Card #0072.**
+
+    **Every field is mandatory and none is defaulted.** A user with no class would make
+    card #0073's auto-link gate silently pick a side, and a user with no color would
+    paint as whatever the browser inherits -- both are the reassuring-but-wrong shape
+    this repository keeps refusing.
+    """
+    raw = doc.get("users")
+    if not isinstance(raw, list) or not raw:
+        raise BoardError(f"{path}: 'users' is missing or empty")
+
+    users: list[User] = []
+    for index, entry in enumerate(raw):
+        spot = f"users[{index}]"
+        if not isinstance(entry, dict):
+            raise BoardError(f"{path}: {spot} is not an object")
+        missing = [k for k in ("id", "label", "class", "color") if not entry.get(k)]
+        if missing:
+            raise BoardError(f"{path}: {spot} is missing {', '.join(missing)}")
+        if entry["class"] not in USER_CLASSES:
+            raise BoardError(
+                f"{path}: {spot} class {entry['class']!r}; "
+                f"want one of {', '.join(USER_CLASSES)}")
+        # **Ids are the key everything else joins on**, so a duplicate would make one
+        # user's permissions silently shadow the other's.
+        if any(u.id == entry["id"] for u in users):
+            raise BoardError(f"{path}: {spot} repeats id {entry['id']!r}")
+        users.append(User(id=str(entry["id"]), label=str(entry["label"]),
+                          user_class=str(entry["class"]), color=str(entry["color"])))
+    return tuple(users)
+
+
+def _pick_role(
+    doc: dict[str, Any], key: str, users: tuple[User, ...], want: str,
+    path: pathlib.Path,
+) -> str:
+    """Resolve `browserUser` or `cliUser`: configured if named, derived if unambiguous.
+
+    **It REFUSES rather than guesses when there is a choice.** Terry's open question on
+    card #0072 is exactly this: *"serve.py posts browser comments as terry because
+    loopback proves it is him. With two humans configured, that assumption breaks. Who is
+    the browser?"*
+
+    **So a single human needs no configuration and two humans MUST be told.** That
+    answers the question without building a login nobody asked for, and it fails loudly
+    at startup rather than attributing one person's comment to another.
+    """
+    named = doc.get(key)
+    if named:
+        if not any(u.id == named for u in users):
+            raise BoardError(f"{path}: {key} names unknown user {named!r}")
+        return str(named)
+
+    candidates = [u.id for u in users if u.user_class == want]
+    if len(candidates) == 1:
+        return candidates[0]
+    if not candidates:
+        raise BoardError(f"{path}: no user has class {want!r}, so {key} cannot be derived")
+    raise BoardError(
+        f"{path}: {len(candidates)} users have class {want!r} ({', '.join(candidates)}), "
+        f"so {key} MUST be set explicitly -- this board will not guess who is acting")
+
+
+def _load_rules(path: pathlib.Path) -> Rules:
     """Read `rules.json` into the shapes the rest of this module already uses.
 
     **It REFUSES rather than repairs**, exactly like `Board.from_json`. A rules file
@@ -358,6 +488,10 @@ def _load_rules(path: pathlib.Path) -> tuple[
     if not isinstance(lanes_raw, list) or not lanes_raw:
         raise BoardError(f"{path}: 'lanes' is missing or empty")
 
+    # **Users are parsed FIRST, because everything below validates against them.**
+    users = _parse_users(doc, path)
+    actor_ids = {u.id for u in users}
+
     known = {lane["id"] for lane in lanes_raw}
     order = tuple((lane["id"], lane["label"]) for lane in lanes_raw)
 
@@ -365,12 +499,12 @@ def _load_rules(path: pathlib.Path) -> tuple[
     if not isinstance(edges_raw, list) or not edges_raw:
         raise BoardError(f"{path}: 'edges' is missing or empty")
 
-    inbound, outbound = _index_edges(edges_raw, known, path)
+    inbound, outbound = _index_edges(edges_raw, known, actor_ids, path)
 
     table: dict[str, LaneRules] = {}
     for lane in lanes_raw:
         lane_id = lane["id"]
-        bad_create = [a for a in lane.get("create", []) if a not in ACTORS]
+        bad_create = [a for a in lane.get("create", []) if a not in actor_ids]
         if bad_create:
             raise BoardError(f"{path}: {lane_id}.create names {bad_create}")
         table[lane_id] = LaneRules(
@@ -384,18 +518,60 @@ def _load_rules(path: pathlib.Path) -> tuple[
     default = doc.get("defaultPriority", priorities[len(priorities) // 2])
     if default not in priorities:
         raise BoardError(f"{path}: defaultPriority {default!r} is not in the list")
-    return order, table, priorities, labels, default
+
+    default_owner = doc.get("defaultOwner")
+    if default_owner and default_owner not in actor_ids:
+        raise BoardError(f"{path}: defaultOwner names unknown user {default_owner!r}")
+
+    return Rules(
+        lanes=order, table=table, priorities=priorities, priority_label=labels,
+        default_priority=default, users=users,
+        browser_user=_pick_role(doc, "browserUser", users, HUMAN, path),
+        cli_user=_pick_role(doc, "cliUser", users, BOT, path),
+        # **Falls back to the CLI user rather than to a literal.** Terry's rule is *"if
+        # in doubt, assign to claude"*, and on this board Claude IS the bot -- so the
+        # rule generalizes as "the bot picks it up" rather than as a name.
+        default_owner=str(default_owner) if default_owner else _pick_role(
+            doc, "cliUser", users, BOT, path),
+    )
 
 
-LANES, RULES, PRIORITIES, PRIORITY_LABEL, DEFAULT_PRIORITY = _load_rules(RULES_PATH)
+_RULES = _load_rules(RULES_PATH)
+
+LANES = _RULES.lanes
+RULES = _RULES.table
+PRIORITIES = _RULES.priorities
+PRIORITY_LABEL = _RULES.priority_label
+DEFAULT_PRIORITY = _RULES.default_priority
+
+# **THE CONFIGURED CAST. Card #0072.** Everything that used to say `"terry"` or
+# `"claude"` in this file now asks one of these.
+USERS: tuple[User, ...] = _RULES.users
+ACTORS: tuple[str, ...] = tuple(u.id for u in USERS)
+USER_LABEL: dict[str, str] = {u.id: u.label for u in USERS}
+USER_CLASS: dict[str, str] = {u.id: u.user_class for u in USERS}
+USER_COLOR: dict[str, str] = {u.id: u.color for u in USERS}
+
+#: Who `serve.py` writes as. Loopback proves the request came from this machine.
+BROWSER_USER: str = _RULES.browser_user
+#: Who `status.py` writes as. **There is no flag to say otherwise** -- see `main`.
+CLI_USER: str = _RULES.cli_user
+#: Who a new card lands on when nobody says.
+DEFAULT_OWNER: str = _RULES.default_owner
+
+
+def is_human(actor: str) -> bool:
+    """Whether this actor is a person. **Card #0073's gate, and #0072's reason for
+    carrying a class at all.**
+
+    **An unknown actor is NOT a human.** The one caller is comment auto-linking, and
+    the safe direction there is to do nothing rather than to invent relationships.
+    """
+    return USER_CLASS.get(actor) == HUMAN
 
 STATES: tuple[str, ...] = tuple(state for state, _ in LANES)
 LANE_LABEL: dict[str, str] = dict(LANES)
 
-
-
-class BoardError(ValueError):
-    """The board, or a request against it, is not something this version accepts."""
 
 
 def rules_gaps(path: pathlib.Path = RULES_PATH) -> tuple[list[str], list[str]]:
@@ -555,8 +731,12 @@ def edges_for(actor: str) -> frozenset[tuple[str, str]]:
                      if a != b and may_move(actor, a, b))
 
 
-TERRY_EDGES: frozenset[tuple[str, str]] = edges_for("terry")
-CLAUDE_EDGES: frozenset[tuple[str, str]] = edges_for("claude")
+# **Card #0072: named for the ROLE, not for the person.** `TERRY_EDGES` was what the
+# page asks to decide whether a card is draggable, and the answer is "the edges the
+# browser's user may take" -- which stops being Terry's the day somebody else deploys
+# this. **`CLAUDE_EDGES` was DELETED rather than renamed**: nothing read it, in either
+# file, since the flat rules table landed.
+BROWSER_EDGES: frozenset[tuple[str, str]] = edges_for(BROWSER_USER)
 
 # **The mtime the table above was built from.** `_rules_mtime` is what makes a live
 # reload possible without asking the filesystem to re-read an unchanged file.
@@ -605,7 +785,16 @@ def reload_rules_if_changed() -> str | None:
     # name on the first line is. Adding a matching directive there is an unused `noqa`,
     # which `RUF100` then reports -- so the asymmetry is ruff's, not a slip.
     global LANES, RULES, PRIORITIES, PRIORITY_LABEL, DEFAULT_PRIORITY
-    global STATES, LANE_LABEL, TERRY_EDGES, CLAUDE_EDGES, _rules_mtime  # noqa: PLW0603
+    global STATES, LANE_LABEL, BROWSER_EDGES, _rules_mtime  # noqa: PLW0603
+    # **The cast is reloadable too, card #0072.** A `rules.json` that gains a user and
+    # keeps the old ones is exactly the edit somebody makes while the server is up, and
+    # leaving these bound to the startup values would show the new person's cards with
+    # no name and no color.
+    global USERS, ACTORS, USER_LABEL, USER_CLASS, USER_COLOR  # noqa: PLW0603
+    # **No `noqa` on this line and one on the line above, which looks wrong and is not.**
+    # PLW0603 does not fire on names bound only by TUPLE UNPACKING, and these three are
+    # -- the same asymmetry the block comment above already explains for `LANES`.
+    global BROWSER_USER, CLI_USER, DEFAULT_OWNER
 
     try:
         now = RULES_PATH.stat().st_mtime
@@ -616,7 +805,7 @@ def reload_rules_if_changed() -> str | None:
     _rules_mtime = now
 
     try:
-        lanes, rules, priorities, labels, default = _load_rules(RULES_PATH)
+        fresh = _load_rules(RULES_PATH)
     except (BoardError, OSError, ValueError) as exc:
         return f"rules.json changed and was REFUSED: {exc}. Keeping the loaded table."
 
@@ -624,21 +813,31 @@ def reload_rules_if_changed() -> str | None:
     # checking, and swapping back on failure. `check_edges()` reads the globals, so
     # there is no way to ask it about a table that is not currently bound.
     keep = (LANES, RULES, PRIORITIES, PRIORITY_LABEL, DEFAULT_PRIORITY,
-            STATES, LANE_LABEL, TERRY_EDGES, CLAUDE_EDGES)
+            STATES, LANE_LABEL, BROWSER_EDGES, USERS, ACTORS, USER_LABEL,
+            USER_CLASS, USER_COLOR, BROWSER_USER, CLI_USER, DEFAULT_OWNER)
     LANES, RULES, PRIORITIES, PRIORITY_LABEL, DEFAULT_PRIORITY = (
-        lanes, rules, priorities, labels, default)
+        fresh.lanes, fresh.table, fresh.priorities, fresh.priority_label,
+        fresh.default_priority)
     STATES = tuple(state for state, _ in LANES)
     LANE_LABEL = dict(LANES)
+    USERS = fresh.users
+    ACTORS = tuple(u.id for u in USERS)
+    USER_LABEL = {u.id: u.label for u in USERS}
+    USER_CLASS = {u.id: u.user_class for u in USERS}
+    USER_COLOR = {u.id: u.color for u in USERS}
+    BROWSER_USER, CLI_USER, DEFAULT_OWNER = (
+        fresh.browser_user, fresh.cli_user, fresh.default_owner)
     problems = check_edges()
     if problems:
         (LANES, RULES, PRIORITIES, PRIORITY_LABEL, DEFAULT_PRIORITY,
-         STATES, LANE_LABEL, TERRY_EDGES, CLAUDE_EDGES) = keep
+         STATES, LANE_LABEL, BROWSER_EDGES, USERS, ACTORS, USER_LABEL,
+         USER_CLASS, USER_COLOR, BROWSER_USER, CLI_USER, DEFAULT_OWNER) = keep
         return ("rules.json changed and was REFUSED: "
                 + "; ".join(problems) + ". Keeping the loaded table.")
 
-    TERRY_EDGES = edges_for("terry")
-    CLAUDE_EDGES = edges_for("claude")
-    return f"rules.json reloaded: {len(STATES)} lanes, {len(TERRY_EDGES)} terry edges"
+    BROWSER_EDGES = edges_for(BROWSER_USER)
+    return (f"rules.json reloaded: {len(STATES)} lanes, {len(USERS)} users, "
+            f"{len(BROWSER_EDGES)} draggable edges")
 
 
 def actors_in(state: str) -> frozenset[str]:
@@ -662,18 +861,37 @@ def actors_out(state: str) -> frozenset[str]:
 
 
 def lane_class(state: str) -> str:
-    """A coarse class for styling: `terry`, `claude`, `handoff` or `done`.
+    """A coarse class for styling: a USER ID, `handoff`, `done` or `shared`.
 
     **Derived from the permission table, never stored.** A lane whose `in` and `out`
     name different actors IS a handoff -- that is the definition rather than a list, so
     both handoff lanes qualify without either being special-cased.
+
+    **It returned the literal `terry` or `claude` until card #0072**, which meant the
+    stylesheet needed one hard-coded rule per person. It now returns the id of the SOLE
+    actor when there is one, and `serve.py` emits a CSS variable per configured user --
+    so a third person gets their color with no stylesheet edit.
+
+    **A lane SEVERAL actors share falls back to the browser's own user, and that is
+    deliberately the OLD behavior rather than a better one.** The previous line read
+    `return "claude" if into == {"claude"} else "terry"`, so a lane both of them could
+    work already painted in Terry's blue -- and since he gained actors on eight edges on
+    2026-08-19, that is most of this board.
+
+    **Returning a new `shared` class here was written first and then withdrawn.** It is
+    arguably more honest, and it would have recolored five lanes on a board Terry was
+    looking at, for a card about configuration. **A refactor that changes what the screen
+    looks like is not a refactor.** If a distinct shared color is wanted, that is a
+    one-line change and its own card.
     """
     into, out = actors_in(state), actors_out(state)
     if not out:
         return "done"
     if into != out:
         return "handoff"
-    return "claude" if into == {"claude"} else "terry"
+    if len(into) == 1:
+        return next(iter(into))
+    return BROWSER_USER
 
 
 def lane_owner_label(state: str) -> str:
@@ -810,7 +1028,7 @@ def self_test_sort() -> list[str]:
     def key_of(raw: str | None) -> datetime.datetime:
         item = Item(id="self-test", ticket=0, subject="self-test", state=STATES[0])
         if raw is not None:
-            item.history.append(Change(at=raw, to=STATES[0], by="claude"))
+            item.history.append(Change(at=raw, to=STATES[0], by=CLI_USER))
         return created_key(item)
 
     # MUST parse to a real moment.
@@ -1036,7 +1254,7 @@ class Item:
     # and it'll get fixed as ticket progresses."* An error that lands on Claude gets
     # corrected the moment the work starts; one that lands on Terry sits in his lane
     # until he notices.
-    owner: str = "claude"
+    owner: str = DEFAULT_OWNER
     # **HIERARCHY IS A FIELD, NOT A RELATIONSHIP. Card #0028.**
     #
     # Jira, Linear and GitHub all keep parent/child out of their relationship table, and
@@ -1151,8 +1369,8 @@ class Item:
         # actor is refused outright: a card owned by nobody, or by a name no lane
         # header can render, is a data error and `from_json` REFUSES rather than
         # repairs -- the same contract the rest of this class keeps.
-        owner = raw.get("owner", "claude")
-        if owner not in ("terry", "claude"):
+        owner = raw.get("owner", DEFAULT_OWNER)
+        if owner not in ACTORS:
             raise BoardError(f"{where}: unknown owner {owner!r}")
         return cls(
             id=raw["id"],
@@ -1437,7 +1655,7 @@ class Board:
             problems.extend(
                 f"{item.id}: history reassigns to {c.owner_to!r}, which is not an actor"
                 for c in item.history
-                if c.kind == "owner" and c.owner_to not in ("terry", "claude"))
+                if c.kind == "owner" and c.owner_to not in ACTORS)
             problems.extend(
                 f"{item.id}: history sets priority {c.priority_to!r}, which is not one"
                 for c in item.history
@@ -1487,7 +1705,7 @@ class Board:
         *,
         priority: str = DEFAULT_PRIORITY,
         detail: str = "",
-        owner: Actor = "claude",
+        owner: Actor = DEFAULT_OWNER,
     ) -> str:
         """Add a new card, with its first history entry already on it.
 
@@ -1724,7 +1942,7 @@ class Board:
         **Write the log first, then the field**, for the same reason `move()` does: a
         state change that never reached the trail is indistinguishable from tampering.
         """
-        if owner not in ("terry", "claude"):
+        if owner not in ACTORS:
             raise BoardError(f"unknown owner {owner!r}")
         item = self.find(item_id)
         was = item.owner
@@ -1839,7 +2057,7 @@ class Board:
         """
         made: list[str] = []
         missing: list[str] = []
-        if by != "terry":
+        if not is_human(by):
             return made, missing
         for hit in self.TICKET_MENTION.finditer(text):
             ref = hit.group(1)
@@ -2064,8 +2282,8 @@ def main() -> None:
     # **Card #0069, and it is the CLI half of the dialog's new picker.** The default
     # stays `claude` because that is what `Item.owner` already did; his standing rule is
     # *"if in doubt, assign to claude."*
-    ap.add_argument("--owner", default="claude", choices=list(ACTORS),
-                    help="owner for --create (default: claude)")
+    ap.add_argument("--owner", default=DEFAULT_OWNER, choices=list(ACTORS),
+                    help=f"owner for --create (default: {DEFAULT_OWNER})")
     # **Card #0028. Both cards in one call, always.** The relationship is stored once and
     # the other direction is derived, so there is no call shape that writes half of one.
     ap.add_argument("--link", nargs=3, metavar=("ID", "KIND", "OTHER"),
@@ -2082,7 +2300,7 @@ def main() -> None:
     # refuses an illegal lane by name before the board is opened, which is a better
     # error than `BoardError` raised under the lock -- and it makes `--help` state
     # the permission rather than hide it behind a failed run.
-    ap.add_argument("--state", choices=[s for s in STATES if may_create("claude", s)],
+    ap.add_argument("--state", choices=[s for s in STATES if may_create(CLI_USER, s)],
                     help="the lane to --create in")
     ap.add_argument("--priority", choices=list(PRIORITIES), default=DEFAULT_PRIORITY,
                     help="priority for --create")
@@ -2153,13 +2371,13 @@ def _apply(board: Board, args: argparse.Namespace) -> str:
 
 
 def _do_create(board: Board, args: argparse.Namespace) -> str:
-    return board.create(args.create[0], args.create[1], args.state, "claude",
+    return board.create(args.create[0], args.create[1], args.state, CLI_USER,
                         priority=args.priority, detail=_detail_text(args),
                         owner=as_actor(args.owner))
 
 
 def _do_assign(board: Board, args: argparse.Namespace) -> str:
-    return board.assign(args.assign[0], as_actor(args.assign[1]), "claude")
+    return board.assign(args.assign[0], as_actor(args.assign[1]), CLI_USER)
 
 
 def _do_set_project(board: Board, args: argparse.Namespace) -> str:
@@ -2191,18 +2409,18 @@ def _do_set_project(board: Board, args: argparse.Namespace) -> str:
 # the two cannot disagree. The key is the argparse `dest`.
 HANDLERS: dict[str, Callable[[Board, argparse.Namespace], str]] = {
     "create": _do_create,
-    "move": lambda b, a: b.move(a.move[0], a.move[1], "claude"),
+    "move": lambda b, a: b.move(a.move[0], a.move[1], CLI_USER),
     "assign": _do_assign,
-    "comment": lambda b, a: b.comment(a.comment[0], a.comment[1], "claude"),
+    "comment": lambda b, a: b.comment(a.comment[0], a.comment[1], CLI_USER),
     "set_project": _do_set_project,
     "set_priority": lambda b, a: b.set_priority(
-        a.set_priority[0], a.set_priority[1].upper(), "claude"),
-    "set_detail": lambda b, a: b.set_detail(a.set_detail, _detail_text(a), "claude"),
-    "link": lambda b, a: b.link(a.link[0], a.link[1].lower(), a.link[2], "claude"),
+        a.set_priority[0], a.set_priority[1].upper(), CLI_USER),
+    "set_detail": lambda b, a: b.set_detail(a.set_detail, _detail_text(a), CLI_USER),
+    "link": lambda b, a: b.link(a.link[0], a.link[1].lower(), a.link[2], CLI_USER),
     "unlink": lambda b, a: b.unlink(a.unlink[0], a.unlink[1].lower(), a.unlink[2],
-                                    "claude"),
-    "set_parent": lambda b, a: b.set_parent(a.set_parent[0], a.set_parent[1], "claude"),
-    "clear_parent": lambda b, a: b.set_parent(a.clear_parent, None, "claude"),
+                                    CLI_USER),
+    "set_parent": lambda b, a: b.set_parent(a.set_parent[0], a.set_parent[1], CLI_USER),
+    "clear_parent": lambda b, a: b.set_parent(a.clear_parent, None, CLI_USER),
 }
 
 MUTATIONS = tuple(HANDLERS)

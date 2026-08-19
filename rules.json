@@ -1,6 +1,27 @@
 {
-  "schema": 3,
-  "note": "The lanes and the permission model for a Claude/Terry board. Terry dictated this lane by lane on 2026-08-18, in the shape he asked for: \"I like that the perms are (in/out, actor, source/dest).\" It lives outside the code because a rule change should be a data diff a person can read, and because `git log rules.json` then shows ONLY permission history rather than mixing it with page CSS. Every edge is declared TWICE, once from each end, and status.check_edges() refuses to let the halves disagree -- Terry reasons one lane at a time, so the table is written the way he thinks and the machine catches what that costs.",
+  "schema": 4,
+  "note": "The users, the lanes and the permission model for a claude-status board. Terry dictated the lanes one by one on 2026-08-18, in the shape he asked for: \"I like that the perms are (in/out, actor, source/dest).\" It lives outside the code because a rule change should be a data diff a person can read, and because `git log rules.json` then shows ONLY permission history rather than mixing it with page CSS. Every edge is declared TWICE, once from each end, and status.check_edges() refuses to let the halves disagree -- Terry reasons one lane at a time, so the table is written the way he thinks and the machine catches what that costs. SCHEMA 4 added `users`, `browserUser` and `cliUser` for card #0072: Terry, 2026-08-19, \"This is an open source code repo and my buddy Scott is thinking about using it... The users and user class should be part of per-project cfg like rules JSON.\" Before that, `terry` and `claude` were baked into the source and nobody else could deploy this without editing it.",
+  "usersNote": "Every actor named anywhere below MUST appear here, and status.py refuses a rules file that names one it does not know. `class` is `human` or `bot`, and it is a real distinction rather than a label: card #0073 gates comment auto-linking on it, because Terry types `#0028` when he means that card while Claude types it while explaining something. `color` is what the page paints this user's name, their owner chip and their lane accents; it is emitted as a CSS variable per user, so adding a third person needs no stylesheet edit.",
+  "users": [
+    {
+      "id": "terry",
+      "label": "Terry",
+      "class": "human",
+      "color": "#0052CC"
+    },
+    {
+      "id": "claude",
+      "label": "Claude",
+      "class": "bot",
+      "color": "#E2A100"
+    }
+  ],
+  "browserUserNote": "Who the SERVER writes as. serve.py binds to loopback, so a request provably came from this machine -- that is the property the Trello route could not offer at any price, and it is why the page needs no login. WITH TWO HUMANS CONFIGURED THAT ASSUMPTION BREAKS, and this key is where the answer goes. status.py refuses to start if it is unset and the user list holds more than one human, rather than guessing which person is at the keyboard.",
+  "browserUser": "terry",
+  "cliUserNote": "Who status.py writes as. THE CLI CANNOT SAY OTHERWISE, and there is no flag for it: the server hard-codes its identity because loopback proves it, so the CLI must hard-code its own or the asymmetry lets one actor impersonate the other. Terry found that hole on 2026-08-18 -- the CLI merely defaulted to `claude` and accepted `--by terry`.",
+  "cliUser": "claude",
+  "defaultOwnerNote": "Who a new card lands on when nobody says. Terry's standing order: \"if in doubt, assign to claude and it'll get fixed as ticket progresses.\" An error that lands on Claude gets corrected the moment the work starts; one that lands on Terry sits in his lane until he notices.",
+  "defaultOwner": "claude",
   "priorities": [
     {
       "id": "P0",
