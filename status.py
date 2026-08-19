@@ -491,21 +491,47 @@ class Change:
     to: str
     by: str
     frm: str | None = None
+    # **An OWNERSHIP change has no lane transition**, so `to` is empty on those and
+    # these two carry the actors instead. Card #0053.
+    #
+    # **This keeps the history a log of CHANGES rather than turning it into a general
+    # event log**, which is what Terry's clarification bought: *"initial ticket
+    # ownership assignment is NOT to be in the audit log, that's clear by ticket
+    # creation timestamp."* Only a REASSIGNMENT is an event, so these entries are rare
+    # and no existing card needs a synthetic one.
+    owner_frm: str | None = None
+    owner_to: str | None = None
+
+    @property
+    def is_owner_change(self) -> bool:
+        """True for an ownership entry, which moves no lane."""
+        return self.owner_to is not None
 
     def to_json(self) -> dict[str, str]:
         out = {"at": self.at, "to": self.to, "by": self.by}
         if self.frm is not None:
             out["from"] = self.frm
+        if self.owner_to is not None:
+            out["ownerTo"] = self.owner_to
+        if self.owner_frm is not None:
+            out["ownerFrom"] = self.owner_frm
         return out
 
     @classmethod
     def from_json(cls, raw: dict[str, Any], where: str) -> Self:
-        for key in ("at", "to", "by"):
+        owner_to = raw.get("ownerTo")
+        # **`to` is required on a LANE entry and absent on an OWNERSHIP one.** Checking
+        # it unconditionally would refuse every board written after this change.
+        required = ("at", "by") if isinstance(owner_to, str) else ("at", "to", "by")
+        for key in required:
             if not isinstance(raw.get(key), str) or not raw[key]:
                 raise BoardError(f"{where}: history entry has no {key}")
         frm = raw.get("from")
-        return cls(at=raw["at"], to=raw["to"], by=raw["by"],
-                   frm=frm if isinstance(frm, str) else None)
+        owner_frm = raw.get("ownerFrom")
+        return cls(at=raw["at"], to=raw.get("to", ""), by=raw["by"],
+                   frm=frm if isinstance(frm, str) else None,
+                   owner_frm=owner_frm if isinstance(owner_frm, str) else None,
+                   owner_to=owner_to if isinstance(owner_to, str) else None)
 
 
 @dataclass
@@ -560,6 +586,23 @@ class Item:
     ticket: int = 0
     priority: str = DEFAULT_PRIORITY
     detail: str = ""
+    # **EXACTLY ONE OWNER, and it is a LABEL rather than a permission.** Terry,
+    # 2026-08-19: *"It's just a label, not permissions model."* Card #0053.
+    #
+    # **NO CODE PATH MAY CONSULT THIS TO ALLOW OR REFUSE ANYTHING.** Not `may_move`,
+    # not `may_create`, not the drag handler, not `/create`. `rules.json` answers *who
+    # may do what*; this answers *who is carrying it*. **Joining them would create a
+    # second authorization mechanism that `check_edges()` cannot see**, contradicting
+    # the one that is actually enforced.
+    #
+    # **Terry can move a card Claude owns, and Claude can move a card Terry owns.**
+    # That is not a bug to close.
+    #
+    # **Defaults to `claude` on his standing order**: *"if in doubt, assign to claude
+    # and it'll get fixed as ticket progresses."* An error that lands on Claude gets
+    # corrected the moment the work starts; one that lands on Terry sits in his lane
+    # until he notices.
+    owner: str = "claude"
     history: list[Change] = field(default_factory=list)
     comments: list[Comment] = field(default_factory=list)
 
@@ -589,6 +632,7 @@ class Item:
             "state": self.state,
             "subject": self.subject,
             "detail": self.detail,
+            "owner": self.owner,
             "history": [c.to_json() for c in self.history],
         }
         # Omitted when empty, so a board full of comment-less cards stays readable.
@@ -609,6 +653,13 @@ class Item:
         ticket = raw.get("ticket", 0)
         if not isinstance(ticket, int) or ticket < 0:
             raise BoardError(f"{where}: ticket {ticket!r} is not a positive integer")
+        # **"Exactly one owner" is ENFORCED here rather than assumed.** An unknown
+        # actor is refused outright: a card owned by nobody, or by a name no lane
+        # header can render, is a data error and `from_json` REFUSES rather than
+        # repairs -- the same contract the rest of this class keeps.
+        owner = raw.get("owner", "claude")
+        if owner not in ("terry", "claude"):
+            raise BoardError(f"{where}: unknown owner {owner!r}")
         return cls(
             id=raw["id"],
             subject=raw["subject"],
@@ -616,6 +667,11 @@ class Item:
             ticket=ticket,
             priority=priority,
             detail=raw.get("detail", "") or "",
+            # **A card with no `owner` reads as Claude's**, which is the migration for
+            # the 51 cards written before this field existed. Terry's standing order:
+            # *"if in doubt, assign to claude."* No synthetic history entry is written
+            # for them, because initial ownership is not an audit event.
+            owner=owner,
             history=[Change.from_json(h, where) for h in raw.get("history", [])],
             comments=[Comment.from_json(c, where) for c in raw.get("comments", [])],
         )
@@ -797,14 +853,28 @@ class Board:
             if not item.history:
                 continue
 
-            first = item.history[0]
+            # **OWNERSHIP ENTRIES MOVE NO LANE, so they are removed before the replay.**
+            # Card #0053. Replaying one as a transition would break the chain check on
+            # every reassignment, and a permission model that refuses the board after an
+            # ownership change is worse than no ownership field at all.
+            #
+            # **They are checked on their own terms instead**, below.
+            lane_history = [c for c in item.history if not c.is_owner_change]
+            problems.extend(
+                f"{item.id}: history reassigns to {c.owner_to!r}, which is not an actor"
+                for c in item.history
+                if c.is_owner_change and c.owner_to not in ("terry", "claude"))
+            if not lane_history:
+                continue
+
+            first = lane_history[0]
             if first.frm is None and not may_create(first.by, first.to):
                 problems.append(
                     f"{item.id}: history says {first.by} created it in {first.to}, "
                     f"which {first.by} may not do")
 
             where: str | None = None
-            for index, change in enumerate(item.history):
+            for index, change in enumerate(lane_history):
                 if change.frm is None:
                     if index > 0:
                         problems.append(
@@ -869,6 +939,33 @@ class Board:
         self.next_ticket += 1
         self.items.append(item)
         return f"created {item.label} {item_id} in {state} (by {by})"
+
+    def assign(self, item_id: str, owner: Actor, by: Actor) -> str:
+        """Reassign one card's owner, appending to its history. Card #0053.
+
+        **EITHER ACTOR MAY REASSIGN EITHER WAY, and that is not an oversight.** Terry:
+        *"Terry and Claude MUST be able to reassign ownership between the two"*, and
+        *"It's just a label, not permissions model."* **So there is no `may_` check
+        here and there MUST NOT be one** -- adding a permission to this path would be
+        exactly the second authorization mechanism the field is defined not to be.
+
+        **A no-op reassignment writes NOTHING.** An audit trail that records "Terry set
+        the owner to Terry" is noise in the one place noise is expensive, and Terry
+        signalling he is working a card can arrive repeatedly.
+
+        **Write the log first, then the field**, for the same reason `move()` does: a
+        state change that never reached the trail is indistinguishable from tampering.
+        """
+        if owner not in ("terry", "claude"):
+            raise BoardError(f"unknown owner {owner!r}")
+        item = self.find(item_id)
+        was = item.owner
+        if was == owner:
+            return f"{item.label} is already owned by {owner}"
+        item.history.append(Change(at=now(), to="", by=by,
+                                   owner_frm=was, owner_to=owner))
+        item.owner = owner
+        return f"{item.label} ownership change: {was} -> {owner} (by {by})"
 
     def move(self, item_id: str, to_state: str, by: Actor) -> str:
         """Move one card, appending to its history. Returns a one-line description.
@@ -1070,6 +1167,11 @@ def main() -> None:
     ap.add_argument("--move", nargs=2, metavar=("ID", "STATE"), help="move one card")
     ap.add_argument("--comment", nargs=2, metavar=("ID", "TEXT"),
                     help="leave a comment on one card")
+    # **Both actors are offered, unlike `--state` above.** Ownership is a LABEL rather
+    # than a permission -- card #0053 -- so either actor may be assigned either way and
+    # there is no lane-style restriction to encode here.
+    ap.add_argument("--assign", nargs=2, metavar=("ID", "OWNER"),
+                    help="reassign one card's owner between terry and claude")
     ap.add_argument("--create", nargs=2, metavar=("ID", "SUBJECT"),
                     help="add one card; needs --state")
     # **`choices` is the lanes Claude may CREATE in, not every lane.** argparse then
@@ -1142,6 +1244,11 @@ def _apply(board: Board, args: argparse.Namespace) -> str:
                             priority=args.priority, detail=_detail_text(args))
     if args.move:
         return board.move(args.move[0], args.move[1], "claude")
+    if args.assign:
+        owner = args.assign[1].lower()
+        if owner not in ("terry", "claude"):
+            raise BoardError(f"unknown owner {args.assign[1]!r}; want terry or claude")
+        return board.assign(args.assign[0], owner, "claude")
     return board.comment(args.comment[0], args.comment[1], "claude")
 
 

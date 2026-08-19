@@ -679,6 +679,18 @@ PAGE = """<!doctype html>
            font-weight: 700; font-variant-numeric: tabular-nums; }
   #panel h1 { margin: 6px 0 0; font-size: 18px; letter-spacing: -.01em; }
   #panel .sub { color: var(--dim); font-size: 12px; margin-top: 6px; }
+  /* **The owner chip borrows the actor colors the trail already uses**, so `Terry` is
+     `--terry` blue and `Claude` is `--claude` amber wherever they appear. One meaning,
+     one color. Card #0053. */
+  #panel .own { display: flex; gap: 8px; align-items: center; margin-top: 8px; }
+  #panel .own-k { font-size: 11px; text-transform: uppercase; letter-spacing: .06em;
+                  color: var(--dim); font-weight: 700; }
+  #p-owner { font: inherit; font-size: 12px; font-weight: 700; cursor: pointer;
+             border: 1px solid var(--line); border-radius: 4px; padding: 2px 9px;
+             background: #FFFFFF; }
+  #p-owner.terry { color: var(--terry); border-color: var(--terry); }
+  #p-owner.claude { color: var(--claude); border-color: var(--claude); }
+  #p-owner:disabled { opacity: .5; cursor: wait; }
   #panel .body { overflow-y: auto; padding: 16px 20px 24px; flex: 1; }
   #panel h3 { font-size: 11px; text-transform: uppercase; letter-spacing: .06em;
               color: var(--dim); margin: 22px 0 8px; }
@@ -798,6 +810,15 @@ again."></span>
       </div>
       <h1 id="p-subject"></h1>
       <div class="sub" id="p-sub"></div>
+      <!-- **OWNER IS A LABEL, and the control says so by being a plain toggle rather
+           than living beside anything that grants power.** Card #0053. Either actor
+           may reassign either way, so there is no state in which this is disabled. -->
+      <div class="own">
+        <span class="own-k">Owner</span>
+        <button id="p-owner" type="button"
+          title="Whose plate this is on. A label, not a permission -- either of us can
+move any card whoever owns it. Click to hand it over."></button>
+      </div>
     </header>
     <div class="body">
       <h3>Description</h3>
@@ -923,6 +944,11 @@ function openCard(id) {
   document.getElementById('p-sub').textContent =
     it.laneLabel + '  \\u00b7  ' + it.id;
 
+  const own = document.getElementById('p-owner');
+  own.textContent = it.owner === 'terry' ? 'Terry' : 'Claude';
+  own.className = it.owner;
+  own.disabled = false;
+
   const detail = document.getElementById('p-detail');
   if (it.detail) { detail.innerHTML = it.detail; detail.className = 'detail-text'; }
   else { detail.textContent = 'No description.'; detail.className = 'empty'; }
@@ -966,8 +992,19 @@ function openCard(id) {
 
     const what = document.createElement('div');
     what.className = 'what';
-    what.textContent = h.from ? (h.fromLabel + ' \\u2192 ' + h.toLabel)
-                              : ('created in ' + h.toLabel);
+    // **An ownership entry moves no lane, so `ownerTo` is the discriminant.** Without
+    // this branch it would render as `' \\u2192 '` with two empty labels -- a blank
+    // row in a permanent record, which is worse than a missing one. Card #0053.
+    //
+    // **Terry's own wording for the line**: "Ticket ownership change: Terry -> Claude".
+    const name = (a) => a === 'terry' ? 'Terry' : 'Claude';
+    if (h.ownerTo) {
+      what.textContent = 'Ticket ownership change: '
+        + name(h.ownerFrom) + ' \\u2192 ' + name(h.ownerTo);
+    } else {
+      what.textContent = h.from ? (h.fromLabel + ' \\u2192 ' + h.toLabel)
+                                : ('created in ' + h.toLabel);
+    }
 
     tr.append(at, who, what);
   }
@@ -1024,6 +1061,32 @@ async function postComment() {
 }
 
 document.getElementById('post').addEventListener('click', postComment);
+
+// **Hand the card over. A toggle, because there are exactly two actors.** Card #0053.
+//
+// **It reads the CURRENT owner off `data` rather than off the button's own text**, so
+// a repaint between opening the card and clicking cannot flip it the wrong way.
+document.getElementById('p-owner').addEventListener('click', async () => {
+  if (!openId) return;
+  const it = itemById(openId);
+  if (!it) return;
+  const own = document.getElementById('p-owner');
+  own.disabled = true;
+  try {
+    const res = await fetch('/assign', {
+      method: 'POST', headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({id: openId, owner: it.owner === 'terry' ? 'claude' : 'terry'}),
+    });
+    const out = await res.json();
+    if (!res.ok) { toast(out.error || 'Reassign refused', true); return; }
+    toast(out.result);
+    seen = null;
+  } catch (err) {
+    toast('Could not reach the board: ' + err, true);
+  } finally {
+    own.disabled = false;
+  }
+});
 
 // **Enter POSTS here and adds a NEWLINE in the new-card dialog, and the two are
 // deliberate opposites.** Terry: a comment is one thought, a description is
@@ -1710,6 +1773,11 @@ def payload() -> bytes:
                 "priority": item.priority,
                 "priorityLabel": status.PRIORITY_LABEL.get(item.priority, ""),
                 "detail": inline(item.detail),
+                # **A LABEL, never a permission.** Card #0053, Terry: *"It's just a
+                # label, not permissions model."* Nothing in the page may branch on
+                # this to allow or refuse a move -- `draggable` below and `allowed()`
+                # in the script both read the permission table and MUST keep doing so.
+                "owner": item.owner,
                 # **Computed on the SERVER from the same table the server enforces**,
                 # so the cursor and the answer cannot disagree.
                 "draggable": any(a == item.state for a, _ in status.TERRY_EDGES),
@@ -1724,10 +1792,15 @@ def payload() -> bytes:
                 # **Reversed HERE rather than in `status.py`.** The stored order is
                 # chronological and `verify()` replays it forwards; flipping the
                 # model to suit a drawer would break the audit.
+                # **Ownership entries ride the SAME list**, because the trail is one
+                # chronological thing to read. `ownerTo` is the discriminant and is
+                # absent on a lane move. Card #0053.
                 "history": [{"by": h.by, "when": when(h.at),
                              "from": h.frm,
                              "fromLabel": status.LANE_LABEL.get(h.frm or "", ""),
-                             "toLabel": status.LANE_LABEL.get(h.to, h.to)}
+                             "toLabel": status.LANE_LABEL.get(h.to, h.to),
+                             "ownerFrom": h.owner_frm,
+                             "ownerTo": h.owner_to}
                             for h in reversed(item.history)],
             } for item in lane.items],
         } for lane in lanes],
@@ -1889,7 +1962,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
         the property the Trello route could not offer at any price.
         """
         route = self.path.partition("?")[0]
-        if route not in ("/move", "/comment", "/create"):
+        if route not in ("/move", "/comment", "/create", "/assign"):
             self.send_error(404)
             return
         body = self._read_json()
@@ -1909,6 +1982,11 @@ class Handler(http.server.BaseHTTPRequestHandler):
             with status.edit(BOARD_PATH) as board:
                 if route == "/move":
                     result = board.move(str(body["id"]), str(body["to"]), "terry")
+                elif route == "/assign":
+                    # **No permission check, deliberately.** Ownership is a label, so
+                    # either actor may assign it either way -- card #0053. `assign()`
+                    # validates the NAME and refuses anything that is not an actor.
+                    result = board.assign(str(body["id"]), str(body["owner"]), "terry")
                 elif route == "/create":
                     state = str(body["state"])
                     subject = str(body["subject"]).strip()
