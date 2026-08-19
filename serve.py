@@ -950,6 +950,20 @@ PAGE = """<!doctype html>
   #push { display: none; background: var(--p0); color: #FFFFFF; font-weight: 700;
           padding: 2px 8px; border-radius: 4px; white-space: nowrap; }
   #push.show { display: inline-block; }
+  /* **THE SEARCH BOX LIVES IN THE BAR, NOT IN THE BOARD, and that is load-bearing.**
+     `paint()` calls `replaceChildren()` on `#board` alone, so anything inside it is
+     destroyed on every repaint. **A query typed and not yet acted on is unsent input** --
+     the exact class of loss card #0029 was raised for -- and putting the field in the bar
+     means no repaint can reach it. Card #0061. */
+  #find { background: #2C3238; color: var(--barink); border: 1px solid #3C444C;
+          border-radius: 4px; padding: 3px 9px; font: inherit; font-size: 12px;
+          width: 190px; outline: none; }
+  #find::placeholder { color: var(--bardim); }
+  #find:focus { border-color: #6B7684; background: #333A41; }
+  #findn { color: var(--barink); font-size: 12px; font-weight: 700; white-space: nowrap; }
+  /* Hidden rather than removed, so `playFlip` measures a stable set and a card does not
+     animate in from nowhere when the query is cleared. */
+  .card.nomatch { display: none; }
 </style>
 </head>
 <body>
@@ -958,6 +972,10 @@ PAGE = """<!doctype html>
     <span id="title">%TITLE%</span>
     <span id="counts"></span>
     <span class="grow"></span>
+    <input id="find" type="search" autocomplete="off" spellcheck="false"
+      placeholder="Find in cards   /"
+      title="Search titles, descriptions and comments. Press / to focus, Escape to clear.">
+    <span id="findn"></span>
     <span id="live">connecting...</span>
     <span id="stale"
       title="This tab is running older code than the server. Reload with Ctrl+Shift+R."></span>
@@ -1211,13 +1229,39 @@ function closeCard() {
 document.getElementById('close').addEventListener('click', closeCard);
 document.getElementById('scrim').addEventListener('click', closeCard);
 document.addEventListener('keydown', ev => {
+  const find = document.getElementById('find');
+  const typing = ev.target instanceof HTMLInputElement
+              || ev.target instanceof HTMLTextAreaElement;
+  // **`/` jumps to the search box. Card #0061.** The convention every code host uses,
+  // and it costs nothing -- but it MUST NOT fire while he is typing a comment, or a
+  // slash in a file path steals the caret mid-sentence.
+  if (ev.key === '/' && !typing && !mkOpen) {
+    ev.preventDefault();
+    find.focus();
+    find.select();
+    return;
+  }
   // **The new-card dialog wins while it is open**, because it sits on top and it is
   // the only thing here holding text the server has no copy of. `closeMake(false)`
   // asks before discarding; `closeCard()` never needs to, because it STASHES the
   // comment draft rather than dropping it.
   if (ev.key !== 'Escape') return;
   if (mkOpen) { closeMake(false); return; }
+  // **Escape clears the search BEFORE it closes a card**, because a filtered board with
+  // an open card is a state where Escape has two plausible meanings, and the narrower
+  // one is what the eye is on.
+  if (document.activeElement === find && query) {
+    find.value = '';
+    query = '';
+    applyFilter();
+    return;
+  }
   closeCard();
+});
+
+document.getElementById('find').addEventListener('input', ev => {
+  query = ev.target.value;
+  applyFilter();
 });
 
 // **ONE submit path, called from the button AND from Enter.** A second copy on the
@@ -1637,12 +1681,80 @@ alertsBox.addEventListener('change', async () => {
 
 syncAlerts();
 
+// **SEARCH. Card #0061.** Terry: "This board state will become my memory. 'Didn't we do
+// something like that before?' a search window to find substrings in other tickets would
+// be nice."
+//
+// **It searches the DESCRIPTION and the COMMENTS, not just the title.** That is the whole
+// point: the reasoning he is trying to find again lives in the body of a card, and a
+// title-only search would answer "no" to most of the questions he actually asks.
+//
+// **Entirely client-side.** `/data` already carries `detail` and `comments`, so no
+// request is made and the result appears while he types.
+let query = '';
+const HAY = new Map();
+
+function hay(item) {
+  // **Built once per card and cached**, because a repaint plus a keystroke would
+  // otherwise rebuild every haystack on every character.
+  //
+  // **Tags are stripped.** `detail` arrives as HTML from `inline()`, so a search for
+  // "span" would otherwise match every card that contains a line break.
+  let text = HAY.get(item.id);
+  if (text === undefined) {
+    text = [item.ticket, item.subject, item.detail || '',
+            ...(item.comments || []).map(c => c.text || '')]
+      .join(' ').replace(/<[^>]*>/g, ' ').toLowerCase();
+    HAY.set(item.id, text);
+  }
+  return text;
+}
+
+function applyFilter() {
+  const board = document.getElementById('board');
+  const findn = document.getElementById('findn');
+  const q = query.trim().toLowerCase();
+  if (!q) {
+    for (const el of board.querySelectorAll('.card.nomatch')) el.classList.remove('nomatch');
+    for (const lane of data.lanes || []) {
+      const el = board.querySelector('.lane[data-lane="' + lane.state + '"] .n');
+      if (el) { el.textContent = lane.items.length; el.title = ''; }
+    }
+    findn.textContent = '';
+    return;
+  }
+  let total = 0;
+  for (const lane of data.lanes || []) {
+    let shown = 0;
+    for (const item of lane.items) {
+      const el = board.querySelector('.card[data-id="' + CSS.escape(item.id) + '"]');
+      const hit = hay(item).includes(q);
+      if (hit) shown += 1;
+      if (el) el.classList.toggle('nomatch', !hit);
+    }
+    total += shown;
+    const n = board.querySelector('.lane[data-lane="' + lane.state + '"] .n');
+    if (n) {
+      n.textContent = shown;
+      n.title = shown + ' of ' + lane.items.length + ' match';
+    }
+  }
+  // **Zero is stated, not left blank.** "No cards match" and "the search has not run" are
+  // different answers, and a blank counter says both.
+  findn.textContent = total ? total + ' found' : 'no match';
+}
+
 function paint() {
   const board = document.getElementById('board');
   const before = measureCards();
   board.replaceChildren();
   for (const lane of data.lanes) board.appendChild(laneEl(lane));
   playFlip(before);
+  // **REAPPLIED AFTER EVERY REPAINT, and forgetting this is the obvious bug.** `paint()`
+  // rebuilds every card, so a filtered board would silently un-filter itself the next
+  // time Terry moved a card or Claude wrote a comment -- 400 ms later, with his query
+  // still sitting in the box. Card #0061.
+  applyFilter();
 
   const banner = document.getElementById('banner');
   banner.classList.toggle('show', !!data.error);
@@ -1951,6 +2063,11 @@ async function tick() {
     fileMs = meta.mtime * 1000;
     if (meta.mtime !== seen) {
       data = await (await fetch('/data', {cache: 'no-store'})).json();
+      // **The search cache MUST die with the data that filled it.** Card #0061. A card
+      // that gains a comment keeps its id, so a cache keyed on the id alone would go on
+      // answering from the text that card had a minute ago -- and a search for a
+      // sentence Terry just wrote would report "no match".
+      HAY.clear();
       seen = meta.mtime;
       paint();
     }
