@@ -503,6 +503,10 @@ PAGE = """<!doctype html>
      Terry chose that deliberately -- a comment is one thought, a description is
      several -- and the hand does not read a decision. See cards #0039 and #0040. */
   #mk .hint { font-size: 11px; color: var(--dim); margin-top: 5px; }
+  /* **The same hint style on the comment box**, because the two fields state
+     OPPOSITE rules and a reader has to be able to compare them at a glance. Same
+     size, same color, same place under the field. */
+  .keyhint { font-size: 11px; color: var(--dim); margin: 5px 0 8px; }
   #mk footer { padding: 12px 20px 16px; border-top: 1px solid var(--line);
                display: flex; gap: 10px; align-items: center; }
   #mk footer .grow { flex: 1; }
@@ -648,6 +652,12 @@ PAGE = """<!doctype html>
       <h3>Comments</h3>
       <div id="p-comments"></div>
       <textarea id="say" placeholder="Leave a note on this card..."></textarea>
+      <!-- **The hint is not decoration.** This box posts on Enter and the new-card
+           dialog's description does not, so two multi-line fields on one page
+           disagree about the same key. Terry chose that deliberately -- a comment
+           is one thought, a description is several -- and the HAND does not read a
+           decision. Cards #0039 and #0040. -->
+      <div class="keyhint">Enter posts. Shift+Enter adds a line break.</div>
       <button id="post">Comment as Terry</button>
       <h3>Audit trail</h3>
       <div class="trail" id="p-trail"></div>
@@ -837,8 +847,14 @@ document.addEventListener('keydown', ev => {
   closeCard();
 });
 
-document.getElementById('post').addEventListener('click', async () => {
+// **ONE submit path, called from the button AND from Enter.** A second copy on the
+// key handler would drift, and the line that drifts is `delete drafts[openId]` --
+// the one whose own comment says dropping it makes the text come back on reopen and
+// "invites Terry to send it twice". Card #0039.
+async function postComment() {
   const text = document.getElementById('say').value.trim();
+  // **This guard is why Enter on an empty box is safe for free.** It predates the
+  // key binding and covers it without a second check.
   if (!openId || !text) return;
   const res = await fetch('/comment', {
     method: 'POST', headers: {'Content-Type': 'application/json'},
@@ -852,6 +868,27 @@ document.getElementById('post').addEventListener('click', async () => {
   delete drafts[openId];
   toast(out.result);
   seen = null;
+}
+
+document.getElementById('post').addEventListener('click', postComment);
+
+// **Enter POSTS here and adds a NEWLINE in the new-card dialog, and the two are
+// deliberate opposites.** Terry: a comment is one thought, a description is
+// several. Cards #0039 and #0040.
+//
+// **Bound on the TEXTAREA, never on `document`.** A document-level handler would
+// fire while the drawer is closed and while a card is being dragged; there is
+// already one of those for Escape and it should stay the only one.
+document.getElementById('say').addEventListener('keydown', ev => {
+  // **`isComposing` FIRST.** Committing an IME candidate sends Enter, and without
+  // this the comment posts mid-word with the composition half-finished.
+  if (ev.key !== 'Enter' || ev.isComposing) return;
+  // **Shift+Enter lets the DEFAULT run rather than inserting a newline by hand.**
+  // The browser already places the caret and keeps undo history intact; doing it
+  // manually breaks both.
+  if (ev.shiftKey) return;
+  ev.preventDefault();
+  postComment();
 });
 
 // ---- the new-card dialog -------------------------------------------------
