@@ -271,6 +271,21 @@ def may_move(actor: str, from_state: str, to_state: str) -> bool:
     separate questions -- may this actor leave that lane, may this actor enter this one
     -- and answered yes to combinations nobody intended, `backlog -> completed` among
     them.
+
+    **THIS FUNCTION IS NOT THE WHOLE RULE FOR ONE EDGE, AND THAT IS DELIBERATE.**
+    `backlog -> ready_for_claude` carries a `claude` actor, so this returns True for it.
+    **Claude MUST NOT use it without Terry's explicit per-ticket instruction.** Terry,
+    2026-08-19: *"claude MUST NOT move out of backlog until/unless Terry gives explicit
+    guidance for one specific ticket."*
+
+    **The table cannot express that constraint** -- the grant is PER TICKET and verbal,
+    and a permission model grants an edge or it does not. The edge exists so Terry can
+    say *"promote #0027"* and it happens without him reaching for the mouse.
+
+    **So a caller that trusts this function alone will get that one edge wrong.** The
+    restraint lives in `rules.json`'s note on both ends, in FlickrGroupAddr's
+    `CLAUDE.md`, and in its `docs/ORIENTATION.md`. **Every other edge here IS the whole
+    rule.**
     """
     rules = RULES.get(from_state)
     return rules is not None and actor in rules.outbound.get(to_state, NOBODY)
