@@ -1,0 +1,15 @@
+#!/bin/sh
+# Run the gate before every commit. See check.py for what it checks and why.
+#
+# **THIS HOOK DOES NOT RUN UNTIL SOMEBODY POINTS GIT AT IT:**
+#
+#     git config core.hooksPath .githooks
+#
+# **That step is the weak link and it is stated rather than hidden.** A fresh clone
+# silently skips it, and a gate that silently does not run is worse than no gate --
+# which is the exact failure check.py's missing-checker banner exists to refuse one
+# level down. README.md carries the command for the same reason.
+#
+# **`git commit --no-verify` bypasses this**, deliberately. The gate is a helper, not
+# a guard against the person typing.
+exec python check.py
