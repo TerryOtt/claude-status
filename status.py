@@ -65,6 +65,15 @@ from typing import Any, Literal, Self
 
 SCHEMA = 1
 
+# **A SECOND, INDEPENDENT NUMBER, and splitting it was the first thing card #0064 had to
+# do.** One `SCHEMA` used to gate both `board.json` and `rules.json`, so flattening the
+# rules would have bumped the number every board is checked against and **rejected every
+# board on disk** -- a data outage caused by a change to a different file.
+#
+# **Two files with two shapes get two version numbers.** They change for unrelated
+# reasons and neither should be able to invalidate the other.
+RULES_SCHEMA = 2
+
 # **The default port, and it is a DEFAULT rather than the port.** Terry, 2026-08-18:
 # *"I want per-project config JSON that includes TCP port num; I want to be able to
 # bookmark one board per project."*
@@ -257,8 +266,56 @@ NOBODY: frozenset[str] = frozenset()
 # fact is the drift this project keeps paying for.
 RULES_PATH = pathlib.Path(__file__).resolve().parent / "rules.json"
 
+def _index_edges(
+    edges_raw: list[Any], known: set[str], path: pathlib.Path,
+) -> tuple[dict[str, dict[str, set[str]]], dict[str, dict[str, set[str]]]]:
+    """Validate the flat edge list and index it both ways. Card #0064.
+
+    **`inbound` and `outbound` are still BUILT, and that is why nothing else changed.**
+    The FILE stopped storing each edge twice; this index still answers both questions, so
+    `serve.py`, `may_move` and `edges_for` never learned that the format moved.
+
+    **Extracted from `_load_rules`**, which ruff correctly called too branchy once the
+    edge validation landed in it -- the same call it made on `Board.from_json` an hour
+    earlier, for the same reason.
+    """
+    inbound: dict[str, dict[str, set[str]]] = {lane: {} for lane in known}
+    outbound: dict[str, dict[str, set[str]]] = {lane: {} for lane in known}
+    seen: set[tuple[str, str]] = set()
+
+    for index, edge in enumerate(edges_raw):
+        spot = f"edges[{index}]"
+        if not isinstance(edge, dict):
+            raise BoardError(f"{path}: {spot} is not an object")
+        # **All three are MANDATORY. Terry, 2026-08-19: *"making sure rules MUST have
+        # actor + source lane + dest lane."*** A row missing one is not a weaker rule,
+        # it is an unreadable one.
+        missing = [k for k in ("actors", "from", "to") if not edge.get(k)]
+        if missing:
+            raise BoardError(f"{path}: {spot} is missing {', '.join(missing)}")
+        frm, to = str(edge["from"]), str(edge["to"])
+        for end in (frm, to):
+            if end not in known:
+                raise BoardError(f"{path}: {spot} names unknown lane {end!r}")
+        if frm == to:
+            raise BoardError(f"{path}: {spot} joins {frm!r} to itself")
+        if (frm, to) in seen:
+            raise BoardError(f"{path}: {spot} repeats the edge {frm} -> {to}")
+        seen.add((frm, to))
+        if not isinstance(edge["actors"], list):
+            raise BoardError(f"{path}: {spot} 'actors' is not a list")
+        bad = [a for a in edge["actors"] if a not in ACTORS]
+        if bad:
+            raise BoardError(f"{path}: {spot} names unknown actor(s) {bad}")
+        outbound[frm][to] = set(edge["actors"])
+        inbound[to][frm] = set(edge["actors"])
+    return inbound, outbound
+
+
 # **THE PERMISSION TABLE. Terry dictated it lane by lane on 2026-08-18**, in the shape
-# he asked for: *"I like that the perms are (in/out, actor, source/dest)."*
+# he asked for: *"I like that the perms are (in/out, actor, source/dest)."* **The FILE was
+# flattened on 2026-08-19 by card #0064** -- one row per edge instead of a copy under each
+# lane -- and the shape he named survives as the in-memory index this builds.
 def _load_rules(path: pathlib.Path) -> tuple[
     tuple[tuple[str, str], ...],
     dict[str, LaneRules],
@@ -279,8 +336,10 @@ def _load_rules(path: pathlib.Path) -> tuple[
     with path.open(encoding="utf-8") as fh:
         doc = json.load(fh)
 
-    if doc.get("schema") != SCHEMA:
-        raise BoardError(f"{path}: rules schema {doc.get('schema')!r}, want {SCHEMA}")
+    if doc.get("schema") != RULES_SCHEMA:
+        raise BoardError(
+            f"{path}: rules schema {doc.get('schema')!r}, want {RULES_SCHEMA}. "
+            "Schema 1 nested every edge under both lanes; card #0064 flattened it.")
 
     lanes_raw = doc.get("lanes")
     if not isinstance(lanes_raw, list) or not lanes_raw:
@@ -289,31 +348,22 @@ def _load_rules(path: pathlib.Path) -> tuple[
     known = {lane["id"] for lane in lanes_raw}
     order = tuple((lane["id"], lane["label"]) for lane in lanes_raw)
 
-    def actors(spec: object, where: str) -> frozenset[str]:
-        if not isinstance(spec, dict) or not isinstance(spec.get("actors"), list):
-            raise BoardError(f"{path}: {where} has no 'actors' list")
-        bad = [a for a in spec["actors"] if a not in ACTORS]
-        if bad:
-            raise BoardError(f"{path}: {where} names unknown actor(s) {bad}")
-        return frozenset(spec["actors"])
+    edges_raw = doc.get("edges")
+    if not isinstance(edges_raw, list) or not edges_raw:
+        raise BoardError(f"{path}: 'edges' is missing or empty")
+
+    inbound, outbound = _index_edges(edges_raw, known, path)
 
     table: dict[str, LaneRules] = {}
     for lane in lanes_raw:
         lane_id = lane["id"]
-        for direction in ("in", "out"):
-            for other in lane.get(direction, {}):
-                if other not in known:
-                    raise BoardError(
-                        f"{path}: {lane_id}.{direction} names unknown lane {other!r}")
         bad_create = [a for a in lane.get("create", []) if a not in ACTORS]
         if bad_create:
             raise BoardError(f"{path}: {lane_id}.create names {bad_create}")
         table[lane_id] = LaneRules(
             create=frozenset(lane.get("create", [])),
-            inbound={src: actors(spec, f"{lane_id}.in.{src}")
-                     for src, spec in lane.get("in", {}).items()},
-            outbound={dst: actors(spec, f"{lane_id}.out.{dst}")
-                      for dst, spec in lane.get("out", {}).items()},
+            inbound={src: frozenset(who) for src, who in inbound[lane_id].items()},
+            outbound={dst: frozenset(who) for dst, who in outbound[lane_id].items()},
         )
 
     priorities = tuple(p["id"] for p in doc["priorities"])
@@ -336,11 +386,24 @@ class BoardError(ValueError):
 
 
 def check_edges() -> list[str]:
-    """Every mismatch between the two declarations of an edge. Empty means consistent.
+    """Every inconsistency in the derived permission index. Empty means consistent.
 
-    **Callers MUST surface a non-empty result.** A table that contradicts itself
-    behaves as whichever half a given code path reads, and the two halves are read by
-    different code.
+    **THIS FUNCTION LOST ITS ORIGINAL JOB ON 2026-08-19, and that is the win.** Card
+    #0064. It was 32 lines that compared the two stored copies of every edge --
+    `laneA.out.laneB` against `laneB.in.laneA` -- because `rules.json` held each fact
+    twice and the two could disagree.
+
+    **`rules.json` now stores each edge once**, so there is no second copy to contradict
+    the first. The comparison it used to make cannot fail.
+
+    **It is kept rather than deleted, with a narrower job**, because `inbound` and
+    `outbound` are still BUILT as two dictionaries in `_load_rules`, and a future edit
+    there could still fill one and not the other. **The check moved from guarding the
+    FILE to guarding the derivation.**
+
+    **Callers MUST surface a non-empty result.** A table that contradicts itself behaves
+    as whichever half a given code path reads, and the two halves are read by different
+    code.
     """
     problems: list[str] = []
     for state, rules in RULES.items():
@@ -352,8 +415,7 @@ def check_edges() -> list[str]:
             mirror = other.outbound.get(state)
             if mirror is None:
                 problems.append(
-                    f"{state}.inbound has {src} -> {state} for {sorted(actors)}, "
-                    f"but {src}.outbound does not mention {state}")
+                    f"{src} -> {state} was indexed inbound but not outbound")
             elif mirror != actors:
                 problems.append(
                     f"{src} -> {state}: inbound says {sorted(actors)}, "
@@ -364,8 +426,8 @@ def check_edges() -> list[str]:
                 problems.append(f"{state}.outbound names unknown lane {dst!r}")
             elif state not in other.inbound:
                 problems.append(
-                    f"{state}.outbound has {state} -> {dst} for {sorted(actors)}, "
-                    f"but {dst}.inbound does not mention {state}")
+                    f"{state} -> {dst} was indexed outbound but not inbound "
+                    f"for {sorted(actors)}")
     return problems
 
 
