@@ -1682,6 +1682,27 @@ class Handler(http.server.BaseHTTPRequestHandler):
             # **`ok` is the field the dot keys on.** Parsing 12 KB of JSON at 2.5 Hz
             # is nothing, and it is the difference between a signal that means
             # something and one that looks reassuring.
+            # **THE PERMISSION TABLE IS RE-READ HERE TOO, and this is the whole of
+            # card #0051.** Terry's standing order: a tool that can detect its own
+            # staleness MUST resolve it where it can, and alert only where it cannot.
+            #
+            # **`rules.json` is DATA, so it is resolvable.** The lane labels, the lane
+            # owners and the drag permissions all derive from it, and before this they
+            # froze at import -- so a rules edit was invisible until somebody restarted
+            # the process. **It bit twice in one afternoon, and Terry spotted the
+            # second one before any instrument did.**
+            #
+            # **A forced browser reload would NOT have fixed it**, which is why this
+            # is a server-side reload rather than the alert he offered as an
+            # alternative: the tab would have re-fetched the same page from the same
+            # process holding the same stale table.
+            #
+            # Cost is one `stat` on a local file per poll, beside the board `stat` and
+            # a 12 KB JSON parse that already happen here.
+            reloaded = status.reload_rules_if_changed()
+            if reloaded:
+                print(f"  {reloaded}", flush=True)
+
             try:
                 mtime = BOARD_PATH.stat().st_mtime
                 status.load(BOARD_PATH)

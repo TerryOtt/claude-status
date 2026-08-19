@@ -337,6 +337,84 @@ def edges_for(actor: str) -> frozenset[tuple[str, str]]:
 TERRY_EDGES: frozenset[tuple[str, str]] = edges_for("terry")
 CLAUDE_EDGES: frozenset[tuple[str, str]] = edges_for("claude")
 
+# **The mtime the table above was built from.** `_rules_mtime` is what makes a live
+# reload possible without asking the filesystem to re-read an unchanged file.
+_rules_mtime: float = RULES_PATH.stat().st_mtime if RULES_PATH.exists() else 0.0
+
+
+def reload_rules_if_changed() -> str | None:
+    """Re-read `rules.json` when it has changed on disk. Returns a message, or None.
+
+    **Terry's standing order, 2026-08-19: a tool that can DETECT its own staleness
+    MUST resolve it where it can, and alert only where it cannot.** `rules.json` is
+    data, so this end of the problem is resolvable and gets resolved silently.
+
+    **It bit twice in one afternoon before this existed.** The rules gained a
+    `claude` actor and the board went on showing the old lane owners; Terry noticed
+    before any instrument did, and his first guess was that the rule had never been
+    written. **A server holding a table it loaded at import cannot see that it is
+    wrong.**
+
+    **EVERY DERIVED GLOBAL IS REBOUND TOGETHER, and that is the whole difficulty.**
+    Seven names come out of `_load_rules` or are computed from it, and a table that
+    is half-new contradicts itself -- which is exactly what `check_edges()` exists to
+    catch, arriving from a new direction.
+
+    **A BAD FILE KEEPS THE OLD TABLE.** A `rules.json` saved mid-edit is a real
+    state, and half a permission model is worse than a stale one. So the new table is
+    built and validated COMPLETELY before anything is rebound; on any failure this
+    returns a message and changes nothing.
+
+    **`_rules_mtime` advances even on a rejected file.** Otherwise a broken save
+    would be re-read, re-parsed and re-rejected on every single poll -- twice a
+    second, forever -- and the log would be the only thing that noticed.
+    """
+    # **Nine globals rebound, and `global` is correct here rather than a smell.** The
+    # rest of this module reads these names directly, and every caller reaches them as
+    # `status.RULES`, so **rebinding the module attribute IS the delivery mechanism.**
+    #
+    # **PLW0603 is suppressed for one function, deliberately.** The lint is right in
+    # general: global rebinding is hard to reason about. The alternative here is a
+    # mutable container -- `_state.rules` -- which means touching every reference in
+    # two files to satisfy a rule about a single function that exists precisely to
+    # rebind them. **The blast radius of the fix exceeds the blast radius of the
+    # finding**, and the function is short, documented, and the only writer.
+    global LANES, RULES, PRIORITIES, PRIORITY_LABEL, DEFAULT_PRIORITY  # noqa: PLW0603
+    global STATES, LANE_LABEL, TERRY_EDGES, CLAUDE_EDGES, _rules_mtime  # noqa: PLW0603
+
+    try:
+        now = RULES_PATH.stat().st_mtime
+    except OSError:
+        return None
+    if now == _rules_mtime:
+        return None
+    _rules_mtime = now
+
+    try:
+        lanes, rules, priorities, labels, default = _load_rules(RULES_PATH)
+    except (BoardError, OSError, ValueError) as exc:
+        return f"rules.json changed and was REFUSED: {exc}. Keeping the loaded table."
+
+    # **Validated against the NEW table before it is installed**, by swapping in,
+    # checking, and swapping back on failure. `check_edges()` reads the globals, so
+    # there is no way to ask it about a table that is not currently bound.
+    keep = (LANES, RULES, PRIORITIES, PRIORITY_LABEL, DEFAULT_PRIORITY,
+            STATES, LANE_LABEL, TERRY_EDGES, CLAUDE_EDGES)
+    LANES, RULES, PRIORITIES, PRIORITY_LABEL, DEFAULT_PRIORITY = (
+        lanes, rules, priorities, labels, default)
+    STATES = tuple(state for state, _ in LANES)
+    LANE_LABEL = dict(LANES)
+    problems = check_edges()
+    if problems:
+        (LANES, RULES, PRIORITIES, PRIORITY_LABEL, DEFAULT_PRIORITY,
+         STATES, LANE_LABEL, TERRY_EDGES, CLAUDE_EDGES) = keep
+        return ("rules.json changed and was REFUSED: "
+                + "; ".join(problems) + ". Keeping the loaded table.")
+
+    TERRY_EDGES = edges_for("terry")
+    CLAUDE_EDGES = edges_for("claude")
+    return f"rules.json reloaded: {len(STATES)} lanes, {len(TERRY_EDGES)} terry edges"
+
 
 def actors_in(state: str) -> frozenset[str]:
     """Every actor who may move a card INTO this lane, from anywhere.
