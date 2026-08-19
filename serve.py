@@ -872,6 +872,15 @@ PAGE = """<!doctype html>
                       font-size: 11.5px; background: #F4F5F7; padding: 0 3px;
                       border-radius: 3px; }
   .empty { color: var(--dim); font-style: italic; font-size: 12.5px; }
+  /* **Card #0071.** The kind is a quiet label and the card is the thing to click, so
+     the weight goes on the target rather than on the word describing it. */
+  .rel { display: flex; align-items: baseline; gap: 8px; padding: 3px 0; }
+  .rel-k { flex: 0 0 92px; font-size: 11px; text-transform: uppercase;
+           letter-spacing: .06em; color: var(--dim); font-weight: 700; }
+  .rel-go { flex: 1; text-align: left; font: inherit; font-size: 12.5px;
+            background: none; border: 0; padding: 0; cursor: pointer;
+            color: var(--link, #0B5CD5); }
+  .rel-go:hover { text-decoration: underline; }
 
   /* The audit trail and the comments are visually DIFFERENT on purpose. One is what
      the machine recorded and nobody typed; the other is what a person chose to say.
@@ -1017,6 +1026,11 @@ move any card whoever owns it. Click to hand it over."></button>
     <div class="body">
       <h3>Description</h3>
       <div class="detail-text" id="p-detail"></div>
+      <!-- **Card #0071. Hidden entirely when a card has no relationships**, which is
+           most of them. A heading with nothing under it is noise on 70 cards to serve
+           the few that have links. -->
+      <h3 id="p-rel-h">Related</h3>
+      <div id="p-rel"></div>
       <h3>Comments</h3>
       <div id="p-comments"></div>
       <textarea id="say" placeholder="Leave a note on this card..."></textarea>
@@ -1119,6 +1133,68 @@ function itemById(id) {
   return null;
 }
 
+// **Card #0071. The model landed on #0028 and nothing drew it**, so the relationships
+// existed and Terry could not see one.
+//
+// **The wire already carries labels, not slugs** -- `{kind, ticket, subject}` -- because
+// he says "#0028" out loud. Nothing here needs a lookup table.
+const REL_WORD = {
+  blocks: 'Blocks',
+  blocked_by: 'Blocked by',
+  duplicates: 'Duplicates',
+  duplicated_by: 'Duplicated by',
+  references: 'References',
+  referenced_by: 'Referenced by',
+  relates_to: 'Relates to',
+};
+
+function relRow(word, ref) {
+  const row = document.createElement('div');
+  row.className = 'rel';
+  const k = document.createElement('span');
+  k.className = 'rel-k';
+  k.textContent = word;
+  // **A relationship is a CARD REFERENCE, so it opens that card.** A list you cannot
+  // follow is a list you have to go and look things up from, which is the work the
+  // relationship was recorded to save.
+  const a = document.createElement('button');
+  a.type = 'button';
+  a.className = 'rel-go';
+  a.textContent = ref.ticket + '  ' + ref.subject;
+  a.title = 'Open ' + ref.ticket;
+  a.addEventListener('click', () => {
+    // **Ticket, not slug.** `find()` on the server takes either, and `itemById` here
+    // wants the slug -- so the lookup goes through the lanes by ticket label, which is
+    // the only identifier the wire carries for the OTHER card.
+    for (const lane of data.lanes) {
+      for (const it of lane.items) {
+        if (it.ticket === ref.ticket) { openCard(it.id); return; }
+      }
+    }
+    toast(ref.ticket + ' is not on the board', true);
+  });
+  row.append(k, a);
+  return row;
+}
+
+function paintRelations(it) {
+  const box = document.getElementById('p-rel');
+  const head = document.getElementById('p-rel-h');
+  box.replaceChildren();
+  const rows = [];
+  // **Hierarchy first, then relations.** Parent and children say where a card SITS;
+  // the rest say what it touches, and the first question is usually the first one.
+  if (it.parent) rows.push(relRow('Parent', it.parent));
+  for (const kid of it.children || []) rows.push(relRow('Child', kid));
+  for (const l of it.links || []) rows.push(relRow(REL_WORD[l.kind] || l.kind, l));
+  // **Hidden entirely rather than showing "none".** Most cards have no relationships,
+  // and an empty section on every one of them is noise paid for by the few that do.
+  const any = rows.length > 0;
+  head.style.display = any ? '' : 'none';
+  box.style.display = any ? '' : 'none';
+  for (const r of rows) box.appendChild(r);
+}
+
 // ---- the detail panel ----------------------------------------------------
 
 function openCard(id) {
@@ -1158,6 +1234,8 @@ function openCard(id) {
   const detail = document.getElementById('p-detail');
   if (it.detail) { detail.innerHTML = it.detail; detail.className = 'detail-text'; }
   else { detail.textContent = 'No description.'; detail.className = 'empty'; }
+
+  paintRelations(it);
 
   const cs = document.getElementById('p-comments');
   cs.replaceChildren();
