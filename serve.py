@@ -505,6 +505,64 @@ def is_old(item: "status.Item") -> bool:
     return datetime.datetime.now().astimezone() - status.parse_stamp(since) >= OLD_AFTER
 
 
+#: Where sRGB's transfer curve switches from its linear foot to the power segment.
+#: **A constant from the specification, not a tuning knob** -- WCAG 2 and sRGB both
+#: name this exact value, and changing it would stop these numbers meaning what the
+#: standard says they mean.
+SRGB_KNEE = 0.04045
+
+
+def _relative_luminance(color: str) -> float:
+    """WCAG relative luminance of `#RRGGBB`."""
+    text = color.lstrip("#")
+    channels = []
+    for index in (0, 2, 4):
+        c = int(text[index:index + 2], 16) / 255.0
+        channels.append(c / 12.92 if c <= SRGB_KNEE else ((c + 0.055) / 1.055) ** 2.4)
+    return 0.2126 * channels[0] + 0.7152 * channels[1] + 0.0722 * channels[2]
+
+
+def on_white(color: str) -> float:
+    """Contrast ratio of one color against the page's white ground."""
+    return 1.05 / (_relative_luminance(color) + 0.05)
+
+
+#: WCAG AA for normal text. The names this is used for are 12px, well under the
+#: large-text threshold, so the strict bar applies.
+TEXT_CONTRAST = 4.5
+
+
+def readable_on_white(color: str) -> str:
+    """The same hue, darkened just enough to be readable as TEXT on white. Card #0089.
+
+    **A configured user color is an ACCENT, and an accent is not automatically text.**
+    Claude's `#E2A100` is right on a lane border and renders its owner chip and every
+    audit-trail entry at **2.25:1** -- measured in the browser, against a 4.5 bar.
+
+    **Derived rather than hand-picked, so a third user needs no second color.** Somebody
+    adding themselves to the board picks one value they like; this finds the readable
+    version of it. Hand-tuning a second hex per person is the kind of chore that gets
+    skipped, and the skip is invisible.
+
+    **It scales toward black and keeps the hue**, so the darker variant still reads as
+    that person's color rather than as a different one. A color that already passes is
+    returned untouched -- Terry's blue is 8.6:1 and does not move.
+    """
+    if on_white(color) >= TEXT_CONTRAST:
+        return color
+
+    text = color.lstrip("#")
+    r, g, b = (int(text[i:i + 2], 16) for i in (0, 2, 4))
+    # **Descending, so the FIRST hit is the lightest shade that clears the bar.**
+    # Going darker than necessary would throw away the hue this exists to keep.
+    for step in range(99, 0, -1):
+        scale = step / 100
+        shade = f"#{round(r * scale):02X}{round(g * scale):02X}{round(b * scale):02X}"
+        if on_white(shade) >= TEXT_CONTRAST:
+            return shade
+    return "#000000"
+
+
 def user_css() -> str:
     """One color variable and four rules per configured user. **Card #0072.**
 
@@ -520,21 +578,32 @@ def user_css() -> str:
     **Generated rather than templated, because the count is unknown.** Two users is
     today; the whole point of the card is that it stops being a fixed number.
     """
-    lines = [f"  --user-{u.id}: {u.color};" for u in status.USERS]
+    lines = []
+    for u in status.USERS:
+        lines.append(f"  --user-{u.id}: {u.color};")
+        # **A second variable per user, card #0089.** The accent paints borders and
+        # fills, where a light color is fine. The ink paints NAMES on white, where it
+        # is not. See `readable_on_white`.
+        lines.append(f"  --user-{u.id}-ink: {readable_on_white(u.color)};")
     lines.append(f"  --accent: var(--user-{status.BROWSER_USER});")
     out = [":root {", *lines, "}"]
 
     for u in status.USERS:
         var = f"var(--user-{u.id})"
+        ink = f"var(--user-{u.id}-ink)"
         out += [
-            # The lane accent, when a lane belongs to exactly this actor.
+            # The lane accent, when a lane belongs to exactly this actor. A BORDER, so
+            # the light accent is correct here.
             f'.lane[data-css="{u.id}"] {{ border-top-color: {var}; }}',
-            f'.lane[data-css="{u.id}"] .owner {{ color: {var}; }}',
+            # **Text from here down, so all of it takes the ink.** Claude's amber
+            # measured 2.25:1 on white as a name and was unreadable.
+            f'.lane[data-css="{u.id}"] .owner {{ color: {ink}; }}',
             # Their name, wherever it appears: the audit trail and a comment head.
-            f".trail .who.{u.id} {{ color: {var}; }}",
-            f".comment .head .who.{u.id} {{ color: {var}; }}",
-            # The owner chip in the drawer.
-            f"#p-owner.{u.id} {{ color: {var}; border-color: {var}; }}",
+            f".trail .who.{u.id} {{ color: {ink}; }}",
+            f".comment .head .who.{u.id} {{ color: {ink}; }}",
+            # **The chip keeps the ACCENT border and takes the INK label**, so it still
+            # reads as that person's color while the word stays legible.
+            f"#p-owner.{u.id} {{ color: {ink}; border-color: {var}; }}",
         ]
     return "\n".join(out)
 
