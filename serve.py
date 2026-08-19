@@ -1597,6 +1597,47 @@ async function saveDetail() {
   }
 }
 
+// **Turn ` -- ` into an em dash AS IT IS TYPED. Card #0092.**
+//
+// **Terry's call, and he overruled mine.** #0079 converted on RENDER and deliberately
+// left the stored text as ASCII, on the argument that the JSON stays greppable. His
+// answer: *"I will NEVER grep on punctuation like --. I'd love to have the UI do
+// something smart and immediately turn ' -- ' into something not-fugly."*
+//
+// **So the em dash is now what gets STORED**, and the render-time rule stays as the
+// safety net for every comment written before today.
+//
+// **It fires on the TRAILING SPACE, which is what makes it feel right.** Converting on
+// the second hyphen would rewrite `--verify` under his fingers halfway through the word.
+// Waiting for the space means the pattern is unambiguously the em-dash usage, and it
+// lands at the moment he moves on to the next word.
+//
+// **The caret is moved by the number of replacements BEFORE it**, not reset. ` -- ` is
+// four characters and ` — ` is three, so each one earlier in the string pulls the
+// caret back by one. Assigning `value` without this sends the cursor to the end, which
+// is the classic version of this feature that everybody hates.
+const DASH_RUN = / -- /g;
+
+function emDashAsYouType(field) {
+  const before = field.value;
+  if (!DASH_RUN.test(before)) return;
+  DASH_RUN.lastIndex = 0;
+
+  const caret = field.selectionStart;
+  let shift = 0;
+  for (const hit of before.matchAll(DASH_RUN)) {
+    if (hit.index + hit[0].length <= caret) shift += 1;
+  }
+
+  const after = before.replace(DASH_RUN, ' — ');
+  // **Only touch the field if something actually changed.** A no-op assignment still
+  // disturbs the selection and breaks undo, twice a keystroke.
+  if (after === before) return;
+  field.value = after;
+  const at = caret - shift;
+  field.setSelectionRange(at, at);
+}
+
 function toast(msg, bad) {
   const t = document.getElementById('toast');
   t.textContent = msg;
@@ -1895,6 +1936,14 @@ document.getElementById('post').addEventListener('click', postComment);
 
 // **Cards #0081 and #0082.** Click the text to edit it -- the whole line is the target,
 // so no icon competes with the title for the eye.
+// **Card #0092. Every field where Terry writes PROSE gets it.** The comment box, the
+// description editor and the new-card description. **The title input does NOT** -- a
+// card title is a name, and a name with an em dash in it is a name he did not type.
+for (const id of ['say', 'p-detail-text', 'mk-detail']) {
+  const field = document.getElementById(id);
+  if (field) field.addEventListener('input', () => emDashAsYouType(field));
+}
+
 document.getElementById('p-subject').addEventListener('click', startSubjectEdit);
 document.getElementById('p-detail').addEventListener('click', startDetailEdit);
 document.getElementById('p-detail-edit').addEventListener('click', startDetailEdit);
