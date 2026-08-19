@@ -65,9 +65,10 @@
         },
         "ready_for_claude": {
           "actors": [
+            "claude",
             "terry"
           ],
-          "note": "Promotion is Terry's alone. This is what makes the queue his."
+          "note": "Terry promotes from the backlog, and that is what makes the queue his. CLAUDE HAS THIS EDGE AND MUST NOT USE IT UNSOLICITED. Terry, 2026-08-19: \"If something changes on a ticket in backlog that suddenly makes it eligible for work, Terry can grant *per-ticket* permission to move from backlog to RFW. Note that claude MUST NOT move out of backlog until/unless Terry gives explicit guidance for one specific ticket.\" The grant is PER TICKET and verbal; the table cannot express that, so the restraint lives in CLAUDE.md and ORIENTATION.md. A standing permission read off this row alone would let Claude fill its own queue, which is the one thing every other edge here is shaped to prevent."
         },
         "in_progress": {
           "actors": [
@@ -87,9 +88,10 @@
       "in": {
         "backlog": {
           "actors": [
+            "claude",
             "terry"
           ],
-          "note": ""
+          "note": "Terry promotes from the backlog, and that is what makes the queue his. CLAUDE HAS THIS EDGE AND MUST NOT USE IT UNSOLICITED. Terry, 2026-08-19: \"If something changes on a ticket in backlog that suddenly makes it eligible for work, Terry can grant *per-ticket* permission to move from backlog to RFW. Note that claude MUST NOT move out of backlog until/unless Terry gives explicit guidance for one specific ticket.\" The grant is PER TICKET and verbal; the table cannot express that, so the restraint lives in CLAUDE.md and ORIENTATION.md. A standing permission read off this row alone would let Claude fill its own queue, which is the one thing every other edge here is shaped to prevent."
         },
         "blocked": {
           "actors": [
