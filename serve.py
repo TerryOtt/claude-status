@@ -390,7 +390,19 @@ PAGE = """<!doctype html>
      Needs Terry. **The CTAs went white in #0054 and the metadata did not**, so the
      bar currently has two tiers on purpose rather than by omission. */
   #bar #live, #bar #alerts-wrap, #bar .meta { color: var(--bardim); }
-  #title { font-weight: 700; letter-spacing: -.01em; color: var(--barink); }
+  /* **15px, up from the bar's inherited 12px.** Terry, 2026-08-19: "Bump up font size
+     of FGA title next to breathing dot. Keep same whitespace between it and CTA's."
+     Card #0058.
+
+     **15px is a size he has already approved for a heading in this UI**, rather than a
+     fresh guess: the lane titles are 15px, and he got there by asking for +50%, looking
+     at 18px and pulling back with "that may have overshot for my yes."
+
+     **The whitespace he asked to keep is 36px** -- `#bar`'s flex `gap: 14px` plus
+     `#counts`'s `margin-left: 22px`. **Both are absolute, so a larger title cannot move
+     them**, and both were measured before and after rather than reasoned about. */
+  #title { font-weight: 700; letter-spacing: -.01em; color: var(--barink);
+           font-size: 15px; }
   /* **ONLY CALLS TO ACTION LIVE HERE.** Terry: "No other stats up there, just
      calls to action." Open counts and in-progress counts were noise -- the lane
      headers already carry them, and a number that never asks for anything trains
