@@ -68,6 +68,12 @@
             "terry"
           ],
           "note": "Promotion is Terry's alone. This is what makes the queue his."
+        },
+        "in_progress": {
+          "actors": [
+            "terry"
+          ],
+          "note": "Terry starting something straight out of his own queue. Claude has no such edge and MUST NOT gain one -- promotion out of the backlog is what makes the queue his."
         }
       }
     },
@@ -98,6 +104,12 @@
           "note": ""
         },
         "ready_for_review": {
+          "actors": [
+            "terry"
+          ],
+          "note": ""
+        },
+        "in_progress": {
           "actors": [
             "terry"
           ],
@@ -139,13 +151,15 @@
       "in": {
         "blocked": {
           "actors": [
-            "claude"
+            "claude",
+            "terry"
           ],
           "note": ""
         },
         "needs_terry_action": {
           "actors": [
-            "claude"
+            "claude",
+            "terry"
           ],
           "note": ""
         },
@@ -157,7 +171,14 @@
         },
         "ready_for_review": {
           "actors": [
-            "claude"
+            "claude",
+            "terry"
+          ],
+          "note": ""
+        },
+        "backlog": {
+          "actors": [
+            "terry"
           ],
           "note": ""
         }
@@ -165,21 +186,30 @@
       "out": {
         "blocked": {
           "actors": [
-            "claude"
+            "claude",
+            "terry"
           ],
           "note": ""
         },
         "needs_terry_action": {
           "actors": [
-            "claude"
+            "claude",
+            "terry"
           ],
           "note": ""
         },
         "ready_for_review": {
           "actors": [
-            "claude"
+            "claude",
+            "terry"
           ],
           "note": ""
+        },
+        "ready_for_claude": {
+          "actors": [
+            "terry"
+          ],
+          "note": "Terry started it, then decided Claude should carry it. This is the one way a card reaches Ready for Claude from work already under way, and it is Terry's alone for the same reason every other entry to that lane is."
         }
       }
     },
@@ -203,7 +233,8 @@
         },
         "in_progress": {
           "actors": [
-            "claude"
+            "claude",
+            "terry"
           ],
           "note": ""
         },
@@ -235,7 +266,8 @@
         },
         "in_progress": {
           "actors": [
-            "claude"
+            "claude",
+            "terry"
           ],
           "note": ""
         },
@@ -261,7 +293,8 @@
       "in": {
         "in_progress": {
           "actors": [
-            "claude"
+            "claude",
+            "terry"
           ],
           "note": ""
         },
@@ -281,7 +314,8 @@
       "out": {
         "in_progress": {
           "actors": [
-            "claude"
+            "claude",
+            "terry"
           ],
           "note": ""
         },
@@ -319,7 +353,8 @@
         },
         "in_progress": {
           "actors": [
-            "claude"
+            "claude",
+            "terry"
           ],
           "note": ""
         },
@@ -345,7 +380,8 @@
         },
         "in_progress": {
           "actors": [
-            "claude"
+            "claude",
+            "terry"
           ],
           "note": "Claude pulling back work it decides is not actually finished. \"claude can pull BACK from ready for terry review but Terry is only one that is ready to review out -> completed.\""
         },
