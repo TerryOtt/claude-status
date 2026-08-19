@@ -1052,6 +1052,18 @@ move any card whoever owns it. Click to hand it over."></button>
         <label for="mk-priority">Priority</label>
         <select id="mk-priority"></select>
       </div>
+      <!-- **Card #0069.** Terry had no way to say who a new card belongs to, so every
+           one landed on Claude and had to be reassigned afterwards. He asked for a
+           dropdown and delegated the rest: "Suggest dropdown picker with Claude as
+           default, but implementation details delegated to Claude."
+           **Claude is the default because that is the existing behavior**, not because
+           it is the better guess -- `Item.owner` already defaults to "claude" and his
+           standing instruction is "if in doubt, assign to claude". Changing the default
+           in the same breath as exposing the control would hide which of the two moved. -->
+      <div class="field">
+        <label for="mk-owner">Owner</label>
+        <select id="mk-owner"></select>
+      </div>
       <div class="field">
         <label for="mk-detail">Description</label>
         <textarea id="mk-detail"
@@ -1370,6 +1382,19 @@ function openMake(lane) {
     if (p.id === data.defaultPriority) o.selected = true;
     pri.appendChild(o);
   }
+  // **Owners come from the SERVER too, for the same reason the priorities do.** Card
+  // #0069. A pair of hard-coded options would be a second copy of the actor list, and
+  // card #0072 is about to make that list configurable -- so a page that names Terry and
+  // Claude in markup would go stale the day somebody else deploys this.
+  const own = document.getElementById('mk-owner');
+  own.innerHTML = '';
+  for (const a of data.actors || []) {
+    const o = document.createElement('option');
+    o.value = a.id;
+    o.textContent = a.label;
+    if (a.id === (data.defaultOwner || 'claude')) o.selected = true;
+    own.appendChild(o);
+  }
   document.getElementById('mkscrim').classList.add('show');
   document.getElementById('mk').classList.add('show');
   document.getElementById('mk-subject').focus();
@@ -1421,6 +1446,7 @@ async function submitMake() {
         subject: subject,
         detail: document.getElementById('mk-detail').value,
         priority: document.getElementById('mk-priority').value,
+        owner: document.getElementById('mk-owner').value,
       }),
     });
     const out = await res.json();
@@ -2221,6 +2247,12 @@ def payload() -> bytes:
         "priorities": [{"id": p, "label": status.PRIORITY_LABEL.get(p, "")}
                        for p in status.PRIORITIES],
         "defaultPriority": status.DEFAULT_PRIORITY,
+        # **The actor list ships from the server, never typed into the page.** Card
+        # #0069, and the same rule the priorities already follow. Card #0072 is about to
+        # make this configurable per project, and a page naming Terry and Claude in
+        # markup would go stale the day somebody else deploys this.
+        "actors": [{"id": a, "label": a.capitalize()} for a in status.ACTORS],
+        "defaultOwner": "claude",
         "counts": counts,
         "error": "; ".join(drift) if drift else None,
     }).encode("utf-8")
@@ -2412,6 +2444,11 @@ class Handler(http.server.BaseHTTPRequestHandler):
                         slug_for(board, subject), subject, state, "terry",
                         priority=str(body.get("priority") or status.DEFAULT_PRIORITY),
                         detail=str(body.get("detail") or ""),
+                        # **`as_actor` narrows the browser's string here too.** Card
+                        # #0069, and the same boundary lesson `/assign` paid for: a
+                        # parameter annotated `Actor` fed a raw `str` is an annotation
+                        # that lies at the call site.
+                        owner=status.as_actor(str(body.get("owner") or "claude")),
                     )
                 else:
                     result = board.comment(str(body["id"]), str(body["text"]), "terry")

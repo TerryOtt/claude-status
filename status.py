@@ -1250,6 +1250,7 @@ class Board:
         *,
         priority: str = DEFAULT_PRIORITY,
         detail: str = "",
+        owner: Actor = "claude",
     ) -> str:
         """Add a new card, with its first history entry already on it.
 
@@ -1273,9 +1274,15 @@ class Board:
             raise BoardError(f"unknown priority {priority!r}")
         # **Taken from the counter and the counter advances**, never derived from the
         # items. See `next_ticket` for why both obvious derivations collide.
+        # **NO ownership entry, even though the owner is now chosen rather than assumed.**
+        # Card #0069. Terry drew this line on #0053: *"initial ticket ownership assignment
+        # is NOT to be in the audit log, that's clear by ticket creation timestamp."*
+        # **Picking an owner at creation is still an initial condition, not an event** --
+        # the creation entry already carries the moment, and only a REASSIGNMENT is a
+        # change to record.
         item = Item(
             id=item_id, subject=subject, state=state, ticket=self.next_ticket,
-            priority=priority, detail=detail,
+            priority=priority, detail=detail, owner=owner,
             history=[Change(at=now(), to=state, by=by)])
         self.next_ticket += 1
         self.items.append(item)
@@ -1817,6 +1824,11 @@ def main() -> None:
     # uses**, so the shell-quoting lesson is inherited rather than repeated.
     ap.add_argument("--set-detail", metavar="ID",
                     help="replace one card's description; use --detail or --detail-file")
+    # **Card #0069, and it is the CLI half of the dialog's new picker.** The default
+    # stays `claude` because that is what `Item.owner` already did; his standing rule is
+    # *"if in doubt, assign to claude."*
+    ap.add_argument("--owner", default="claude", choices=list(ACTORS),
+                    help="owner for --create (default: claude)")
     # **Card #0028. Both cards in one call, always.** The relationship is stored once and
     # the other direction is derived, so there is no call shape that writes half of one.
     ap.add_argument("--link", nargs=3, metavar=("ID", "KIND", "OTHER"),
@@ -1905,7 +1917,8 @@ def _apply(board: Board, args: argparse.Namespace) -> str:
 
 def _do_create(board: Board, args: argparse.Namespace) -> str:
     return board.create(args.create[0], args.create[1], args.state, "claude",
-                        priority=args.priority, detail=_detail_text(args))
+                        priority=args.priority, detail=_detail_text(args),
+                        owner=as_actor(args.owner))
 
 
 def _do_assign(board: Board, args: argparse.Namespace) -> str:
