@@ -115,7 +115,7 @@ class LaneRules:
     `inbound` and `outbound` map the OTHER lane to the actors allowed on that edge.
     **Naming the other lane is what an actor set alone could not do**: it is the
     difference between *"Terry may take cards out of Backlog"* and *"Terry may promote a
-    Backlog card to Ready for Claude, and nowhere else."*
+    Backlog card to Ready For Work, and nowhere else."*
 
     **Every edge is declared TWICE, once from each end**, and `check_edges()` refuses to
     let the halves disagree. Terry reasons one lane at a time, so the table is written
@@ -664,7 +664,7 @@ class Board:
 
         **Priority orders WITHIN a lane and nothing else.** Terry: *"the cards will be
         priority order per swimlane, so claude knows to work top down."* So the top card
-        of `Ready for Claude` is the next thing to pick up.
+        of `Ready For Work` is the next thing to pick up.
 
         **`sorted` is stable**, so equal priorities keep the order the file gives them.
         """

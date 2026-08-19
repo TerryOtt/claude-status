@@ -81,8 +81,8 @@
     },
     {
       "id": "ready_for_claude",
-      "label": "Ready for Claude",
-      "note": "Do this next, in priority order. Terry fills it; Claude empties it. CREATING here is not PROMOTING here -- Claude files a card he just asked for in chat, but only Terry moves one in from the backlog, so Claude can never advance its own queue. Terry gained create here on 2026-08-19 for the + button (card #0038). CREATING here is still not PROMOTING here: the create right and the backlog->ready_for_claude edge are separate entries, and Claude has the first unconditionally and the second only per-ticket.",
+      "label": "Ready For Work",
+      "note": "Do this next, in priority order. Terry fills it; Claude empties it. CREATING here is not PROMOTING here -- Claude files a card he just asked for in chat, but only Terry moves one in from the backlog, so Claude can never advance its own queue. Terry gained create here on 2026-08-19 for the + button (card #0038). CREATING here is still not PROMOTING here: the create right and the backlog->ready_for_claude edge are separate entries, and Claude has the first unconditionally and the second only per-ticket. RENAMED 2026-08-19: the LABEL is now \"Ready For Work\" and the stored id stays ready_for_claude. Terry: \"we're going to do enough network server work I don't want RFC to be a namespace collision.\" The collision is in SPEECH -- nobody abbreviates the id -- so renaming the label fixes it and renaming the id would rewrite every history entry on 51 cards for no gain. Card #0034.",
       "create": [
         "claude",
         "terry"
