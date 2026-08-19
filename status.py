@@ -72,7 +72,11 @@ SCHEMA = 1
 #
 # **Two files with two shapes get two version numbers.** They change for unrelated
 # reasons and neither should be able to invalidate the other.
-RULES_SCHEMA = 2
+#
+# **2 -> 3 the same afternoon**, when Terry split the grouped actors back apart: *"since
+# we add comments, let's split."* Schema 2 carried `actors` as a list; schema 3 carries
+# one `actor` per row so each can hold its own reason.
+RULES_SCHEMA = 3
 
 # **The default port, and it is a DEFAULT rather than the port.** Terry, 2026-08-18:
 # *"I want per-project config JSON that includes TCP port num; I want to be able to
@@ -281,7 +285,7 @@ def _index_edges(
     """
     inbound: dict[str, dict[str, set[str]]] = {lane: {} for lane in known}
     outbound: dict[str, dict[str, set[str]]] = {lane: {} for lane in known}
-    seen: set[tuple[str, str]] = set()
+    seen: set[tuple[str, str, str]] = set()
 
     for index, edge in enumerate(edges_raw):
         spot = f"edges[{index}]"
@@ -290,25 +294,31 @@ def _index_edges(
         # **All three are MANDATORY. Terry, 2026-08-19: *"making sure rules MUST have
         # actor + source lane + dest lane."*** A row missing one is not a weaker rule,
         # it is an unreadable one.
-        missing = [k for k in ("actors", "from", "to") if not edge.get(k)]
+        missing = [k for k in ("actor", "from", "to") if not edge.get(k)]
         if missing:
             raise BoardError(f"{path}: {spot} is missing {', '.join(missing)}")
-        frm, to = str(edge["from"]), str(edge["to"])
+        # **`note` MUST be PRESENT and MAY be empty**, and the difference is the point.
+        # An absent key reads as "not applicable"; an empty one reads as "nobody has
+        # said why yet", which is the state Terry wants visible rather than deniable.
+        if "note" not in edge:
+            raise BoardError(f"{path}: {spot} has no 'note' key; use \"\" if unexplained")
+        actor, frm, to = str(edge["actor"]), str(edge["from"]), str(edge["to"])
         for end in (frm, to):
             if end not in known:
                 raise BoardError(f"{path}: {spot} names unknown lane {end!r}")
         if frm == to:
             raise BoardError(f"{path}: {spot} joins {frm!r} to itself")
-        if (frm, to) in seen:
-            raise BoardError(f"{path}: {spot} repeats the edge {frm} -> {to}")
-        seen.add((frm, to))
-        if not isinstance(edge["actors"], list):
-            raise BoardError(f"{path}: {spot} 'actors' is not a list")
-        bad = [a for a in edge["actors"] if a not in ACTORS]
-        if bad:
-            raise BoardError(f"{path}: {spot} names unknown actor(s) {bad}")
-        outbound[frm][to] = set(edge["actors"])
-        inbound[to][frm] = set(edge["actors"])
+        if actor not in ACTORS:
+            raise BoardError(f"{path}: {spot} names unknown actor {actor!r}")
+        # **ONE ROW PER (actor, from, to), not per (from, to).** Terry split them so each
+        # actor carries its own reason: *"Tell me why actor X should be able to make this
+        # card movement."* Two rows for one edge are correct; two rows for one actor on
+        # one edge are a duplicate.
+        if (actor, frm, to) in seen:
+            raise BoardError(f"{path}: {spot} repeats {actor} on {frm} -> {to}")
+        seen.add((actor, frm, to))
+        outbound[frm].setdefault(to, set()).add(actor)
+        inbound[to].setdefault(frm, set()).add(actor)
     return inbound, outbound
 
 
@@ -339,7 +349,9 @@ def _load_rules(path: pathlib.Path) -> tuple[
     if doc.get("schema") != RULES_SCHEMA:
         raise BoardError(
             f"{path}: rules schema {doc.get('schema')!r}, want {RULES_SCHEMA}. "
-            "Schema 1 nested every edge under both lanes; card #0064 flattened it.")
+            "1 nested every edge under both lanes; 2 flattened it with the actors "
+            "grouped; 3 gives each actor its own row so each carries its own reason. "
+            "Card #0064.")
 
     lanes_raw = doc.get("lanes")
     if not isinstance(lanes_raw, list) or not lanes_raw:
@@ -383,6 +395,47 @@ LANE_LABEL: dict[str, str] = dict(LANES)
 
 class BoardError(ValueError):
     """The board, or a request against it, is not something this version accepts."""
+
+
+def rules_gaps(path: pathlib.Path = RULES_PATH) -> tuple[list[str], list[str]]:
+    """`(edges with no reason, edges sharing one reason across two actors)`. Card #0064.
+
+    **Terry: *"Want the rules to be VERY pedantic to ENCOURAGE humans to comment them.
+    'Tell me why actor X should be able to make this card movement'."***
+
+    **A missing reason MUST NOT fail the load, and that is deliberate.** Refusing to
+    start over an unwritten sentence would mean Claude filling 17 of them with
+    plausible filler to unblock itself -- which is worse than a blank, because filler
+    reads as considered.
+
+    **So it is counted and shown instead.** `serve.py` prints it at startup, where Terry
+    already reads the permission table.
+
+    **A SHARED reason is reported separately from a missing one.** They are different
+    states: nobody has explained this edge at all, against somebody explained the edge
+    and not the two actors on it.
+    """
+    try:
+        with path.open(encoding="utf-8") as fh:
+            doc = json.load(fh)
+    except (OSError, json.JSONDecodeError):
+        return [], []
+    edges = doc.get("edges", [])
+    blank = [f"{e['actor']}: {e['from']} -> {e['to']}"
+             for e in edges if not (e.get("note") or "").strip()]
+    by_edge: dict[tuple[str, str], set[str]] = {}
+    for edge in edges:
+        note = (edge.get("note") or "").strip()
+        if note:
+            by_edge.setdefault((edge["from"], edge["to"]), set()).add(note)
+    counts: dict[tuple[str, str], int] = {}
+    for edge in edges:
+        if (edge.get("note") or "").strip():
+            key = (edge["from"], edge["to"])
+            counts[key] = counts.get(key, 0) + 1
+    shared = [f"{frm} -> {to}" for (frm, to), n in counts.items()
+              if n > 1 and len(by_edge[(frm, to)]) == 1]
+    return blank, sorted(shared)
 
 
 def check_edges() -> list[str]:

@@ -1975,6 +1975,28 @@ setInterval(renderLive, 500);
 """
 
 
+def _report_rule_gaps() -> None:
+    """Say how many permission rows still owe a reason. Card #0064.
+
+    **Terry wants the rules pedantic enough to pull a sentence out of a human**: *"Tell
+    me why actor X should be able to make this card movement."*
+
+    **Printed rather than enforced.** Refusing to start over an unwritten sentence would
+    have Claude filling seventeen of them in to unblock itself, and filler reads as
+    considered. **A number he sees at every start is the pressure**; a blocked server is
+    just a blocked server.
+    """
+    blank, shared = status.rules_gaps()
+    if not blank and not shared:
+        return
+    print("  rules.json, reasons still owed:")
+    if blank:
+        print(f"      {len(blank)} edge(s) carry NO reason at all")
+    if shared:
+        print(f"      {len(shared)} edge(s) share ONE reason across both actors")
+    print("      Why may THIS actor make THIS move? Each row answers for itself.")
+
+
 def payload() -> bytes:
     """The board as JSON for the page, or an `error` the page renders as a banner.
 
@@ -2338,6 +2360,15 @@ def main() -> None:
         print(f"  PERMISSION TABLE INCONSISTENT, {len(bad_edges)} problem(s):")
         for problem in bad_edges:
             print(f"      {problem}")
+
+    # **Card #0064. Terry wants the rules pedantic enough to pull a reason out of a
+    # human**: *"Tell me why actor X should be able to make this card movement."*
+    #
+    # **Printed here rather than enforced in the loader.** Refusing to start over an
+    # unwritten sentence would have Claude filling them in to unblock itself, and filler
+    # reads as considered. **A number he sees at every start is the pressure**; a
+    # blocked server is just a blocked server.
+    _report_rule_gaps()
 
     if not FONT_DIR.is_dir():
         # Inter is bundled. Without it the page silently falls back to Segoe UI and
