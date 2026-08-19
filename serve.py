@@ -389,6 +389,24 @@ INLINE = (
     # greppable; only the rendering changes. Storing the glyph would make the file
     # harder to search for the sake of a screen.
     (re.compile(r"(?<=\s)--(?=\s)"), "—"),
+    # **A markdown heading becomes a heading. Card #0086's second half.**
+    #
+    # **This only became worth doing once `pre-wrap` landed.** With newlines collapsed a
+    # heading had nowhere to sit, so `## The measurement` read as literal hashes in the
+    # middle of a paragraph -- noise in the one place Terry is trying to skim.
+    #
+    # **Anchored to the START OF A LINE with `re.MULTILINE`**, which is what keeps
+    # `#0086` and `#137` alone: a ticket reference has one hash and no space after it,
+    # and it is almost never the first thing on a line.
+    #
+    # **Its own class rather than `<strong>`**, because `**bold**` already means
+    # emphasis here. Two different things reading identically would cost the structure
+    # this exists to add.
+    # **The trailing newline is CONSUMED, and without that the spacing is wrong.**
+    # `.mdh` is `display: block`, so it already occupies its own line; leaving the
+    # author's newline in as well renders a heading, a blank line, and then another
+    # blank line before the body. Absorbing one puts it back to a single gap.
+    (re.compile(r"^#{2,6}[ \t]+(.+)$\n?", re.MULTILINE), r'<b class="mdh">\1</b>'),
     (re.compile(r"`([^`]+)`"), r"<code>\1</code>"),
     (re.compile(r"\*\*([^*]+)\*\*"), r"<strong>\1</strong>"),
     (re.compile(r"\*([^*]+)\*"), r"<em>\1</em>"),
@@ -1024,7 +1042,18 @@ PAGE = """<!doctype html>
                  background: var(--accent); color: #FFFFFF; border: 0;
                  border-radius: 5px; padding: 7px 12px; }
   .editrow .go:disabled { opacity: .5; cursor: wait; }
-  .detail-text { font-size: 13px; }
+  /* **`pre-wrap` KEEPS THE BLANK LINES. Card #0086, and it was defeating a standing
+     order.** Terry, 2026-08-19: *"don't be afraid to add blank lines to break things
+     up... use blank lines to help me digest."*
+
+     **The structure survived all the way to the browser and died at the last step.**
+     The newlines are in the HTML -- `innerHTML` holds real `\\n\\n` -- and
+     `white-space: normal` collapses every run of whitespace to one space. Months of
+     paragraph breaks rendered as one wall.
+
+     **`pre-wrap` rather than `pre`**, because `pre` would stop long lines wrapping and
+     put a horizontal scrollbar in a 380px drawer. */
+  .detail-text { font-size: 13px; white-space: pre-wrap; }
   .detail-text code { font-family: 'Cascadia Mono', Consolas, monospace;
                       font-size: 11.5px; background: #F4F5F7; padding: 0 3px;
                       border-radius: 3px; }
@@ -1065,6 +1094,14 @@ PAGE = """<!doctype html>
              margin-bottom: 8px; font-size: 13px; }
   .comment .head { font-size: 11px; color: var(--dim); margin-bottom: 3px; }
   .comment .head .who { font-weight: 700; }
+  /* **Card #0086, same fix as the description.** A comment is where the blank lines
+     matter most -- it is the surface Terry's ELI5 order actually governs. */
+  .comment .text { white-space: pre-wrap; }
+  /* **A rendered `##` heading, card #0086.** Uppercase and dim, matching the `h3`
+     headings the drawer already uses, so a heading inside a comment reads like a
+     heading rather than like more bold text. */
+  .mdh { display: block; font-size: 11px; text-transform: uppercase;
+         letter-spacing: .06em; color: var(--dim); font-weight: 700; }
 
   #say { width: 100%; min-height: 68px; font: inherit; font-size: 13px;
          padding: 8px 10px; border: 1px solid var(--line); border-radius: 6px;
