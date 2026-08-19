@@ -548,7 +548,7 @@ PAGE = """<!doctype html>
     <span id="title">%TITLE%</span>
     <span id="counts"></span>
     <span class="grow"></span>
-    <span id="live">connecting…</span>
+    <span id="live">connecting...</span>
     <span id="stale"
       title="This tab is running older code than the server. Reload with Ctrl+Shift+R."></span>
     <label id="alerts-wrap"><input type="checkbox" id="alerts"> Alerts</label>
@@ -577,7 +577,7 @@ PAGE = """<!doctype html>
       <div class="detail-text" id="p-detail"></div>
       <h3>Comments</h3>
       <div id="p-comments"></div>
-      <textarea id="say" placeholder="Leave a note on this card…"></textarea>
+      <textarea id="say" placeholder="Leave a note on this card..."></textarea>
       <button id="post">Comment as Terry</button>
       <h3>Audit trail</h3>
       <div class="trail" id="p-trail"></div>
