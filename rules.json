@@ -40,21 +40,35 @@
       "in": {
         "needs_terry_action": {
           "actors": [
-            "terry"
+            "terry",
+            "claude"
           ],
-          "note": ""
+          "note": "Claude may push a card BACKWARDS. Terry, 2026-08-19: \"yes claude can push backwards from RFW to backlog. In progress to Backlog or RFW. from blocked to any swimlane left of it. from needs terry to any lane left of it.\" Setting work down is not advancing a queue, which is what the forward edges guard."
         },
         "ready_for_claude": {
           "actors": [
-            "terry"
+            "terry",
+            "claude"
           ],
-          "note": ""
+          "note": "Claude may push a card BACKWARDS. Terry, 2026-08-19: \"yes claude can push backwards from RFW to backlog. In progress to Backlog or RFW. from blocked to any swimlane left of it. from needs terry to any lane left of it.\" Setting work down is not advancing a queue, which is what the forward edges guard."
         },
         "ready_for_review": {
           "actors": [
             "terry"
           ],
           "note": ""
+        },
+        "in_progress": {
+          "actors": [
+            "claude"
+          ],
+          "note": "Claude may push a card BACKWARDS. Terry, 2026-08-19: \"yes claude can push backwards from RFW to backlog. In progress to Backlog or RFW. from blocked to any swimlane left of it. from needs terry to any lane left of it.\" Setting work down is not advancing a queue, which is what the forward edges guard."
+        },
+        "blocked": {
+          "actors": [
+            "claude"
+          ],
+          "note": "Claude may push a card BACKWARDS. Terry, 2026-08-19: \"yes claude can push backwards from RFW to backlog. In progress to Backlog or RFW. from blocked to any swimlane left of it. from needs terry to any lane left of it.\" Setting work down is not advancing a queue, which is what the forward edges guard."
         }
       },
       "out": {
@@ -97,15 +111,17 @@
         },
         "blocked": {
           "actors": [
-            "terry"
+            "terry",
+            "claude"
           ],
-          "note": ""
+          "note": "Claude may push a card BACKWARDS. Terry, 2026-08-19: \"yes claude can push backwards from RFW to backlog. In progress to Backlog or RFW. from blocked to any swimlane left of it. from needs terry to any lane left of it.\" Setting work down is not advancing a queue, which is what the forward edges guard."
         },
         "needs_terry_action": {
           "actors": [
-            "terry"
+            "terry",
+            "claude"
           ],
-          "note": ""
+          "note": "Claude may push a card BACKWARDS. Terry, 2026-08-19: \"yes claude can push backwards from RFW to backlog. In progress to Backlog or RFW. from blocked to any swimlane left of it. from needs terry to any lane left of it.\" Setting work down is not advancing a queue, which is what the forward edges guard."
         },
         "ready_for_review": {
           "actors": [
@@ -115,15 +131,17 @@
         },
         "in_progress": {
           "actors": [
-            "terry"
+            "terry",
+            "claude"
           ],
-          "note": ""
+          "note": "Claude may push a card BACKWARDS. Terry, 2026-08-19: \"yes claude can push backwards from RFW to backlog. In progress to Backlog or RFW. from blocked to any swimlane left of it. from needs terry to any lane left of it.\" Setting work down is not advancing a queue, which is what the forward edges guard."
         }
       },
       "out": {
         "backlog": {
           "actors": [
-            "terry"
+            "terry",
+            "claude"
           ],
           "note": "Withdrawing something he queued by mistake. The cross-check found this missing: he declared it from the Backlog end and omitted it here."
         },
@@ -211,9 +229,16 @@
         },
         "ready_for_claude": {
           "actors": [
-            "terry"
+            "terry",
+            "claude"
           ],
           "note": "Terry started it, then decided Claude should carry it. This is the one way a card reaches Ready for Claude from work already under way, and it is Terry's alone for the same reason every other entry to that lane is."
+        },
+        "backlog": {
+          "actors": [
+            "claude"
+          ],
+          "note": "Claude may push a card BACKWARDS. Terry, 2026-08-19: \"yes claude can push backwards from RFW to backlog. In progress to Backlog or RFW. from blocked to any swimlane left of it. from needs terry to any lane left of it.\" Setting work down is not advancing a queue, which is what the forward edges guard."
         }
       }
     },
@@ -259,7 +284,8 @@
         },
         "ready_for_claude": {
           "actors": [
-            "terry"
+            "terry",
+            "claude"
           ],
           "note": "Unblocked, requeue. This edge is why Blocked is NOT a pure Claude lane, which the cross-check revealed rather than anyone noticing."
         },
@@ -268,6 +294,12 @@
             "claude"
           ],
           "note": ""
+        },
+        "backlog": {
+          "actors": [
+            "claude"
+          ],
+          "note": "Claude may push a card BACKWARDS. Terry, 2026-08-19: \"yes claude can push backwards from RFW to backlog. In progress to Backlog or RFW. from blocked to any swimlane left of it. from needs terry to any lane left of it.\" Setting work down is not advancing a queue, which is what the forward edges guard."
         }
       }
     },
@@ -312,7 +344,8 @@
       "out": {
         "backlog": {
           "actors": [
-            "terry"
+            "terry",
+            "claude"
           ],
           "note": "Answered, but not soup yet. \"I may post a reply and realize that card is not yet soup and goes to backlog for now.\" Answering and prioritizing are different acts, and one exit would have forced him to queue work he only meant to unblock."
         },
@@ -331,7 +364,8 @@
         },
         "ready_for_claude": {
           "actors": [
-            "terry"
+            "terry",
+            "claude"
           ],
           "note": "Answered, go. His words: \"I'll move there when I feel I've unblocked you.\""
         },
