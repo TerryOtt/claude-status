@@ -2043,17 +2043,25 @@ class Board:
         answers the card's second open question by construction rather than by policy:
         there is no edit path that could trigger a retraction.
 
-        **IT RUNS FOR TERRY AND NOT FOR CLAUDE**, which is his call and the right one:
-        *"Can we turn auto link off for Claude and not Terry?"*
+        **IT RUNS FOR HUMANS AND NOT FOR BOTS**, which is Terry's call and the right
+        one: *"Can we turn auto link off for Claude and not Terry?"*
+
+        **It asked `by != "terry"` until card #0073**, which was the same rule written as
+        a name. That spelling silently excluded every future person: a second human's
+        comments would have linked nothing, for no reason anybody could see. **The class
+        comes from `rules.json` now** -- see `is_human` and card #0072.
 
         **The feature demonstrated the problem on its own first use.** Claude's closing
         comment on card #0028 mentioned four ticket numbers in passing -- one inside a
-        code example -- and linked all four. **Terry types `#0028` when he means that
-        card. Claude types it while explaining something**, in tables, in examples, in
+        code example -- and linked all four. **A person types `#0028` when they mean that
+        card. A bot types it while explaining something**, in tables, in examples, in
         prose about other work.
 
-        **Claude keeps `--link`, which is explicit.** Nothing is lost except the ability
+        **A bot keeps `--link`, which is explicit.** Nothing is lost except the ability
         to create a relationship by accident.
+
+        **An UNKNOWN actor is treated as a bot**, so a comment attributed to somebody no
+        longer in the config links nothing rather than linking wrongly.
         """
         made: list[str] = []
         missing: list[str] = []
