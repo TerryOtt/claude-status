@@ -218,6 +218,60 @@
       }
     },
     {
+      "id": "blocked",
+      "label": "Blocked",
+      "note": "NEITHER of us can move it. Terry's example: \"awaiting license key.\" MUST NOT be used for \"waiting on a decision\" -- that is needs_terry_action -- and MUST NOT be used for \"hard\".",
+      "create": [],
+      "in": {
+        "in_progress": {
+          "actors": [
+            "claude",
+            "terry"
+          ],
+          "note": ""
+        },
+        "needs_terry_action": {
+          "actors": [
+            "claude"
+          ],
+          "note": ""
+        },
+        "ready_for_claude": {
+          "actors": [
+            "claude"
+          ],
+          "note": ""
+        }
+      },
+      "out": {
+        "in_progress": {
+          "actors": [
+            "claude",
+            "terry"
+          ],
+          "note": ""
+        },
+        "needs_terry_action": {
+          "actors": [
+            "claude"
+          ],
+          "note": ""
+        },
+        "ready_for_claude": {
+          "actors": [
+            "terry"
+          ],
+          "note": "Unblocked, requeue. This edge is why Blocked is NOT a pure Claude lane, which the cross-check revealed rather than anyone noticing."
+        },
+        "ready_for_review": {
+          "actors": [
+            "claude"
+          ],
+          "note": ""
+        }
+      }
+    },
+    {
       "id": "needs_terry_action",
       "label": "Needs Terry",
       "note": "Claude is STOPPED until Terry answers. His definition: \"that's 'need a judgement call'.\" Distinct from blocked, where nobody can act, and from review, where the work is done and only a tick is missing.",
@@ -280,60 +334,6 @@
             "terry"
           ],
           "note": "Answered, go. His words: \"I'll move there when I feel I've unblocked you.\""
-        },
-        "ready_for_review": {
-          "actors": [
-            "claude"
-          ],
-          "note": ""
-        }
-      }
-    },
-    {
-      "id": "blocked",
-      "label": "Blocked",
-      "note": "NEITHER of us can move it. Terry's example: \"awaiting license key.\" MUST NOT be used for \"waiting on a decision\" -- that is needs_terry_action -- and MUST NOT be used for \"hard\".",
-      "create": [],
-      "in": {
-        "in_progress": {
-          "actors": [
-            "claude",
-            "terry"
-          ],
-          "note": ""
-        },
-        "needs_terry_action": {
-          "actors": [
-            "claude"
-          ],
-          "note": ""
-        },
-        "ready_for_claude": {
-          "actors": [
-            "claude"
-          ],
-          "note": ""
-        }
-      },
-      "out": {
-        "in_progress": {
-          "actors": [
-            "claude",
-            "terry"
-          ],
-          "note": ""
-        },
-        "needs_terry_action": {
-          "actors": [
-            "claude"
-          ],
-          "note": ""
-        },
-        "ready_for_claude": {
-          "actors": [
-            "terry"
-          ],
-          "note": "Unblocked, requeue. This edge is why Blocked is NOT a pure Claude lane, which the cross-check revealed rather than anyone noticing."
         },
         "ready_for_review": {
           "actors": [
