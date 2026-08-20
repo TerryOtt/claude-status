@@ -68,6 +68,7 @@ import re
 import subprocess
 import threading
 import time
+import urllib.parse
 
 import status
 
@@ -463,6 +464,34 @@ FAVICON = (
     '<rect x="21" y="18" width="5" height="6"  rx="2.5" fill="#4BCE97"/>'
     "</svg>"
 )
+
+
+def brand_data_uri() -> str:
+    """`FAVICON` as a CSS `url()` value, so the mark has exactly ONE definition.
+
+    **Card #0095.** The bar carries the same mark the browser tab does, and the obvious
+    way to do that is to paste the SVG into the stylesheet. **That would be the same fact
+    stored twice**, and the two copies drift the first time anybody recolors one bar.
+
+    **The `#` MUST be escaped or the URI ends at the first hex color.** A `#` opens the
+    fragment, so `fill="#4BCE97"` would truncate the whole document to `<svg ... fill="`
+    and the browser draws nothing, silently. `urllib.parse.quote` handles it along with
+    the angle brackets, the quotes and the spaces.
+
+    **THE viewBox IS CROPPED TO THE THREE BARS, and that is measured rather than
+    aesthetic.** The mark's ground is `#1D2125` and `--barbg` is `#1D2125` -- the same
+    hex, so on this bar the rounded square paints nothing while still occupying half the
+    box. A 26px element rendered 13px of visible ink, which is why the first attempt
+    looked small no matter what the number said. The bars live at `x=6..26, y=8..24`,
+    so `viewBox="6 8 20 16"` makes the element's height BE the mark's height.
+
+    **The ground rect stays in the document on purpose.** It is invisible here by
+    identity rather than by deletion, so a future bar color makes it appear rather than
+    leaving a hole -- and the tab icon keeps the square it needs against a browser's own
+    chrome.
+    """
+    cropped = FAVICON.replace('viewBox="0 0 32 32"', 'viewBox="6 8 20 16"')
+    return "data:image/svg+xml," + urllib.parse.quote(cropped, safe="")
 
 
 def inline(text: str) -> str:
@@ -863,6 +892,35 @@ PAGE = """<!doctype html>
   #dot.alive { animation: breathe 4s linear infinite; }
   /* Solid, not breathing. A stopped heart does not pulse. */
   #dot.stale { background: var(--p0); opacity: 1; animation: none; }
+  /* **THE MARK IS STATIC, AND THAT IS THE ANSWER TO CARD #0095.** Terry asked whether
+     the heartbeat itself should become the logo, breathing. It should not, and the
+     reason is measurable rather than aesthetic: the mark's third bar is `#4BCE97`,
+     which IS `--livedot`, and its middle bar is `#E2A100`, a near neighbor of the
+     `#FFD400` hazard pills. **Breathing the logo would put the bar's two meaning-bearing
+     colors into a decorative object.** At `opacity: .10` three 5-unit bars also vanish
+     where a solid disc does not, and a stale logo has no honest red form -- the
+     experiment had to swap SHAPES, which makes the indicator two different objects.
+
+     **So the dot keeps its one job and the logo carries identity.** Terry, 2026-08-19,
+     having looked at all three: *"I like your second stab better. Keeping the brand
+     static looks good."*
+
+     **26px against a 40px bar** answers the rest of that sentence -- *"making it use
+     more of the title bar and locking it more closely to the text FGA"*. The wrapper
+     is what locks it: `#brandtitle` gives the pair their own 6px gap, so the mark reads
+     as part of the name while `#bar`'s own 14px gap still separates that group from
+     everything else. **The 36px between the title and the CTAs is therefore untouched**,
+     which card #0058 pinned deliberately. */
+  /* **THE SAME 36px THAT SEPARATES THE TITLE FROM THE CTAs.** Terry, 2026-08-19:
+     *"should be same gap as between text and CTA."* `#bar`'s flex `gap: 14px` plus this
+     22px is 36px, which is exactly `#counts`'s own 14 + 22. **So the bar now has one
+     group-separation distance rather than two similar ones**, and the mark reads as
+     belonging to the name rather than to the heartbeat. Both numbers are absolute, so
+     a larger title cannot move either -- the property card #0058 relied on. */
+  #brandtitle { display: flex; align-items: center; gap: 6px; margin-left: 22px; }
+  #brand { width: 28px; height: 22px; flex: 0 0 auto;
+           background-image: url("%BRANDURI%");
+           background-size: contain; background-repeat: no-repeat; }
   .meta { color: var(--dim); font-variant-numeric: tabular-nums; }
   #live { color: var(--dim); font-variant-numeric: tabular-nums; }
 
@@ -1320,7 +1378,7 @@ PAGE = """<!doctype html>
 <body>
   <div id="bar">
     <span id="dot"></span>
-    <span id="title">%TITLE%</span>
+    <span id="brandtitle"><span id="brand"></span><span id="title">%TITLE%</span></span>
     <span id="counts"></span>
     <span class="grow"></span>
     <input id="find" type="search" autocomplete="off" spellcheck="false"
@@ -3177,6 +3235,10 @@ class Handler(http.server.BaseHTTPRequestHandler):
             # comparison. Fetching it later would just re-read the server and always agree.
             page = (PAGE.replace("%POLL%", str(POLL_MS))
                     .replace("%BUILD%", html.escape(BUILD))
+                    # **The bar's mark comes from the same `FAVICON` the tab icon
+                    # uses.** Card #0095. One definition, so a recolor cannot land in
+                    # one place and miss the other.
+                    .replace("%BRANDURI%", brand_data_uri())
                     # **Built per request, not once at import**, so `reload_rules`
                     # adding a user reaches the next page load without a restart.
                     .replace("%USERCSS%", user_css())
