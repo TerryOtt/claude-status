@@ -107,6 +107,37 @@ def tracked(suffixes: tuple[str, ...]) -> list[pathlib.Path]:
             if line.endswith(suffixes)]
 
 
+def non_lf_tracked(lines: str) -> list[str]:
+    """Paths Git classifies as tracked text with CRLF or mixed working-tree EOLs."""
+    bad: list[str] = []
+    for line in lines.splitlines():
+        metadata, separator, path = line.partition("\t")
+        if not separator:
+            continue
+        working = next(
+            (field for field in metadata.split() if field.startswith("w/")), "")
+        if working in {"w/crlf", "w/mixed"}:
+            bad.append(path)
+    return bad
+
+
+def run_line_endings() -> bool:
+    """Reject non-Unix endings in tracked text while leaving binary files alone."""
+    print("  line-endings")
+    done = subprocess.run(
+        ["git", "ls-files", "--eol"], cwd=ROOT, capture_output=True,
+        text=True, check=False,
+    )
+    if done.returncode != 0:
+        print("    FAIL -- git ls-files --eol did not run\n")
+        return False
+    bad = non_lf_tracked(done.stdout)
+    for path in bad:
+        print(f"    FAIL  {path}: tracked text must use LF")
+    print(f"    {'ok' if not bad else f'FAIL -- {len(bad)} file(s)'}\n")
+    return not bad
+
+
 def run_ruff() -> bool:
     """Lint, and say plainly whether it passed."""
     print("  ruff")
@@ -201,6 +232,9 @@ def main() -> int:
 
     print(f"\n{RULE}\n  claude-status gate\n{RULE}\n")
     failures: list[str] = []
+
+    if not run_line_endings():
+        failures.append("line-endings")
 
     if not run_ruff():
         failures.append("ruff")

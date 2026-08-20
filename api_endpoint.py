@@ -42,10 +42,10 @@ Claude uses wide open, which is exactly what happened on the first version.
 
 **A change to THIS FILE or to `board_state.py` needs a RESTART.**
 
-**A change to the PAGE needs a BROWSER RELOAD on top of that.** The open tab still runs
-the script it was served, which produces a genuinely confusing halfway state: cards
-render correctly because their content comes from `/data`, while new CSS and new counts
-do not. **Half the change appearing is more disorienting than none of it.**
+**A change to the PAGE triggers a guarded BROWSER RELOAD.** The open tab still runs the
+script it was served, which produces a genuinely confusing halfway state: cards render
+correctly because their content comes from `/data`, while new CSS and new counts do not.
+The client preserves unsent form state in session storage and reloads itself once.
 
 ## The browser rules this had to satisfy
 
@@ -68,7 +68,9 @@ import os
 import pathlib
 import re
 import secrets
+import socketserver
 import subprocess
+import sys
 import threading
 import time
 import urllib.parse
@@ -112,7 +114,20 @@ def build_id() -> str:
     except (OSError, subprocess.SubprocessError):
         return "unknown"
     if dirty.returncode == 0 and (dirty.stdout or "").strip():
-        return ident + "-dirty"
+        # A bare "-dirty" is one bit, not an identity: every uncommitted edit would
+        # produce the same build id and an old tab could agree with newly restarted
+        # code. Include the loaded Python sources so successive dirty builds differ.
+        try:
+            sources = (
+                pathlib.Path(__file__).resolve(),
+                pathlib.Path(board_state.__file__ or __file__).resolve(),
+            )
+            digest = hashlib.sha256()
+            for source in sources:
+                digest.update(source.read_bytes())
+        except OSError:
+            return ident + "-dirty"
+        return ident + "-" + digest.hexdigest()[:8] + "-dirty"
     return ident
 
 
@@ -136,18 +151,17 @@ BUILD = build_id()
 # **Terry noticed before any instrument did**, and his first guess was that the rule
 # had never been written.
 #
-# **Card #0052, under his standing order: RESOLVE if possible, ELSE alert.** The
-# `rules.json` half IS resolvable and card #0051 resolved it. **This half is not** --
-# Python holds the old module objects, and only a restart replaces them. So this
-# detects and alerts, and **the alert MUST say RESTART rather than RELOAD.**
+# **Card #0052, under his standing order: RESOLVE if possible, ELSE alert.** Python
+# holds old module objects, so hot-reloading them in place is unsafe. The resolvable
+# action is a graceful process re-exec: preflight the changed files in a child Python,
+# drain request threads, close the socket, and run the original command again.
 #
 # **A wrong instruction is worse than none**: reloading re-fetches the same old page
 # from the same old process, so it looks like it was followed and nothing changes.
 #
-# **A FORCED RELOAD IS NOT "POSITIVE ACTION" HERE and MUST NOT be added.** It destroys
-# `drafts`, which this file calls "the one thing on this page the SERVER does not have
-# a copy of" -- reintroducing #0029's P0 through a door the repaint guard does not
-# watch.
+# **This warning is about a stale PROCESS, not a stale TAB.** The tab now repairs its
+# own mismatch after preserving unsent state. Reloading cannot replace Python module
+# objects, so automatic browser recovery MUST NOT be confused with this restart path.
 #
 # **mtime first, hash only when it moves.** Hashing 120 KB twice a second to answer a
 # question that is almost always "no" is waste; a `stat` is not. And hashing rather
@@ -209,6 +223,114 @@ def code_is_stale() -> bool:
             continue
         _code_differs[i] = digest != _BOOT_CODE[i][1]
     return any(_code_differs)
+
+
+RESTART_DEBOUNCE_S = 0.75
+_restart_lock = threading.Lock()
+_restart_scheduled = False
+_restart_requested = threading.Event()
+_restart_refused_stamp: tuple[tuple[float, str], ...] | None = None
+_restart_problem: str | None = None
+
+
+def _source_syntax_problem() -> str | None:
+    """Explain why the changed Python cannot safely replace this running process."""
+    for path in CODE_FILES:
+        try:
+            source = path.read_text(encoding="utf-8")
+            compile(source, str(path), "exec")
+        except SyntaxError as exc:
+            line = f" line {exc.lineno}" if exc.lineno else ""
+            return f"{path.name}{line}: {exc.msg}"
+        except (OSError, UnicodeError) as exc:
+            return f"{path.name}: {exc}"
+    return None
+
+
+def _source_startup_problem() -> str | None:
+    """Preflight the changed modules in a child before replacing the healthy process."""
+    if problem := _source_syntax_problem():
+        return problem
+    here = pathlib.Path(__file__).resolve().parent
+    try:
+        checked = subprocess.run(
+            [sys.executable, "-c", "import board_state; import api_endpoint"],
+            cwd=here, capture_output=True, encoding="utf-8", errors="replace",
+            timeout=15, check=False,
+        )
+    except (OSError, subprocess.SubprocessError) as exc:
+        return f"startup check could not run: {exc}"
+    if checked.returncode == 0:
+        return None
+    lines = [line.strip() for line in (checked.stderr or "").splitlines()
+             if line.strip()]
+    detail = lines[-1] if lines else f"child Python exited {checked.returncode}"
+    return f"startup check failed: {detail}"
+
+
+def request_code_restart(
+    server: socketserver.BaseServer,
+) -> tuple[bool, str | None]:
+    """Schedule one graceful re-exec for changed, syntax-valid Python source."""
+    global _restart_scheduled, _restart_problem  # noqa: PLW0603
+
+    current = _code_stamp()
+    with _restart_lock:
+        if _restart_scheduled:
+            return True, None
+        if current == _restart_refused_stamp:
+            return False, _restart_problem
+        _restart_scheduled = True
+        _restart_problem = None
+
+    def restart_when_stable() -> None:
+        global _restart_scheduled, _restart_refused_stamp  # noqa: PLW0603
+        global _restart_problem  # noqa: PLW0603
+
+        latest = current
+        while True:
+            time.sleep(RESTART_DEBOUNCE_S)
+            observed = _code_stamp()
+            if observed == latest:
+                break
+            latest = observed
+        boot_digests = tuple(digest for _mtime, digest in _BOOT_CODE)
+        latest_digests = tuple(digest for _mtime, digest in latest)
+        if latest_digests == boot_digests:
+            with _restart_lock:
+                _restart_scheduled = False
+            return
+        if problem := _source_startup_problem():
+            with _restart_lock:
+                _restart_problem = problem
+                _restart_refused_stamp = latest
+                _restart_scheduled = False
+            print(f"  AUTO-RESTART PAUSED: {problem}", flush=True)
+            return
+
+        print("  Python source changed; restarting server.", flush=True)
+        _restart_requested.set()
+        server.shutdown()
+
+    threading.Thread(
+        target=restart_when_stable, name="code-restart", daemon=True,
+    ).start()
+    return True, None
+
+
+class BoardHttpServer(http.server.ThreadingHTTPServer):
+    """Finish active mutations before the process replaces itself."""
+
+    daemon_threads = False
+    block_on_close = True
+
+
+def _reexec_if_requested() -> None:
+    """Replace this process after its listening socket and request threads close."""
+    if not _restart_requested.is_set():
+        return
+    print("Re-executing with changed Python source.", flush=True)
+    os.execv(sys.executable, [sys.executable, *sys.argv])
 
 # ---------------------------------------------------------------------------
 # AUTOPUSH: THE BOARD REACHES GITHUB WITHOUT ANYBODY REMEMBERING TO SEND IT
@@ -1457,9 +1579,9 @@ PAGE = """<!doctype html>
   #toast.show { opacity: 1; }
   #toast.bad { background: var(--p0); }
 
-  /* **The stale-page flag, and it is LOUD on purpose.** It is the one thing in this bar
-     that says the page you are looking at is lying to you, and it appears only when that
-     is true -- so it never becomes scenery. Hidden means the two build ids agree. */
+  /* The stale-page flag is now an EXCEPTION rather than the ordinary remedy. A normal
+     tab/server mismatch reloads itself. This appears only if the guarded reload already
+     ran and the returned page is still stale. */
   /* **A CLASS toggles this, never `style.display`.** Setting the inline style back to
      `''` to reveal it does not work: the element falls straight back to this `none`, so
      the flag stays invisible while every inline-style assertion reports it shown. That
@@ -1468,10 +1590,9 @@ PAGE = """<!doctype html>
            padding: 2px 8px; border-radius: 4px; white-space: nowrap; }
   #stale.show { display: inline-block; }
   /* **A DIFFERENT staleness needs a DIFFERENT color as well as a different word.**
-     `#stale` is `--p0` red and means "reload this tab". This one means "restart the
-     process", which a reload cannot achieve -- so making them look alike would invite
-     the wrong reflex. `--p1` orange is the next step down the hazard ramp this
-     palette already uses. Card #0052. */
+     `#stale` is `--p0` red and means automatic tab recovery failed. This one means
+     "restart the process", which a reload cannot achieve. `--p1` orange is the next
+     step down the hazard ramp this palette already uses. Card #0052. */
   #restart { display: none; background: var(--p1); color: #000000; font-weight: 700;
              padding: 2px 8px; border-radius: 4px; white-space: nowrap; }
   #restart.show { display: inline-block; }
@@ -1517,11 +1638,10 @@ PAGE = """<!doctype html>
     <span id="findn"></span>
     <span id="live">connecting...</span>
     <span id="stale"
-      title="This tab is running older code than the server. Reload with Ctrl+Shift+R."></span>
+      title="This tab stayed stale after one automatic reload."></span>
     <span id="restart"
-      title="The server process is running older code than the files on disk. A browser
-reload CANNOT fix this -- Python holds the old modules. Stop the server and start it
-again."></span>
+      title="The server is preflighting changed Python and will restart itself. A broken
+edit leaves the current process running and reports the failing check here."></span>
     <span id="push"></span>
     <label id="alerts-wrap"><input type="checkbox" id="alerts"> Alerts</label>
     <span id="badge"
@@ -1685,14 +1805,27 @@ let seen = null, openId = null;
 //
 // **A draft is the one thing on this page the SERVER does not have a copy of.** Every
 // other pixel can be rebuilt from /data; typed text that has not been posted exists
-// nowhere else, so it is the one thing a repaint must route around rather than redraw.
-let drafts = {};
+// nowhere else, so the automatic stale-code reload carries it through sessionStorage.
+const STALE_RELOAD_STATE_KEY = 'localswim-stale-reload-state-v1';
+const STALE_RELOAD_QUERY = '_localswim_build';
+let staleReloadState = null;
+try {
+  const saved = sessionStorage.getItem(STALE_RELOAD_STATE_KEY);
+  if (saved) staleReloadState = JSON.parse(saved);
+  sessionStorage.removeItem(STALE_RELOAD_STATE_KEY);
+} catch (err) {
+  // Storage can be disabled. Reload still works; there is simply no saved UI state.
+  staleReloadState = null;
+}
+let drafts = (staleReloadState && staleReloadState.drafts
+              && typeof staleReloadState.drafts === 'object')
+  ? staleReloadState.drafts : {};
 let data = {lanes: [], edges: [], counts: {}, error: null};
 // **Card #0063. Off on every load, which is what "by default" means.** It lives here
 // rather than in localStorage on purpose: a board that remembered being unhidden would
 // need a second decision about when to forget, and Terry asked for a default rather
 // than a preference.
-let unhideOld = false;
+let unhideOld = !!(staleReloadState && staleReloadState.unhideOld);
 
 // **Card #0072. The page knows no names.** `data.actors` comes from `rules.json`, so
 // every label here is configuration rather than markup.
@@ -2659,7 +2792,8 @@ syncAlerts();
 //
 // **Entirely client-side.** `/data` already carries `detail` and `comments`, so no
 // request is made and the result appears while he types.
-let query = '';
+let query = (staleReloadState && typeof staleReloadState.query === 'string')
+  ? staleReloadState.query : '';
 const HAY = new Map();
 
 function hay(item) {
@@ -2829,6 +2963,8 @@ let serverBuild = null;
 // #0052 -- both of those ids freeze at their own start, so a stale server makes them
 // AGREE and the reload flag stays hidden.
 let codeStale = false;
+let restarting = false;
+let restartProblem = null;
 let pushState = null;
 const WARN_MS  = 15000;  // ~37 polls missed at 400ms. Nothing benign lasts this long.
 
@@ -2869,6 +3005,86 @@ function agoOf(ms) {
   return h + (h === 1 ? ' hour ago' : ' hours ago');
 }
 
+let staleReloadStarted = false;
+
+function saveStaleReloadState() {
+  if (openId) drafts[openId] = document.getElementById('say').value;
+  const saved = {
+    drafts: drafts,
+    openId: openId,
+    editing: editing,
+    query: query,
+    unhideOld: unhideOld,
+  };
+  if (editing === 'subject') {
+    saved.editValue = document.getElementById('p-subject-edit').value;
+  } else if (editing === 'detail') {
+    saved.editValue = document.getElementById('p-detail-text').value;
+  }
+  if (mkOpen) {
+    saved.make = {
+      state: mkOpen,
+      subject: document.getElementById('mk-subject').value,
+      detail: document.getElementById('mk-detail').value,
+      priority: document.getElementById('mk-priority').value,
+      owner: document.getElementById('mk-owner').value,
+    };
+  }
+  try {
+    sessionStorage.setItem(STALE_RELOAD_STATE_KEY, JSON.stringify(saved));
+  } catch (err) {
+    // Storage can be disabled. Reload still works; there is simply no restored UI.
+  }
+}
+
+function restoreStaleReloadState() {
+  const saved = staleReloadState;
+  if (!saved) return;
+  staleReloadState = null;
+
+  document.getElementById('find').value = query;
+  if (saved.openId && itemById(saved.openId)) {
+    openCard(saved.openId);
+    if (saved.editing === 'subject') {
+      startSubjectEdit();
+      document.getElementById('p-subject-edit').value = saved.editValue || '';
+    } else if (saved.editing === 'detail') {
+      startDetailEdit();
+      document.getElementById('p-detail-text').value = saved.editValue || '';
+    }
+  }
+  if (saved.make) {
+    const lane = (data.lanes || []).find(item => item.state === saved.make.state);
+    if (lane) {
+      openMake(lane);
+      document.getElementById('mk-subject').value = saved.make.subject || '';
+      document.getElementById('mk-detail').value = saved.make.detail || '';
+      document.getElementById('mk-priority').value = saved.make.priority || '';
+      document.getElementById('mk-owner').value = saved.make.owner || '';
+    }
+  }
+}
+
+function reloadForServerBuild(build) {
+  const next = new URL(window.location.href);
+  if (next.searchParams.get(STALE_RELOAD_QUERY) === build) return false;
+  if (staleReloadStarted) return true;
+  staleReloadStarted = true;
+  saveStaleReloadState();
+  // The build query cache-busts the page and proves one reload already happened.
+  // If the returned page still disagrees, the UI reports that instead of looping.
+  next.searchParams.set(STALE_RELOAD_QUERY, build);
+  window.location.replace(next.toString());
+  return true;
+}
+
+function clearStaleReloadMarker() {
+  const clean = new URL(window.location.href);
+  if (!clean.searchParams.has(STALE_RELOAD_QUERY)) return;
+  clean.searchParams.delete(STALE_RELOAD_QUERY);
+  window.history.replaceState(null, '', clean.toString());
+}
+
 // **Terry specified this bar himself:** "last update: HH:MM:SS - Currently:
 // HH:MM:SS [green circle]".
 //
@@ -2886,8 +3102,8 @@ function renderLive() {
   const nowTxt = clockOf(nowMs);
 
   // **Checked BEFORE the lastOk guard**, because a stale tab and a dead poll are
-  // independent failures. The old order would have hidden the reload flag at exactly
-  // the moment somebody is staring at the bar wondering what is wrong.
+  // independent failures. A confirmed mismatch repairs itself after preserving every
+  // unsent field; the red pill is reserved for a failed automatic recovery.
   //
   // **Silence here means the two ids AGREE.** An unknown build on either side is not a
   // mismatch -- it is "cannot tell", and shouting on it would fire this every time git
@@ -2895,26 +3111,29 @@ function renderLive() {
   const stale = document.getElementById('stale');
   const known = serverBuild && serverBuild !== 'unknown' && PAGE_BUILD !== 'unknown';
   const drifted = known && serverBuild !== PAGE_BUILD;
-  if (drifted) {
-    stale.textContent = 'RELOAD  \\u00b7  page ' + PAGE_BUILD + '  \\u00b7  server ' + serverBuild;
+  if (drifted && reloadForServerBuild(serverBuild)) return;
+  if (known && !drifted) clearStaleReloadMarker();
+  const reloadFailed = drifted;
+  if (reloadFailed) {
+    stale.textContent = 'AUTO-RELOAD FAILED  \\u00b7  page ' + PAGE_BUILD
+      + '  \\u00b7  server ' + serverBuild;
   }
-  stale.classList.toggle('show', drifted);
+  stale.classList.toggle('show', reloadFailed);
 
   // **A SECOND, DIFFERENT STALENESS, and it needs a DIFFERENT INSTRUCTION.** Card
   // #0052.
   //
-  // `#stale` above compares the TAB to the SERVER, and its remedy is a reload. This
-  // compares the SERVER to the code on DISK, and **a reload cannot fix it** -- the tab
-  // would re-fetch the same page from the same process holding the same old modules.
+  // The tab/server mismatch above repairs itself. This compares the SERVER to the code
+  // on DISK, and **a browser reload cannot fix it** -- the tab would re-fetch the same
+  // page from the same process holding the same old modules.
   //
-  // **A wrong instruction is worse than no instruction**, because it looks like it was
-  // followed and nothing changes. So this says RESTART.
-  //
-  // **It does NOT auto-reload, deliberately.** `location.reload()` destroys `drafts`,
-  // which is the one thing on this page the server has no copy of -- #0029's P0
-  // arriving through a door the repaint guard does not watch.
+  // The server owns the graceful re-exec. This pill reports the short transition or,
+  // if preflight refuses the changed source, the specific problem that needs fixing.
   const restart = document.getElementById('restart');
-  restart.textContent = 'RESTART SERVER  \\u00b7  code changed on disk';
+  restart.textContent = restartProblem
+    ? 'AUTO-RESTART PAUSED  \\u00b7  ' + restartProblem
+    : (restarting ? 'RESTARTING SERVER  \\u00b7  code changed on disk'
+                  : 'RESTART SERVER  \\u00b7  code changed on disk');
   restart.classList.toggle('show', !!codeStale);
 
   // **A THIRD flag, and this one is about the DATA rather than the view.** Card #0013.
@@ -3032,6 +3251,8 @@ async function tick() {
     // stale process and an unreadable board are independent and either can be true
     // while the other is.
     codeStale = !!meta.codeStale;
+    restarting = !!meta.restarting;
+    restartProblem = meta.restartProblem || null;
     // **Captured on BOTH paths for the third time, and for the same reason.** A board
     // that cannot be read and a board that cannot be pushed are independent failures.
     pushState = meta.push || null;
@@ -3049,6 +3270,7 @@ async function tick() {
       HAY.clear();
       seen = meta.mtime;
       paint();
+      restoreStaleReloadState();
     }
     // Only a real answer moves this. It is the whole signal.
     lastOk = Date.now();
@@ -3337,6 +3559,16 @@ class Handler(http.server.BaseHTTPRequestHandler):
             if reloaded:
                 print(f"  {reloaded}", flush=True)
 
+            code_stale = code_is_stale()
+            restarting, restart_problem = (
+                request_code_restart(self.server) if code_stale else (False, None))
+            code_meta = {
+                "build": BUILD,
+                "codeStale": code_stale,
+                "restarting": restarting,
+                **({"restartProblem": restart_problem} if restart_problem else {}),
+            }
+
             try:
                 mtime = BOARD_PATH.stat().st_mtime
                 if STORE is not None:
@@ -3348,7 +3580,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
                 # stale tab are independent problems, and the page must be able to tell
                 # them apart while one of them is happening.
                 self._json({"ok": False, "mtime": 0, "stamp": "unreadable",
-                            "build": BUILD, "codeStale": code_is_stale(),
+                            **code_meta,
                             "push": push_status(), "error": str(exc)})
                 return
             stamp = (datetime.datetime.fromtimestamp(mtime, tz=datetime.UTC)
@@ -3356,8 +3588,8 @@ class Handler(http.server.BaseHTTPRequestHandler):
             # **`codeStale` rides on BOTH paths, like `build` and for the same
             # reason.** An unreadable board and a stale process are independent
             # failures, and either can be true while the other is.
-            self._json({"ok": True, "mtime": mtime, "stamp": stamp, "build": BUILD,
-                        "codeStale": code_is_stale(), "push": push_status()})
+            self._json({"ok": True, "mtime": mtime, "stamp": stamp,
+                        **code_meta, "push": push_status()})
         elif route in ("/data", "/v1/board"):
             self._send(payload(), "application/json")
         elif route == "/favicon.svg":
@@ -3583,7 +3815,7 @@ def main() -> None:
     threading.Thread(target=_push_loop, args=(BOARD_PATH,),
                      name="autopush", daemon=True).start()
 
-    server = http.server.ThreadingHTTPServer((HOST, port), Handler)
+    server = BoardHttpServer((HOST, port), Handler)
     publish_service(BOARD_PATH, port)
     print(f"Listening on {HOST}:{port}. Press Ctrl+C to stop.", flush=True)
     try:
@@ -3591,6 +3823,7 @@ def main() -> None:
     finally:
         remove_service(BOARD_PATH)
         server.server_close()
+    _reexec_if_requested()
 
 
 if __name__ == "__main__":

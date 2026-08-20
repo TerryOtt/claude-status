@@ -74,6 +74,20 @@ CLI reports remain available directly from the JSON snapshot. CLI mutations requ
 the board service to be running and fail without changing anything when it is absent;
 there is deliberately no direct-write fallback.
 
+## Live code updates
+
+The running server watches `api_endpoint.py` and `board_state.py`. When either source
+changes, it waits briefly for the editor to finish, syntax-checks both files, imports
+them in a child Python process, finishes active HTTP requests, closes its socket, and
+re-executes its original command. A broken edit leaves the existing server running and
+shows the specific preflight failure in the UI.
+
+After the new process starts, an open tab detects the changed build and reloads itself.
+Comment drafts, an open card and editor, a partially written new card, search text, and
+the current old-card visibility choice are carried through that reload in per-tab
+session storage. A build query permits one cache-busting reload and prevents a broken
+deployment from causing an infinite reload loop.
+
 ## The gate
 
 ```

@@ -1,5 +1,7 @@
 """Loopback REST contract tests using the real threaded handler."""
 
+# ruff: noqa: SLF001 -- restart lifecycle tests intentionally inspect private state
+
 import json
 import pathlib
 import threading
@@ -8,7 +10,7 @@ import urllib.error
 import urllib.request
 from collections.abc import Iterator
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, cast
 
 import pytest
 from conftest import USERS
@@ -93,6 +95,151 @@ def test_board_and_status_reads(api: RunningApi) -> None:
     health_code, health = request_json(api.base + "/v1/status")
     assert status_code == 200 and board["revision"] == 0
     assert health_code == 200 and health["ok"] is True
+    assert health["restarting"] is False
+
+
+def test_page_contains_guarded_auto_reload_and_state_restore(api: RunningApi) -> None:
+    with urllib.request.urlopen(api.base + "/", timeout=5) as response:
+        page = response.read().decode("utf-8")
+
+    assert "saveStaleReloadState();" in page
+    assert "restoreStaleReloadState();" in page
+    assert "window.location.replace(next.toString());" in page
+    assert "sessionStorage.setItem(STALE_RELOAD_STATE_KEY" in page
+    assert "saved.editing === 'detail'" in page
+    assert "if (saved.make)" in page
+    assert "AUTO-RELOAD FAILED" in page
+    assert response.headers["Cache-Control"] == "no-store, max-age=0"
+
+
+def test_dirty_build_id_includes_source_fingerprint(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    replies = iter([
+        api_endpoint.subprocess.CompletedProcess([], 0, stdout="deadbee\n", stderr=""),
+        api_endpoint.subprocess.CompletedProcess([], 0, stdout=" M api_endpoint.py\n",
+                                                 stderr=""),
+    ])
+    monkeypatch.setattr(
+        api_endpoint.subprocess, "run", lambda *_args, **_kwargs: next(replies))
+
+    ident = api_endpoint.build_id()
+
+    assert ident.startswith("deadbee-")
+    assert ident.endswith("-dirty")
+    assert len(ident.removeprefix("deadbee-").removesuffix("-dirty")) == 8
+
+
+def test_valid_source_change_schedules_graceful_shutdown(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    stopped = threading.Event()
+
+    class FakeServer:
+        def shutdown(self) -> None:
+            stopped.set()
+
+    changed = tuple((mtime + 1, digest + "-changed")
+                    for mtime, digest in api_endpoint._BOOT_CODE)
+    monkeypatch.setattr(api_endpoint, "_code_stamp", lambda: changed)
+    monkeypatch.setattr(api_endpoint, "_source_startup_problem", lambda: None)
+    monkeypatch.setattr(api_endpoint, "RESTART_DEBOUNCE_S", 0)
+    api_endpoint._restart_requested.clear()
+    api_endpoint._restart_scheduled = False
+    api_endpoint._restart_refused_stamp = None
+    api_endpoint._restart_problem = None
+
+    scheduled, problem = api_endpoint.request_code_restart(
+        cast(Any, FakeServer()))
+
+    assert scheduled is True and problem is None
+    assert stopped.wait(1)
+    assert api_endpoint._restart_requested.is_set()
+    api_endpoint._restart_requested.clear()
+    api_endpoint._restart_scheduled = False
+
+
+def test_invalid_source_change_keeps_server_and_reports_problem(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    stopped = threading.Event()
+
+    class FakeServer:
+        def shutdown(self) -> None:
+            stopped.set()
+
+    changed = tuple((mtime + 1, digest + "-broken")
+                    for mtime, digest in api_endpoint._BOOT_CODE)
+    message = "api_endpoint.py line 12: invalid syntax"
+    monkeypatch.setattr(api_endpoint, "_code_stamp", lambda: changed)
+    monkeypatch.setattr(api_endpoint, "_source_startup_problem", lambda: message)
+    monkeypatch.setattr(api_endpoint, "RESTART_DEBOUNCE_S", 0)
+    api_endpoint._restart_requested.clear()
+    api_endpoint._restart_scheduled = False
+    api_endpoint._restart_refused_stamp = None
+    api_endpoint._restart_problem = None
+
+    first = api_endpoint.request_code_restart(cast(Any, FakeServer()))
+    deadline = time.monotonic() + 1
+    while api_endpoint._restart_scheduled and time.monotonic() < deadline:
+        time.sleep(0.01)
+    second = api_endpoint.request_code_restart(cast(Any, FakeServer()))
+
+    assert first == (True, None)
+    assert second == (False, message)
+    assert not stopped.is_set()
+    assert not api_endpoint._restart_requested.is_set()
+    api_endpoint._restart_refused_stamp = None
+    api_endpoint._restart_problem = None
+
+
+def test_source_syntax_problem_names_file_and_line(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    valid = tmp_path / "valid.py"
+    invalid = tmp_path / "invalid.py"
+    valid.write_text("answer = 42\n", encoding="utf-8")
+    invalid.write_text("if True print('no')\n", encoding="utf-8")
+    monkeypatch.setattr(api_endpoint, "CODE_FILES", (valid, invalid))
+
+    problem = api_endpoint._source_syntax_problem()
+
+    assert problem is not None
+    assert problem.startswith("invalid.py line 1:")
+
+
+def test_source_startup_problem_reports_child_import_failure(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(api_endpoint, "_source_syntax_problem", lambda: None)
+    failed = api_endpoint.subprocess.CompletedProcess(
+        [], 1, stdout="", stderr="Traceback\nNameError: broken startup\n")
+    monkeypatch.setattr(
+        api_endpoint.subprocess, "run", lambda *_args, **_kwargs: failed)
+
+    problem = api_endpoint._source_startup_problem()
+
+    assert problem == "startup check failed: NameError: broken startup"
+
+
+def test_requested_restart_reexecs_the_original_python_command(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls: list[tuple[str, list[str]]] = []
+    monkeypatch.setattr(
+        api_endpoint.os, "execv",
+        lambda executable, args: calls.append((executable, args)))
+    api_endpoint._restart_requested.set()
+
+    try:
+        api_endpoint._reexec_if_requested()
+    finally:
+        api_endpoint._restart_requested.clear()
+
+    assert calls == [(
+        api_endpoint.sys.executable,
+        [api_endpoint.sys.executable, *api_endpoint.sys.argv],
+    )]
 
 
 def test_authenticated_create_uses_browser_actor(api: RunningApi) -> None:
