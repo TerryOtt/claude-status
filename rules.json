@@ -1,6 +1,6 @@
 {
-  "schema": 5,
-  "note": "The users, the lanes and the permission model for a claude-status board. Terry dictated the lanes one by one on 2026-08-18, in the shape he asked for: \"I like that the perms are (in/out, actor, source/dest).\" It lives outside the code because a rule change should be a data diff a person can read, and because `git log rules.json` then shows ONLY permission history rather than mixing it with page CSS. Every edge is declared TWICE, once from each end, and board_state.check_edges() refuses to let the halves disagree -- Terry reasons one lane at a time, so the table is written the way he thinks and the machine catches what that costs. SCHEMA 4 added `users`, `browserUser` and `cliUser` for card #0072: Terry, 2026-08-19, \"This is an open source code repo and my buddy Scott is thinking about using it... The users and user class should be part of per-project cfg like rules JSON.\" Before that, `terry` and `claude` were baked into the source and nobody else could deploy this without editing it. SCHEMA 5 moved the users, browserUser, cliUser and defaultOwner keys OUT of this file and into the board JSON, for card #0083: this file is the TOOL behavior and lives next to the code, while the people belong to the DEPLOYMENT and travel with its data.",
+  "schema": 6,
+  "note": "The lanes, priorities, and actor-grouped transition allow-list for a localswim board. User definitions live in each board JSON. Under edges, each actor id maps to permitted directed edges with required from and to fields and an optional description. Schema 6 introduced this grouping and renamed the former edge note field to description.",
   "priorities": [
     {
       "id": "P0",
@@ -78,282 +78,223 @@
       "create": []
     }
   ],
-  "edges": [
-    {
-      "actor": "claude",
-      "from": "backlog",
-      "to": "ready_for_claude",
-      "note": "Terry promotes from the backlog, and that is what makes the queue his. CLAUDE HAS THIS EDGE AND MUST NOT USE IT UNSOLICITED. Terry, 2026-08-19: \"If something changes on a ticket in backlog that suddenly makes it eligible for work, Terry can grant *per-ticket* permission to move from backlog to RFW. Note that claude MUST NOT move out of backlog until/unless Terry gives explicit guidance for one specific ticket.\" The grant is PER TICKET and verbal; the table cannot express that, so the restraint lives in CLAUDE.md and ORIENTATION.md. A standing permission read off this row alone would let Claude fill its own queue, which is the one thing every other edge here is shaped to prevent."
-    },
-    {
-      "actor": "terry",
-      "from": "backlog",
-      "to": "ready_for_claude",
-      "note": "Terry promotes from the backlog, and that is what makes the queue his. CLAUDE HAS THIS EDGE AND MUST NOT USE IT UNSOLICITED. Terry, 2026-08-19: \"If something changes on a ticket in backlog that suddenly makes it eligible for work, Terry can grant *per-ticket* permission to move from backlog to RFW. Note that claude MUST NOT move out of backlog until/unless Terry gives explicit guidance for one specific ticket.\" The grant is PER TICKET and verbal; the table cannot express that, so the restraint lives in CLAUDE.md and ORIENTATION.md. A standing permission read off this row alone would let Claude fill its own queue, which is the one thing every other edge here is shaped to prevent."
-    },
-    {
-      "actor": "terry",
-      "from": "backlog",
-      "to": "in_progress",
-      "note": "Terry starting something straight out of his own queue. Claude has no such edge and MUST NOT gain one -- promotion out of the backlog is what makes the queue his."
-    },
-    {
-      "actor": "claude",
-      "from": "backlog",
-      "to": "needs_terry_action",
-      "note": "Claude may take a backlog card to Needs Terry and NOWHERE else. Terry, 2026-08-18: \"that way if I comment in backlog, you can reply with a clarify question and move it to Needs Terry.\" The edge names its destination, so raising a question is expressible without granting Claude any power to advance its own queue."
-    },
-    {
-      "actor": "terry",
-      "from": "backlog",
-      "to": "needs_terry_action",
-      "note": "Terry pulling one of his own someday cards forward as a REMINDER TO HIMSELF. Terry, 2026-08-19: \"add a state machine perms rule to allow terry to move from Backlog to Needs Terry... Trying to leave myself a reminder.\" The lane note frames this lane as \"Claude is STOPPED until Terry answers\", and this row widens it by one reading: Needs Terry is the only lane the title bar counts as HIS call to action, so it is where a thing he must personally do belongs, whether or not Claude waits on it. It grants no power he lacked -- he already owned backlog->ready_for_claude and backlog->in_progress -- it grants the honest destination."
-    },
-    {
-      "actor": "claude",
-      "from": "ready_for_claude",
-      "to": "backlog",
-      "note": "Claude may push a card BACKWARDS. Terry, 2026-08-19: \"yes claude can push backwards from RFW to backlog. In progress to Backlog or RFW. from blocked to any swimlane left of it. from needs terry to any lane left of it.\" Setting work down is not advancing a queue, which is what the forward edges guard."
-    },
-    {
-      "actor": "terry",
-      "from": "ready_for_claude",
-      "to": "backlog",
-      "note": "Claude may push a card BACKWARDS. Terry, 2026-08-19: \"yes claude can push backwards from RFW to backlog. In progress to Backlog or RFW. from blocked to any swimlane left of it. from needs terry to any lane left of it.\" Setting work down is not advancing a queue, which is what the forward edges guard."
-    },
-    {
-      "actor": "claude",
-      "from": "ready_for_claude",
-      "to": "in_progress",
-      "note": ""
-    },
-    {
-      "actor": "claude",
-      "from": "ready_for_claude",
-      "to": "blocked",
-      "note": ""
-    },
-    {
-      "actor": "claude",
-      "from": "ready_for_claude",
-      "to": "needs_terry_action",
-      "note": ""
-    },
-    {
-      "actor": "terry",
-      "from": "ready_for_claude",
-      "to": "needs_terry_action",
-      "note": "Terry parking a queued card on himself. Same reminder use as the backlog row above."
-    },
-    {
-      "actor": "claude",
-      "from": "in_progress",
-      "to": "backlog",
-      "note": "Claude may push a card BACKWARDS. Terry, 2026-08-19: \"yes claude can push backwards from RFW to backlog. In progress to Backlog or RFW. from blocked to any swimlane left of it. from needs terry to any lane left of it.\" Setting work down is not advancing a queue, which is what the forward edges guard."
-    },
-    {
-      "actor": "claude",
-      "from": "in_progress",
-      "to": "ready_for_claude",
-      "note": "Claude may push a card BACKWARDS. Terry, 2026-08-19: \"yes claude can push backwards from RFW to backlog. In progress to Backlog or RFW. from blocked to any swimlane left of it. from needs terry to any lane left of it.\" Setting work down is not advancing a queue, which is what the forward edges guard."
-    },
-    {
-      "actor": "terry",
-      "from": "in_progress",
-      "to": "ready_for_claude",
-      "note": "Claude may push a card BACKWARDS. Terry, 2026-08-19: \"yes claude can push backwards from RFW to backlog. In progress to Backlog or RFW. from blocked to any swimlane left of it. from needs terry to any lane left of it.\" Setting work down is not advancing a queue, which is what the forward edges guard."
-    },
-    {
-      "actor": "claude",
-      "from": "in_progress",
-      "to": "blocked",
-      "note": ""
-    },
-    {
-      "actor": "terry",
-      "from": "in_progress",
-      "to": "blocked",
-      "note": ""
-    },
-    {
-      "actor": "claude",
-      "from": "in_progress",
-      "to": "needs_terry_action",
-      "note": ""
-    },
-    {
-      "actor": "terry",
-      "from": "in_progress",
-      "to": "needs_terry_action",
-      "note": ""
-    },
-    {
-      "actor": "claude",
-      "from": "in_progress",
-      "to": "ready_for_review",
-      "note": ""
-    },
-    {
-      "actor": "terry",
-      "from": "in_progress",
-      "to": "ready_for_review",
-      "note": ""
-    },
-    {
-      "actor": "claude",
-      "from": "blocked",
-      "to": "backlog",
-      "note": "Claude may push a card BACKWARDS. Terry, 2026-08-19: \"yes claude can push backwards from RFW to backlog. In progress to Backlog or RFW. from blocked to any swimlane left of it. from needs terry to any lane left of it.\" Setting work down is not advancing a queue, which is what the forward edges guard."
-    },
-    {
-      "actor": "claude",
-      "from": "blocked",
-      "to": "ready_for_claude",
-      "note": "Claude may push a card BACKWARDS. Terry, 2026-08-19: \"yes claude can push backwards from RFW to backlog. In progress to Backlog or RFW. from blocked to any swimlane left of it. from needs terry to any lane left of it.\" Setting work down is not advancing a queue, which is what the forward edges guard."
-    },
-    {
-      "actor": "terry",
-      "from": "blocked",
-      "to": "ready_for_claude",
-      "note": "Claude may push a card BACKWARDS. Terry, 2026-08-19: \"yes claude can push backwards from RFW to backlog. In progress to Backlog or RFW. from blocked to any swimlane left of it. from needs terry to any lane left of it.\" Setting work down is not advancing a queue, which is what the forward edges guard."
-    },
-    {
-      "actor": "claude",
-      "from": "blocked",
-      "to": "in_progress",
-      "note": ""
-    },
-    {
-      "actor": "terry",
-      "from": "blocked",
-      "to": "in_progress",
-      "note": ""
-    },
-    {
-      "actor": "claude",
-      "from": "blocked",
-      "to": "needs_terry_action",
-      "note": ""
-    },
-    {
-      "actor": "terry",
-      "from": "blocked",
-      "to": "needs_terry_action",
-      "note": "Terry deciding a blocked card is his move after all. Blocked means NEITHER of us can act, so this row is how he corrects that reading once he can."
-    },
-    {
-      "actor": "claude",
-      "from": "blocked",
-      "to": "ready_for_review",
-      "note": ""
-    },
-    {
-      "actor": "claude",
-      "from": "needs_terry_action",
-      "to": "backlog",
-      "note": "Claude may push a card BACKWARDS. Terry, 2026-08-19: \"yes claude can push backwards from RFW to backlog. In progress to Backlog or RFW. from blocked to any swimlane left of it. from needs terry to any lane left of it.\" Setting work down is not advancing a queue, which is what the forward edges guard."
-    },
-    {
-      "actor": "terry",
-      "from": "needs_terry_action",
-      "to": "backlog",
-      "note": "Claude may push a card BACKWARDS. Terry, 2026-08-19: \"yes claude can push backwards from RFW to backlog. In progress to Backlog or RFW. from blocked to any swimlane left of it. from needs terry to any lane left of it.\" Setting work down is not advancing a queue, which is what the forward edges guard."
-    },
-    {
-      "actor": "claude",
-      "from": "needs_terry_action",
-      "to": "ready_for_claude",
-      "note": "Claude may push a card BACKWARDS. Terry, 2026-08-19: \"yes claude can push backwards from RFW to backlog. In progress to Backlog or RFW. from blocked to any swimlane left of it. from needs terry to any lane left of it.\" Setting work down is not advancing a queue, which is what the forward edges guard."
-    },
-    {
-      "actor": "terry",
-      "from": "needs_terry_action",
-      "to": "ready_for_claude",
-      "note": "Claude may push a card BACKWARDS. Terry, 2026-08-19: \"yes claude can push backwards from RFW to backlog. In progress to Backlog or RFW. from blocked to any swimlane left of it. from needs terry to any lane left of it.\" Setting work down is not advancing a queue, which is what the forward edges guard."
-    },
-    {
-      "actor": "claude",
-      "from": "needs_terry_action",
-      "to": "in_progress",
-      "note": ""
-    },
-    {
-      "actor": "terry",
-      "from": "needs_terry_action",
-      "to": "in_progress",
-      "note": ""
-    },
-    {
-      "actor": "claude",
-      "from": "needs_terry_action",
-      "to": "blocked",
-      "note": ""
-    },
-    {
-      "actor": "claude",
-      "from": "needs_terry_action",
-      "to": "ready_for_review",
-      "note": "OBE. His words: \"I looked at Needs Terry cards and realized it was OBE and should be closed.\" Answering a question and finding the question moot are different acts, and only one of them produces work."
-    },
-    {
-      "actor": "terry",
-      "from": "needs_terry_action",
-      "to": "ready_for_review",
-      "note": "OBE. His words: \"I looked at Needs Terry cards and realized it was OBE and should be closed.\" Answering a question and finding the question moot are different acts, and only one of them produces work."
-    },
-    {
-      "actor": "claude",
-      "from": "ready_for_review",
-      "to": "backlog",
-      "note": "Claude may push a card BACKWARDS. Terry, 2026-08-19: \"yes claude can push backwards from RFW to backlog. In progress to Backlog or RFW. from blocked to any swimlane left of it. from needs terry to any lane left of it.\" Setting work down is not advancing a queue, which is what the forward edges guard."
-    },
-    {
-      "actor": "terry",
-      "from": "ready_for_review",
-      "to": "backlog",
-      "note": "Claude may push a card BACKWARDS. Terry, 2026-08-19: \"yes claude can push backwards from RFW to backlog. In progress to Backlog or RFW. from blocked to any swimlane left of it. from needs terry to any lane left of it.\" Setting work down is not advancing a queue, which is what the forward edges guard."
-    },
-    {
-      "actor": "claude",
-      "from": "ready_for_review",
-      "to": "ready_for_claude",
-      "note": "Claude may push a card BACKWARDS. Terry, 2026-08-19: \"yes claude can push backwards from RFW to backlog. In progress to Backlog or RFW. from blocked to any swimlane left of it. from needs terry to any lane left of it.\" Setting work down is not advancing a queue, which is what the forward edges guard."
-    },
-    {
-      "actor": "terry",
-      "from": "ready_for_review",
-      "to": "ready_for_claude",
-      "note": "Claude may push a card BACKWARDS. Terry, 2026-08-19: \"yes claude can push backwards from RFW to backlog. In progress to Backlog or RFW. from blocked to any swimlane left of it. from needs terry to any lane left of it.\" Setting work down is not advancing a queue, which is what the forward edges guard."
-    },
-    {
-      "actor": "claude",
-      "from": "ready_for_review",
-      "to": "in_progress",
-      "note": "Claude pulling back work it decides is not actually finished. \"claude can pull BACK from ready for terry review but Terry is only one that is ready to review out -> completed.\""
-    },
-    {
-      "actor": "terry",
-      "from": "ready_for_review",
-      "to": "in_progress",
-      "note": "Claude pulling back work it decides is not actually finished. \"claude can pull BACK from ready for terry review but Terry is only one that is ready to review out -> completed.\""
-    },
-    {
-      "actor": "claude",
-      "from": "ready_for_review",
-      "to": "blocked",
-      "note": "Claude may push a card BACKWARDS. Terry, 2026-08-19: \"yes claude can push backwards from RFW to backlog. In progress to Backlog or RFW. from blocked to any swimlane left of it. from needs terry to any lane left of it.\" Setting work down is not advancing a queue, which is what the forward edges guard."
-    },
-    {
-      "actor": "claude",
-      "from": "ready_for_review",
-      "to": "needs_terry_action",
-      "note": ""
-    },
-    {
-      "actor": "terry",
-      "from": "ready_for_review",
-      "to": "completed",
-      "note": "THE SIGNOFF, and the single edge Claude has no actor on. \"Claude must not sign off its own work\" is a missing table entry rather than a rule somebody remembers. It exists because Claude marked its own work complete twice on 2026-08-18 and was wrong both times."
-    }
-  ]
+  "edges": {
+    "terry": [
+      {
+        "from": "backlog",
+        "to": "ready_for_claude",
+        "description": "Terry promotes from the backlog, and that is what makes the queue his. CLAUDE HAS THIS EDGE AND MUST NOT USE IT UNSOLICITED. Terry, 2026-08-19: \"If something changes on a ticket in backlog that suddenly makes it eligible for work, Terry can grant *per-ticket* permission to move from backlog to RFW. Note that claude MUST NOT move out of backlog until/unless Terry gives explicit guidance for one specific ticket.\" The grant is PER TICKET and verbal; the table cannot express that, so the restraint lives in CLAUDE.md and ORIENTATION.md. A standing permission read off this row alone would let Claude fill its own queue, which is the one thing every other edge here is shaped to prevent."
+      },
+      {
+        "from": "backlog",
+        "to": "in_progress",
+        "description": "Terry starting something straight out of his own queue. Claude has no such edge and MUST NOT gain one -- promotion out of the backlog is what makes the queue his."
+      },
+      {
+        "from": "backlog",
+        "to": "needs_terry_action",
+        "description": "Terry pulling one of his own someday cards forward as a REMINDER TO HIMSELF. Terry, 2026-08-19: \"add a state machine perms rule to allow terry to move from Backlog to Needs Terry... Trying to leave myself a reminder.\" The lane note frames this lane as \"Claude is STOPPED until Terry answers\", and this row widens it by one reading: Needs Terry is the only lane the title bar counts as HIS call to action, so it is where a thing he must personally do belongs, whether or not Claude waits on it. It grants no power he lacked -- he already owned backlog->ready_for_claude and backlog->in_progress -- it grants the honest destination."
+      },
+      {
+        "from": "ready_for_claude",
+        "to": "backlog",
+        "description": "Claude may push a card BACKWARDS. Terry, 2026-08-19: \"yes claude can push backwards from RFW to backlog. In progress to Backlog or RFW. from blocked to any swimlane left of it. from needs terry to any lane left of it.\" Setting work down is not advancing a queue, which is what the forward edges guard."
+      },
+      {
+        "from": "ready_for_claude",
+        "to": "needs_terry_action",
+        "description": "Terry parking a queued card on himself. Same reminder use as the backlog row above."
+      },
+      {
+        "from": "in_progress",
+        "to": "ready_for_claude",
+        "description": "Claude may push a card BACKWARDS. Terry, 2026-08-19: \"yes claude can push backwards from RFW to backlog. In progress to Backlog or RFW. from blocked to any swimlane left of it. from needs terry to any lane left of it.\" Setting work down is not advancing a queue, which is what the forward edges guard."
+      },
+      {
+        "from": "in_progress",
+        "to": "blocked"
+      },
+      {
+        "from": "in_progress",
+        "to": "needs_terry_action"
+      },
+      {
+        "from": "in_progress",
+        "to": "ready_for_review"
+      },
+      {
+        "from": "blocked",
+        "to": "ready_for_claude",
+        "description": "Claude may push a card BACKWARDS. Terry, 2026-08-19: \"yes claude can push backwards from RFW to backlog. In progress to Backlog or RFW. from blocked to any swimlane left of it. from needs terry to any lane left of it.\" Setting work down is not advancing a queue, which is what the forward edges guard."
+      },
+      {
+        "from": "blocked",
+        "to": "in_progress"
+      },
+      {
+        "from": "blocked",
+        "to": "needs_terry_action",
+        "description": "Terry deciding a blocked card is his move after all. Blocked means NEITHER of us can act, so this row is how he corrects that reading once he can."
+      },
+      {
+        "from": "needs_terry_action",
+        "to": "backlog",
+        "description": "Claude may push a card BACKWARDS. Terry, 2026-08-19: \"yes claude can push backwards from RFW to backlog. In progress to Backlog or RFW. from blocked to any swimlane left of it. from needs terry to any lane left of it.\" Setting work down is not advancing a queue, which is what the forward edges guard."
+      },
+      {
+        "from": "needs_terry_action",
+        "to": "ready_for_claude",
+        "description": "Claude may push a card BACKWARDS. Terry, 2026-08-19: \"yes claude can push backwards from RFW to backlog. In progress to Backlog or RFW. from blocked to any swimlane left of it. from needs terry to any lane left of it.\" Setting work down is not advancing a queue, which is what the forward edges guard."
+      },
+      {
+        "from": "needs_terry_action",
+        "to": "in_progress"
+      },
+      {
+        "from": "needs_terry_action",
+        "to": "ready_for_review",
+        "description": "OBE. His words: \"I looked at Needs Terry cards and realized it was OBE and should be closed.\" Answering a question and finding the question moot are different acts, and only one of them produces work."
+      },
+      {
+        "from": "ready_for_review",
+        "to": "backlog",
+        "description": "Claude may push a card BACKWARDS. Terry, 2026-08-19: \"yes claude can push backwards from RFW to backlog. In progress to Backlog or RFW. from blocked to any swimlane left of it. from needs terry to any lane left of it.\" Setting work down is not advancing a queue, which is what the forward edges guard."
+      },
+      {
+        "from": "ready_for_review",
+        "to": "ready_for_claude",
+        "description": "Claude may push a card BACKWARDS. Terry, 2026-08-19: \"yes claude can push backwards from RFW to backlog. In progress to Backlog or RFW. from blocked to any swimlane left of it. from needs terry to any lane left of it.\" Setting work down is not advancing a queue, which is what the forward edges guard."
+      },
+      {
+        "from": "ready_for_review",
+        "to": "in_progress",
+        "description": "Claude pulling back work it decides is not actually finished. \"claude can pull BACK from ready for terry review but Terry is only one that is ready to review out -> completed.\""
+      },
+      {
+        "from": "ready_for_review",
+        "to": "completed",
+        "description": "THE SIGNOFF, and the single edge Claude has no actor on. \"Claude must not sign off its own work\" is a missing table entry rather than a rule somebody remembers. It exists because Claude marked its own work complete twice on 2026-08-18 and was wrong both times."
+      }
+    ],
+    "claude": [
+      {
+        "from": "backlog",
+        "to": "ready_for_claude",
+        "description": "Terry promotes from the backlog, and that is what makes the queue his. CLAUDE HAS THIS EDGE AND MUST NOT USE IT UNSOLICITED. Terry, 2026-08-19: \"If something changes on a ticket in backlog that suddenly makes it eligible for work, Terry can grant *per-ticket* permission to move from backlog to RFW. Note that claude MUST NOT move out of backlog until/unless Terry gives explicit guidance for one specific ticket.\" The grant is PER TICKET and verbal; the table cannot express that, so the restraint lives in CLAUDE.md and ORIENTATION.md. A standing permission read off this row alone would let Claude fill its own queue, which is the one thing every other edge here is shaped to prevent."
+      },
+      {
+        "from": "backlog",
+        "to": "needs_terry_action",
+        "description": "Claude may take a backlog card to Needs Terry and NOWHERE else. Terry, 2026-08-18: \"that way if I comment in backlog, you can reply with a clarify question and move it to Needs Terry.\" The edge names its destination, so raising a question is expressible without granting Claude any power to advance its own queue."
+      },
+      {
+        "from": "ready_for_claude",
+        "to": "backlog",
+        "description": "Claude may push a card BACKWARDS. Terry, 2026-08-19: \"yes claude can push backwards from RFW to backlog. In progress to Backlog or RFW. from blocked to any swimlane left of it. from needs terry to any lane left of it.\" Setting work down is not advancing a queue, which is what the forward edges guard."
+      },
+      {
+        "from": "ready_for_claude",
+        "to": "in_progress"
+      },
+      {
+        "from": "ready_for_claude",
+        "to": "blocked"
+      },
+      {
+        "from": "ready_for_claude",
+        "to": "needs_terry_action"
+      },
+      {
+        "from": "in_progress",
+        "to": "backlog",
+        "description": "Claude may push a card BACKWARDS. Terry, 2026-08-19: \"yes claude can push backwards from RFW to backlog. In progress to Backlog or RFW. from blocked to any swimlane left of it. from needs terry to any lane left of it.\" Setting work down is not advancing a queue, which is what the forward edges guard."
+      },
+      {
+        "from": "in_progress",
+        "to": "ready_for_claude",
+        "description": "Claude may push a card BACKWARDS. Terry, 2026-08-19: \"yes claude can push backwards from RFW to backlog. In progress to Backlog or RFW. from blocked to any swimlane left of it. from needs terry to any lane left of it.\" Setting work down is not advancing a queue, which is what the forward edges guard."
+      },
+      {
+        "from": "in_progress",
+        "to": "blocked"
+      },
+      {
+        "from": "in_progress",
+        "to": "needs_terry_action"
+      },
+      {
+        "from": "in_progress",
+        "to": "ready_for_review"
+      },
+      {
+        "from": "blocked",
+        "to": "backlog",
+        "description": "Claude may push a card BACKWARDS. Terry, 2026-08-19: \"yes claude can push backwards from RFW to backlog. In progress to Backlog or RFW. from blocked to any swimlane left of it. from needs terry to any lane left of it.\" Setting work down is not advancing a queue, which is what the forward edges guard."
+      },
+      {
+        "from": "blocked",
+        "to": "ready_for_claude",
+        "description": "Claude may push a card BACKWARDS. Terry, 2026-08-19: \"yes claude can push backwards from RFW to backlog. In progress to Backlog or RFW. from blocked to any swimlane left of it. from needs terry to any lane left of it.\" Setting work down is not advancing a queue, which is what the forward edges guard."
+      },
+      {
+        "from": "blocked",
+        "to": "in_progress"
+      },
+      {
+        "from": "blocked",
+        "to": "needs_terry_action"
+      },
+      {
+        "from": "blocked",
+        "to": "ready_for_review"
+      },
+      {
+        "from": "needs_terry_action",
+        "to": "backlog",
+        "description": "Claude may push a card BACKWARDS. Terry, 2026-08-19: \"yes claude can push backwards from RFW to backlog. In progress to Backlog or RFW. from blocked to any swimlane left of it. from needs terry to any lane left of it.\" Setting work down is not advancing a queue, which is what the forward edges guard."
+      },
+      {
+        "from": "needs_terry_action",
+        "to": "ready_for_claude",
+        "description": "Claude may push a card BACKWARDS. Terry, 2026-08-19: \"yes claude can push backwards from RFW to backlog. In progress to Backlog or RFW. from blocked to any swimlane left of it. from needs terry to any lane left of it.\" Setting work down is not advancing a queue, which is what the forward edges guard."
+      },
+      {
+        "from": "needs_terry_action",
+        "to": "in_progress"
+      },
+      {
+        "from": "needs_terry_action",
+        "to": "blocked"
+      },
+      {
+        "from": "needs_terry_action",
+        "to": "ready_for_review",
+        "description": "OBE. His words: \"I looked at Needs Terry cards and realized it was OBE and should be closed.\" Answering a question and finding the question moot are different acts, and only one of them produces work."
+      },
+      {
+        "from": "ready_for_review",
+        "to": "backlog",
+        "description": "Claude may push a card BACKWARDS. Terry, 2026-08-19: \"yes claude can push backwards from RFW to backlog. In progress to Backlog or RFW. from blocked to any swimlane left of it. from needs terry to any lane left of it.\" Setting work down is not advancing a queue, which is what the forward edges guard."
+      },
+      {
+        "from": "ready_for_review",
+        "to": "ready_for_claude",
+        "description": "Claude may push a card BACKWARDS. Terry, 2026-08-19: \"yes claude can push backwards from RFW to backlog. In progress to Backlog or RFW. from blocked to any swimlane left of it. from needs terry to any lane left of it.\" Setting work down is not advancing a queue, which is what the forward edges guard."
+      },
+      {
+        "from": "ready_for_review",
+        "to": "in_progress",
+        "description": "Claude pulling back work it decides is not actually finished. \"claude can pull BACK from ready for terry review but Terry is only one that is ready to review out -> completed.\""
+      },
+      {
+        "from": "ready_for_review",
+        "to": "blocked",
+        "description": "Claude may push a card BACKWARDS. Terry, 2026-08-19: \"yes claude can push backwards from RFW to backlog. In progress to Backlog or RFW. from blocked to any swimlane left of it. from needs terry to any lane left of it.\" Setting work down is not advancing a queue, which is what the forward edges guard."
+      },
+      {
+        "from": "ready_for_review",
+        "to": "needs_terry_action"
+      }
+    ]
+  }
 }

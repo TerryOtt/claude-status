@@ -80,10 +80,11 @@ SCHEMA = 2
 # **Two files with two shapes get two version numbers.** They change for unrelated
 # reasons and neither should be able to invalidate the other.
 #
-# **2 -> 3 the same afternoon**, when Terry split the grouped actors back apart: *"since
-# we add comments, let's split."* Schema 2 carried `actors` as a list; schema 3 carries
-# one `actor` per row so each can hold its own reason.
-RULES_SCHEMA = 5
+# **Schema 6 groups permitted edges under their actor.** The actor used to be repeated
+# in every row; grouping makes one person's complete permission set readable in one
+# place. Edge `note` also became the optional, clearer `description`.
+RULES_SCHEMA = 6
+REQUIRED_EDGE_ACTORS = 2
 
 
 class BoardError(ValueError):
@@ -99,6 +100,27 @@ class BoardError(ValueError):
     the first time. The error handling had never been executed, which is the same shape
     as a check that cannot fail: it read as covered and was not.
     """
+
+
+def _unique_json_object(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
+    """Build one JSON object while refusing duplicate keys instead of losing one."""
+    result: dict[str, Any] = {}
+    for key, value in pairs:
+        if key in result:
+            raise BoardError(f"duplicate JSON object key {key!r}")
+        result[key] = value
+    return result
+
+
+def _read_json(path: pathlib.Path) -> Any:  # noqa: ANN401 -- JSON is untrusted input
+    """Read JSON with useful syntax locations and no silently collapsed keys."""
+    try:
+        with path.open(encoding="utf-8") as fh:
+            return json.load(fh, object_pairs_hook=_unique_json_object)
+    except json.JSONDecodeError as exc:
+        raise BoardError(
+            f"{path}: invalid JSON at line {exc.lineno}, column {exc.colno}: "
+            f"{exc.msg}") from exc
 
 # **The default port, and it is a DEFAULT rather than the port.** Terry, 2026-08-18:
 # *"I want per-project config JSON that includes TCP port num; I want to be able to
@@ -290,10 +312,8 @@ class LaneRules:
     difference between *"Terry may take cards out of Backlog"* and *"Terry may promote a
     Backlog card to Ready For Work, and nowhere else."*
 
-    **Every edge is declared TWICE, once from each end**, and `check_edges()` refuses to
-    let the halves disagree. Terry reasons one lane at a time, so the table is written
-    the way he thinks and the machine catches what that costs. **It fired on the second
-    lane he specified, and again on the first draft of one of Claude's.**
+    Each edge is declared once under its actor in `rules.json`. The loader derives both
+    indexes, and `check_edges()` verifies that the in-memory views remain symmetrical.
     """
 
     create: frozenset[str]
@@ -302,7 +322,7 @@ class LaneRules:
 
 
 # **`TERRY` and `CLAUDE` frozensets lived here and were DELETED by card #0072.**
-# Nothing had read either one since the flat rules table landed -- they were left over
+# Nothing had read either one since edges moved out of Python -- they were left over
 # from the version that spelled the permission model in Python. `NOBODY` is still used.
 NOBODY: frozenset[str] = frozenset()
 
@@ -316,24 +336,29 @@ NOBODY: frozenset[str] = frozenset()
 # `git log rules.json` is only ever the rules.
 #
 # **JSON has no comments, and the reasoning is the most valuable part of that table**,
-# so every lane and every edge carries an optional `note`. He offered `.jsonc` as the
+# so every lane carries a `note` and every edge may carry a `description`. He offered
+# `.jsonc` as the
 # alternative and it is REFUSED: `jq` cannot read JSONC, and it fails dishonestly --
 # `jq -e '.name' wrangler.jsonc` reports `Invalid numeric literal at line 6, column 4`
 # where line 6 is the first `//` comment. **The error names the wrong cause**, and he
 # specifically wants jq on these files.
 #
-# **The notes are IN the data rather than in a companion document.** Two copies of one
-# fact is the drift this project keeps paying for.
+# **The explanations are IN the data rather than in a companion document.** Two copies
+# of one fact is the drift this project keeps paying for.
 RULES_PATH = pathlib.Path(__file__).resolve().parent / "rules.json"
 
-def _index_edges(
-    edges_raw: list[Any], known: set[str], path: pathlib.Path,
-) -> tuple[dict[str, dict[str, set[str]]], dict[str, dict[str, set[str]]]]:
-    """Validate the flat edge list and index it both ways. Card #0064.
+def _index_edges(  # noqa: PLR0912 -- every branch rejects one malformed input shape
+    edges_raw: dict[str, Any], known: set[str], path: pathlib.Path,
+) -> tuple[
+    dict[str, dict[str, set[str]]],
+    dict[str, dict[str, set[str]]],
+    frozenset[str],
+]:
+    """Validate actor-grouped edges and index them by source and destination.
 
     **`inbound` and `outbound` are still BUILT, and that is why nothing else changed.**
-    The FILE stopped storing each edge twice; this index still answers both questions, so
-    `api_endpoint.py`, `may_move` and `edges_for` never learned that the format moved.
+    The file groups rows for readability; this index still answers both questions, so
+    enforcement does not care how the JSON presents them.
 
     **Extracted from `_load_rules`**, which ruff correctly called too branchy once the
     edge validation landed in it -- the same call it made on `Board.from_json` an hour
@@ -343,47 +368,50 @@ def _index_edges(
     outbound: dict[str, dict[str, set[str]]] = {lane: {} for lane in known}
     seen: set[tuple[str, str, str]] = set()
 
-    for index, edge in enumerate(edges_raw):
-        spot = f"edges[{index}]"
-        if not isinstance(edge, dict):
-            raise BoardError(f"{path}: {spot} is not an object")
-        # **All three are MANDATORY. Terry, 2026-08-19: *"making sure rules MUST have
-        # actor + source lane + dest lane."*** A row missing one is not a weaker rule,
-        # it is an unreadable one.
-        missing = [k for k in ("actor", "from", "to") if not edge.get(k)]
-        if missing:
-            raise BoardError(f"{path}: {spot} is missing {', '.join(missing)}")
-        # **`note` MUST be PRESENT and MAY be empty**, and the difference is the point.
-        # An absent key reads as "not applicable"; an empty one reads as "nobody has
-        # said why yet", which is the state Terry wants visible rather than deniable.
-        if "note" not in edge:
-            raise BoardError(f"{path}: {spot} has no 'note' key; use \"\" if unexplained")
-        actor, frm, to = str(edge["actor"]), str(edge["from"]), str(edge["to"])
-        for end in (frm, to):
-            if end not in known:
-                raise BoardError(f"{path}: {spot} names unknown lane {end!r}")
-        if frm == to:
-            raise BoardError(f"{path}: {spot} joins {frm!r} to itself")
-        # **THE ACTOR IS NOT CHECKED HERE, and card #0083 is why.** The user list lives
-        # in the board file now, and this runs at import, before any board path is
-        # known. `install_users` performs the check the moment both halves exist, and
-        # refuses a rules file naming somebody the board does not list.
-        # **ONE ROW PER (actor, from, to), not per (from, to).** Terry split them so each
-        # actor carries its own reason: *"Tell me why actor X should be able to make this
-        # card movement."* Two rows for one edge are correct; two rows for one actor on
-        # one edge are a duplicate.
-        if (actor, frm, to) in seen:
-            raise BoardError(f"{path}: {spot} repeats {actor} on {frm} -> {to}")
-        seen.add((actor, frm, to))
-        outbound[frm].setdefault(to, set()).add(actor)
-        inbound[to].setdefault(frm, set()).add(actor)
-    return inbound, outbound
+    for actor, actor_edges in edges_raw.items():
+        if not actor or actor != actor.strip():
+            raise BoardError(
+                f"{path}: edges actor ids must be nonempty and have no outer whitespace")
+        if not isinstance(actor_edges, list):
+            raise BoardError(f"{path}: edges.{actor} is not a list")
+        for index, edge in enumerate(actor_edges):
+            spot = f"edges.{actor}[{index}]"
+            if not isinstance(edge, dict):
+                raise BoardError(f"{path}: {spot} is not an object")
+            missing = [key for key in ("from", "to") if key not in edge]
+            if missing:
+                raise BoardError(f"{path}: {spot} is missing {', '.join(missing)}")
+            unexpected = sorted(set(edge) - {"from", "to", "description"})
+            if unexpected:
+                raise BoardError(
+                    f"{path}: {spot} has unknown field(s) {', '.join(unexpected)}")
+            if "description" in edge and not isinstance(edge["description"], str):
+                raise BoardError(f"{path}: {spot}.description is not a string")
+
+            for required in ("from", "to"):
+                value = edge[required]
+                if not isinstance(value, str) or not value.strip():
+                    raise BoardError(
+                        f"{path}: {spot}.{required} is not a nonempty string")
+
+            frm, to = edge["from"], edge["to"]
+            for end in (frm, to):
+                if end not in known:
+                    raise BoardError(f"{path}: {spot} names unknown lane {end!r}")
+            if frm == to:
+                raise BoardError(f"{path}: {spot} joins {frm!r} to itself")
+            if (actor, frm, to) in seen:
+                raise BoardError(f"{path}: {spot} repeats {actor} on {frm} -> {to}")
+            seen.add((actor, frm, to))
+            outbound[frm].setdefault(to, set()).add(actor)
+            inbound[to].setdefault(frm, set()).add(actor)
+    return inbound, outbound, frozenset(edges_raw)
 
 
 # **THE PERMISSION TABLE. Terry dictated it lane by lane on 2026-08-18**, in the shape
 # he asked for: *"I like that the perms are (in/out, actor, source/dest)."* **The FILE was
-# flattened on 2026-08-19 by card #0064** -- one row per edge instead of a copy under each
-# lane -- and the shape he named survives as the in-memory index this builds.
+# grouped by actor in schema 6** -- each person's complete permission set is together,
+# while the source/destination indexes remain derived in memory.
 @dataclass(frozen=True)
 class Rules:
     """Everything `rules.json` declares, in one object. **Card #0072.**
@@ -398,6 +426,7 @@ class Rules:
     priorities: tuple[str, ...]
     priority_label: Mapping[str, str]
     default_priority: str
+    edge_actors: frozenset[str]
     # **The cast is NOT here, card #0083.** It moved to the board file, which is
     # per-project; this object describes `rules.json`, which is per-tool.
 
@@ -473,19 +502,17 @@ def _load_rules(path: pathlib.Path) -> Rules:
     naming an unknown actor or a lane that does not exist is a bug in whoever edited
     it, and defaulting past that would hide the edit that broke the board.
 
-    **`note` fields are ignored here on purpose.** They exist for the person reading
-    the diff; nothing in the permission logic consults them, so a wrong note cannot
-    change behavior and a missing one cannot break a build.
+    **Lane `note` and edge `description` fields do not grant permission.** They exist
+    for the person reading the diff; only actor, source, and destination affect the
+    transition index.
     """
-    with path.open(encoding="utf-8") as fh:
-        doc = json.load(fh)
+    doc = _read_json(path)
 
     if doc.get("schema") != RULES_SCHEMA:
         raise BoardError(
             f"{path}: rules schema {doc.get('schema')!r}, want {RULES_SCHEMA}. "
-            "1 nested every edge under both lanes; 2 flattened it with the actors "
-            "grouped; 3 gives each actor its own row so each carries its own reason. "
-            "Card #0064.")
+            "schema 6 groups edges under actor ids and renames edge note to the "
+            "optional description field.")
 
     lanes_raw = doc.get("lanes")
     if not isinstance(lanes_raw, list) or not lanes_raw:
@@ -498,10 +525,14 @@ def _load_rules(path: pathlib.Path) -> Rules:
     order = tuple((lane["id"], lane["label"]) for lane in lanes_raw)
 
     edges_raw = doc.get("edges")
-    if not isinstance(edges_raw, list) or not edges_raw:
-        raise BoardError(f"{path}: 'edges' is missing or empty")
+    if not isinstance(edges_raw, dict) or not edges_raw:
+        raise BoardError(f"{path}: 'edges' is missing, empty, or not an object")
+    if len(edges_raw) != REQUIRED_EDGE_ACTORS:
+        raise BoardError(
+            f"{path}: 'edges' contains {len(edges_raw)} actors; "
+            f"exactly {REQUIRED_EDGE_ACTORS} distinct actors are required")
 
-    inbound, outbound = _index_edges(edges_raw, known, path)
+    inbound, outbound, edge_actors = _index_edges(edges_raw, known, path)
 
     table: dict[str, LaneRules] = {}
     for lane in lanes_raw:
@@ -520,7 +551,7 @@ def _load_rules(path: pathlib.Path) -> Rules:
 
     return Rules(
         lanes=order, table=table, priorities=priorities, priority_label=labels,
-        default_priority=default,
+        default_priority=default, edge_actors=edge_actors,
     )
 
 
@@ -547,6 +578,7 @@ class TransitionPolicy:
             self.rules.priorities,
             MappingProxyType(dict(self.rules.priority_label)),
             self.rules.default_priority,
+            self.rules.edge_actors,
         )
         object.__setattr__(self, "rules", frozen)
 
@@ -663,8 +695,13 @@ class TransitionPolicy:
                         f'for {sorted(actors)}')
         return problems
 
-    def validate_actors(self, actors: set[str], where: str) -> None:
-        named: set[str] = set()
+    def validate_actors(
+        self,
+        actors: set[str],
+        where: str,
+        configured_edge_actors: frozenset[str] | None = None,
+    ) -> None:
+        named = set(self.rules.edge_actors)
         for rules in self.table.values():
             named |= set(rules.create)
             for who in (*rules.inbound.values(), *rules.outbound.values()):
@@ -673,9 +710,18 @@ class TransitionPolicy:
             raise BoardError(
                 f'{self.path} names actor(s) ' + ', '.join(unknown) + f' that {where} '
                 'does not list as users; the board user list is authoritative')
+        if (configured_edge_actors is not None
+                and self.rules.edge_actors != configured_edge_actors):
+            expected = ", ".join(sorted(configured_edge_actors))
+            actual = ", ".join(sorted(self.rules.edge_actors))
+            raise BoardError(
+                f"{self.path} edges actors ({actual}) do not exactly match "
+                f"{where} browserUser and cliUser ({expected})")
 
     def reload_if_changed(
-        self, actors: set[str] | None = None,
+        self,
+        actors: set[str] | None = None,
+        configured_edge_actors: frozenset[str] | None = None,
     ) -> tuple[Self, str | None]:
         """Return a fresh policy after a complete valid edit, otherwise keep this one."""
         try:
@@ -687,7 +733,8 @@ class TransitionPolicy:
         try:
             fresh = type(self).load(self.path)
             if actors is not None:
-                fresh.validate_actors(actors, str(self.path))
+                fresh.validate_actors(
+                    actors, str(self.path), configured_edge_actors)
         except (BoardError, OSError, ValueError) as exc:
             seen = type(self)(self.rules, self.path, stamp)
             return seen, (f'rules.json changed and was REFUSED: {exc}. '
@@ -745,8 +792,14 @@ def install_users(  # noqa: PLR0913, PLR0917 -- one complete user configuration
     global USERS, ACTORS, USER_LABEL, USER_CLASS, USER_COLOR  # noqa: PLW0603
     global BROWSER_USER, CLI_USER, DEFAULT_OWNER, BROWSER_EDGES  # noqa: PLW0603
 
+    configured_edge_actors = frozenset((browser, cli))
+    if len(configured_edge_actors) != REQUIRED_EDGE_ACTORS:
+        raise BoardError(
+            f"{where}: browserUser and cliUser MUST be two different actor ids")
+
     active = policy or _POLICY
-    active.validate_actors({u.id for u in users}, where)
+    active.validate_actors(
+        {u.id for u in users}, where, configured_edge_actors)
 
     USERS = users
     ACTORS = tuple(u.id for u in users)
@@ -772,12 +825,12 @@ LANE_LABEL: dict[str, str] = dict(LANES)
 
 
 def rules_gaps(path: pathlib.Path = RULES_PATH) -> tuple[list[str], list[str]]:
-    """`(edges with no reason, edges sharing one reason across two actors)`. Card #0064.
+    """`(edges with no description, edges sharing one across actors)`.
 
     **Terry: *"Want the rules to be VERY pedantic to ENCOURAGE humans to comment them.
     'Tell me why actor X should be able to make this card movement'."***
 
-    **A missing reason MUST NOT fail the load, and that is deliberate.** Refusing to
+    **A missing description MUST NOT fail the load, and that is deliberate.** Refusing to
     start over an unwritten sentence would mean Claude filling 17 of them with
     plausible filler to unblock itself -- which is worse than a blank, because filler
     reads as considered.
@@ -785,26 +838,31 @@ def rules_gaps(path: pathlib.Path = RULES_PATH) -> tuple[list[str], list[str]]:
     **So it is counted and shown instead.** `api_endpoint.py` prints it at startup, where Terry
     already reads the permission table.
 
-    **A SHARED reason is reported separately from a missing one.** They are different
+    **A SHARED description is reported separately from a missing one.** They are different
     states: nobody has explained this edge at all, against somebody explained the edge
     and not the two actors on it.
     """
     try:
-        with path.open(encoding="utf-8") as fh:
-            doc = json.load(fh)
-    except (OSError, json.JSONDecodeError):
+        doc = _read_json(path)
+    except (BoardError, OSError):
         return [], []
-    edges = doc.get("edges", [])
-    blank = [f"{e['actor']}: {e['from']} -> {e['to']}"
-             for e in edges if not (e.get("note") or "").strip()]
+    edges = doc.get("edges")
+    if not isinstance(edges, dict):
+        return [], []
+    rows = [(actor, edge) for actor, actor_edges in edges.items()
+            if isinstance(actor_edges, list) for edge in actor_edges
+            if isinstance(edge, dict)]
+    blank = [f"{actor}: {edge['from']} -> {edge['to']}"
+             for actor, edge in rows
+             if not (edge.get("description") or "").strip()]
     by_edge: dict[tuple[str, str], set[str]] = {}
-    for edge in edges:
-        note = (edge.get("note") or "").strip()
-        if note:
-            by_edge.setdefault((edge["from"], edge["to"]), set()).add(note)
+    for _actor, edge in rows:
+        description = (edge.get("description") or "").strip()
+        if description:
+            by_edge.setdefault((edge["from"], edge["to"]), set()).add(description)
     counts: dict[tuple[str, str], int] = {}
-    for edge in edges:
-        if (edge.get("note") or "").strip():
+    for _actor, edge in rows:
+        if (edge.get("description") or "").strip():
             key = (edge["from"], edge["to"])
             counts[key] = counts.get(key, 0) + 1
     shared = [f"{frm} -> {to}" for (frm, to), n in counts.items()
@@ -854,7 +912,7 @@ def may_move(actor: str, from_state: str, to_state: str) -> bool:
     say *"promote #0027"* and it happens without him reaching for the mouse.
 
     **So a caller that trusts this function alone will get that one edge wrong.** The
-    restraint lives in `rules.json`'s note on both ends, in FlickrGroupAddr's
+    restraint lives in that edge's `description`, in FlickrGroupAddr's
     `CLAUDE.md`, and in its `docs/ORIENTATION.md`. **Every other edge here IS the whole
     rule.**
     """
@@ -889,7 +947,7 @@ def edges_for(actor: str) -> frozenset[tuple[str, str]]:
 # page asks to decide whether a card is draggable, and the answer is "the edges the
 # browser's user may take" -- which stops being Terry's the day somebody else deploys
 # this. **`CLAUDE_EDGES` was DELETED rather than renamed**: nothing read it, in either
-# file, since the flat rules table landed.
+# file, since the permission table moved into JSON.
 BROWSER_EDGES: frozenset[tuple[str, str]] = frozenset()
 
 # **The mtime the table above was built from.** `_rules_mtime` is what makes a live
@@ -942,7 +1000,9 @@ def reload_rules_if_changed() -> str | None:
     global STATES, LANE_LABEL, BROWSER_EDGES, _rules_mtime  # noqa: PLW0603
     global _POLICY, _RULES  # noqa: PLW0603
     fresh_policy, message = _POLICY.reload_if_changed(
-        set(ACTORS) if ACTORS else None)
+        set(ACTORS) if ACTORS else None,
+        frozenset((BROWSER_USER, CLI_USER)) if ACTORS else None,
+    )
     if fresh_policy is not _POLICY:
         _POLICY = fresh_policy
         _RULES = fresh_policy.rules
@@ -2318,8 +2378,7 @@ class Board:
 
 def load(path: pathlib.Path, policy: TransitionPolicy | None = None) -> Board:
     """Read, parse and VALIDATE a board file."""
-    with pathlib.Path(path).open(encoding="utf-8") as fh:
-        raw = json.load(fh)
+    raw = _read_json(pathlib.Path(path))
     return Board.from_json(raw, str(path), policy)
 
 

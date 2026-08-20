@@ -19,17 +19,25 @@ def policy_file(tmp_path: pathlib.Path, name: str) -> pathlib.Path:
     return path
 
 
-def remove_claude_backlog_promotion(path: pathlib.Path) -> None:
-    doc = json.loads(path.read_text(encoding="utf-8"))
-    doc["edges"] = [
-        edge for edge in doc["edges"]
-        if not (edge["actor"] == "claude"
-                and edge["from"] == "backlog"
-                and edge["to"] == "ready_for_claude")
-    ]
+def policy_doc(path: pathlib.Path) -> dict[str, Any]:
+    return cast(dict[str, Any], json.loads(path.read_text(encoding="utf-8")))
+
+
+def write_policy(path: pathlib.Path, doc: dict[str, Any], *, advance: bool = False) -> None:
     old_stamp = path.stat().st_mtime_ns
     path.write_text(json.dumps(doc, indent=2) + "\n", encoding="utf-8")
-    os.utime(path, ns=(old_stamp + 1_000_000_000, old_stamp + 1_000_000_000))
+    if advance:
+        os.utime(path, ns=(old_stamp + 1_000_000_000, old_stamp + 1_000_000_000))
+
+
+def remove_claude_backlog_promotion(path: pathlib.Path) -> None:
+    doc = policy_doc(path)
+    doc["edges"]["claude"] = [
+        edge for edge in doc["edges"]["claude"]
+        if not (edge["from"] == "backlog"
+                and edge["to"] == "ready_for_claude")
+    ]
+    write_policy(path, doc, advance=True)
 
 
 def make_store(
@@ -52,6 +60,205 @@ def test_transition_policy_cannot_be_mutated(tmp_path: pathlib.Path) -> None:
     with pytest.raises(TypeError):
         cast(Any, policy.table["backlog"].outbound)["completed"] = frozenset(
             {"claude"})
+
+
+def test_edge_description_is_optional(tmp_path: pathlib.Path) -> None:
+    path = policy_file(tmp_path, "rules.json")
+    doc = policy_doc(path)
+    doc["edges"]["terry"][0].pop("description", None)
+    write_policy(path, doc)
+
+    policy = board_state.TransitionPolicy.load(path)
+
+    assert policy.may_move("terry", "backlog", "ready_for_claude")
+
+
+def test_edges_require_exactly_two_actors(tmp_path: pathlib.Path) -> None:
+    path = policy_file(tmp_path, "rules.json")
+    doc = policy_doc(path)
+    del doc["edges"]["claude"]
+    write_policy(path, doc)
+
+    with pytest.raises(board_state.BoardError, match="exactly 2"):
+        board_state.TransitionPolicy.load(path)
+
+
+def test_duplicate_actor_keys_are_rejected_before_json_can_collapse_them(
+    tmp_path: pathlib.Path,
+) -> None:
+    path = policy_file(tmp_path, "rules.json")
+    text = path.read_text(encoding="utf-8")
+    text = text.replace('"edges": {', '"edges": {\n    "terry": [],', 1)
+    path.write_text(text, encoding="utf-8")
+
+    with pytest.raises(board_state.BoardError, match="duplicate JSON object key 'terry'"):
+        board_state.TransitionPolicy.load(path)
+
+
+def test_three_differently_cased_actor_keys_are_rejected(tmp_path: pathlib.Path) -> None:
+    path = policy_file(tmp_path, "rules.json")
+    doc = policy_doc(path)
+    doc["edges"] = {"terry": [], "Claude": [], "Terry": []}
+    write_policy(path, doc)
+
+    with pytest.raises(board_state.BoardError, match="exactly 2 distinct actors"):
+        board_state.TransitionPolicy.load(path)
+
+
+def test_actor_ids_match_board_config_case_sensitively(tmp_path: pathlib.Path) -> None:
+    path = policy_file(tmp_path, "rules.json")
+    doc = policy_doc(path)
+    doc["edges"] = {
+        "Terry": doc["edges"]["terry"],
+        "Claude": doc["edges"]["claude"],
+    }
+    write_policy(path, doc)
+    policy = board_state.TransitionPolicy.load(path)
+
+    with pytest.raises(board_state.BoardError, match=r"actor.*Claude, Terry"):
+        make_store(tmp_path, "case-mismatch", policy)
+
+
+def test_each_actor_value_must_be_an_edge_list(tmp_path: pathlib.Path) -> None:
+    path = policy_file(tmp_path, "rules.json")
+    doc = policy_doc(path)
+    doc["edges"]["terry"] = {}
+    write_policy(path, doc)
+
+    with pytest.raises(board_state.BoardError, match=r"edges\.terry is not a list"):
+        board_state.TransitionPolicy.load(path)
+
+
+@pytest.mark.parametrize("actor", ["", " terry", "terry "])
+def test_edge_actor_ids_must_be_nonempty_and_unpadded(
+    tmp_path: pathlib.Path, actor: str,
+) -> None:
+    path = policy_file(tmp_path, "rules.json")
+    doc = policy_doc(path)
+    doc["edges"][actor] = doc["edges"].pop("terry")
+    write_policy(path, doc)
+
+    with pytest.raises(
+        board_state.BoardError,
+        match="actor ids must be nonempty and have no outer whitespace",
+    ):
+        board_state.TransitionPolicy.load(path)
+
+
+def test_edge_actor_must_be_a_configured_board_user(tmp_path: pathlib.Path) -> None:
+    path = policy_file(tmp_path, "rules.json")
+    doc = policy_doc(path)
+    doc["edges"]["unknown"] = doc["edges"].pop("claude")
+    write_policy(path, doc)
+    policy = board_state.TransitionPolicy.load(path)
+
+    with pytest.raises(board_state.BoardError, match=r"actor.*unknown"):
+        make_store(tmp_path, "invalid-actor", policy)
+
+
+def test_edge_actors_must_be_the_configured_browser_and_cli_users(
+    tmp_path: pathlib.Path,
+) -> None:
+    path = policy_file(tmp_path, "rules.json")
+    doc = policy_doc(path)
+    doc["edges"]["scott"] = doc["edges"].pop("claude")
+    write_policy(path, doc)
+    policy = board_state.TransitionPolicy.load(path)
+    users = (*USERS, board_state.User(
+        "scott", "Scott", board_state.BOT, "#884422"))
+    board = board_state.Board(
+        project="configured-actors", users=users, browser_user="terry",
+        cli_user="claude", default_owner="claude")
+    board_state.save(board, tmp_path / "configured-actors.json")
+
+    with pytest.raises(board_state.BoardError, match=r"exactly match.*claude, terry"):
+        api_endpoint.BoardStore(tmp_path / "configured-actors.json", policy)
+
+
+def test_configured_browser_and_cli_users_must_be_different() -> None:
+    with pytest.raises(board_state.BoardError, match="MUST be two different actor ids"):
+        board_state.install_users(
+            USERS, "terry", "terry", "terry", "same configured actor")
+
+
+@pytest.mark.parametrize(("field", "value"), [
+    ("from", "not_a_lane"),
+    ("to", "not_a_lane"),
+])
+def test_edge_endpoints_must_name_declared_lanes(
+    tmp_path: pathlib.Path, field: str, value: str,
+) -> None:
+    path = policy_file(tmp_path, "rules.json")
+    doc = policy_doc(path)
+    doc["edges"]["terry"][0][field] = value
+    write_policy(path, doc)
+
+    with pytest.raises(board_state.BoardError, match="names unknown lane 'not_a_lane'"):
+        board_state.TransitionPolicy.load(path)
+
+
+def test_self_loop_edge_is_rejected(tmp_path: pathlib.Path) -> None:
+    path = policy_file(tmp_path, "rules.json")
+    doc = policy_doc(path)
+    doc["edges"]["terry"][0] = {"from": "backlog", "to": "backlog"}
+    write_policy(path, doc)
+
+    with pytest.raises(board_state.BoardError, match="joins 'backlog' to itself"):
+        board_state.TransitionPolicy.load(path)
+
+
+def test_duplicate_actor_edge_is_rejected(tmp_path: pathlib.Path) -> None:
+    path = policy_file(tmp_path, "rules.json")
+    doc = policy_doc(path)
+    doc["edges"]["terry"].append(dict(doc["edges"]["terry"][0]))
+    write_policy(path, doc)
+
+    with pytest.raises(board_state.BoardError, match=r"repeats terry on backlog ->"):
+        board_state.TransitionPolicy.load(path)
+
+
+def test_invalid_json_reports_parser_location(tmp_path: pathlib.Path) -> None:
+    path = tmp_path / "broken-rules.json"
+    path.write_text('{\n  "schema": 6,\n  "edges": nope\n}\n', encoding="utf-8")
+
+    with pytest.raises(
+        board_state.BoardError,
+        match=r"invalid JSON at line 3, column 12: Expecting value",
+    ):
+        board_state.TransitionPolicy.load(path)
+
+
+def test_edge_entry_must_be_an_object(tmp_path: pathlib.Path) -> None:
+    path = policy_file(tmp_path, "rules.json")
+    doc = policy_doc(path)
+    doc["edges"]["terry"][0] = []
+    write_policy(path, doc)
+
+    with pytest.raises(board_state.BoardError, match=r"edges.terry\[0\] is not an object"):
+        board_state.TransitionPolicy.load(path)
+
+
+@pytest.mark.parametrize(("edge", "message"), [
+    ({"to": "ready_for_claude"}, "missing from"),
+    ({"from": "backlog"}, "missing to"),
+    ({"from": "backlog", "to": "ready_for_claude", "note": "legacy"},
+     "unknown field.*note"),
+    ({"from": "", "to": "ready_for_claude"}, "from is not a nonempty string"),
+    ({"from": 1, "to": "ready_for_claude"}, "from is not a nonempty string"),
+    ({"from": "backlog", "to": 1}, "to is not a nonempty string"),
+    ({"from": "backlog", "to": "ready_for_claude", "description": []},
+     "description is not a string"),
+])
+def test_edge_fields_are_strictly_validated(
+    tmp_path: pathlib.Path, edge: dict[str, Any], message: str,
+) -> None:
+    path = policy_file(tmp_path, "rules.json")
+    doc = policy_doc(path)
+    doc["edges"]["terry"][0] = edge
+    write_policy(path, doc)
+
+    with pytest.raises(board_state.BoardError, match=message):
+        board_state.TransitionPolicy.load(path)
 
 
 def test_stores_enforce_their_own_transition_policies(
@@ -104,3 +311,22 @@ def test_bad_policy_reload_keeps_last_valid_policy_and_is_reported_once(
     assert message is not None and "changed and was REFUSED" in message
     assert store.policy.rules == accepted
     assert store.reload_policy_if_changed() is None
+
+
+def test_invalid_json_reload_reports_location_and_keeps_valid_policy(
+    tmp_path: pathlib.Path,
+) -> None:
+    rules_path = policy_file(tmp_path, "rules.json")
+    store = make_store(tmp_path, "board", board_state.TransitionPolicy.load(rules_path))
+    accepted = store.policy.rules
+    old_stamp = rules_path.stat().st_mtime_ns
+    rules_path.write_text(
+        '{\n  "schema": 6,\n  "edges": nope\n}\n', encoding="utf-8")
+    os.utime(rules_path,
+             ns=(old_stamp + 1_000_000_000, old_stamp + 1_000_000_000))
+
+    message = store.reload_policy_if_changed()
+
+    assert message is not None
+    assert "invalid JSON at line 3, column 12: Expecting value" in message
+    assert store.policy.rules == accepted

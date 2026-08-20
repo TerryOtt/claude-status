@@ -26,6 +26,29 @@ def test_save_load_round_trip(tmp_path: pathlib.Path) -> None:
     assert board_state.load(path).to_json() == original.to_json()
 
 
+def test_invalid_board_json_reports_parser_location(tmp_path: pathlib.Path) -> None:
+    path = tmp_path / "board.json"
+    path.write_text('{\n  "schema": 2,\n  "items": nope\n}\n', encoding="utf-8")
+
+    with pytest.raises(
+        board_state.BoardError,
+        match=r"board\.json: invalid JSON at line 3, column 12: Expecting value",
+    ):
+        board_state.load(path)
+
+
+def test_duplicate_board_json_key_is_refused(tmp_path: pathlib.Path) -> None:
+    path = tmp_path / "board.json"
+    path.write_text(
+        '{"schema": 2, "schema": 2, "items": []}\n', encoding="utf-8")
+
+    with pytest.raises(
+        board_state.BoardError,
+        match="duplicate JSON object key 'schema'",
+    ):
+        board_state.load(path)
+
+
 def test_legacy_board_without_revision_loads_at_zero(tmp_path: pathlib.Path) -> None:
     path = tmp_path / "board.json"
     board = saved_board(path)

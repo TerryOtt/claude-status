@@ -497,7 +497,10 @@ class BoardStore:
             # tool-level transition policy, and either file may have changed.
             self._board = board_state.load(self.path, self.policy)
             actors = {user.id for user in self._board.users}
-            self.policy, message = self.policy.reload_if_changed(actors)
+            configured_edge_actors = frozenset(
+                (self._board.browser_user, self._board.cli_user))
+            self.policy, message = self.policy.reload_if_changed(
+                actors, configured_edge_actors)
             self._board.policy = self.policy
             return message
 
@@ -3069,7 +3072,7 @@ setInterval(renderLive, 500);
 
 
 def _report_rule_gaps() -> None:
-    """Say how many permission rows still owe a reason. Card #0064.
+    """Say how many permission rows still owe a description. Card #0064.
 
     **Terry wants the rules pedantic enough to pull a sentence out of a human**: *"Tell
     me why actor X should be able to make this card movement."*
@@ -3082,11 +3085,11 @@ def _report_rule_gaps() -> None:
     blank, shared = board_state.rules_gaps()
     if not blank and not shared:
         return
-    print("  rules.json, reasons still owed:")
+    print("  rules.json, edge descriptions still owed:")
     if blank:
-        print(f"      {len(blank)} edge(s) carry NO reason at all")
+        print(f"      {len(blank)} edge(s) carry NO description")
     if shared:
-        print(f"      {len(shared)} edge(s) share ONE reason across both actors")
+        print(f"      {len(shared)} edge(s) share ONE description across both actors")
     print("      Why may THIS actor make THIS move? Each row answers for itself.")
 
 
@@ -3554,7 +3557,7 @@ def main() -> None:
         for problem in bad_edges:
             print(f"      {problem}")
 
-    # **Card #0064. Terry wants the rules pedantic enough to pull a reason out of a
+    # **Card #0064. Terry wants the rules pedantic enough to pull a description out of a
     # human**: *"Tell me why actor X should be able to make this card movement."*
     #
     # **Printed here rather than enforced in the loader.** Refusing to start over an

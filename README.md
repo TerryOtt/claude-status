@@ -17,6 +17,36 @@ The port comes from the board file's own `port` field rather than a flag, so one
 bookmark per project cannot open the wrong board. `board_state.py` is the library and the
 command line; `rules.json` is the permission model and is re-read live.
 
+## Transition permissions
+
+`rules.json` groups allowed transitions under exactly two actor ids. Those ids MUST be
+different and MUST exactly match the board's `browserUser` and `cliUser` values,
+including case:
+
+```
+"edges": {
+  "terry": [
+    {
+      "from": "backlog",
+      "to": "ready_for_claude",
+      "description": "Why Terry may make this move."
+    }
+  ],
+  "claude": [
+    {
+      "from": "ready_for_claude",
+      "to": "in_progress"
+    }
+  ]
+}
+```
+
+Each edge MUST contain string `from` and `to` lane ids, MAY contain a string
+`description`, and MUST contain no other fields. Unknown lanes, self-loops, duplicate
+actor edges, duplicate JSON keys, and actor/config mismatches are rejected. Syntax
+errors report the file, line, column, and parser explanation; structural errors report
+the failing field path.
+
 ## Persistence and the REST API
 
 `api_endpoint.py` is the sole writer while a board is live. The browser and `board_state.py` CLI
