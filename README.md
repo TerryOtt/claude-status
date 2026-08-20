@@ -4,8 +4,14 @@ Claude-Terry swimlane task tracker
 A live, draggable board over one board JSON, served on loopback.
 
 ```
-python serve.py <board.json>
+python serve.py boards/<project>.json
 ```
+
+Real board files kept inside this source checkout MUST live under `boards/`. That
+directory is explicitly ignored because a board contains identities, descriptions,
+comments and audit history. `serve.py` refuses to open a board elsewhere inside this
+public checkout, even if somebody later removes or weakens the ignore rule. Boards in
+separate repositories remain supported as an intentional deployment choice.
 
 The port comes from the board file's own `port` field rather than a flag, so one
 bookmark per project cannot open the wrong board. `status.py` is the library and the

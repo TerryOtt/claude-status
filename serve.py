@@ -78,6 +78,7 @@ import status
 
 HOST = "127.0.0.1"
 CARD_COMMAND_PARTS = 4
+LOCAL_BOARD_DIR = "boards"
 
 
 def build_id() -> str:
@@ -271,6 +272,9 @@ def push_unavailable(board_path: pathlib.Path) -> str:
     repo = _git(["rev-parse", "--show-toplevel"], board_path.parent)
     if repo.returncode != 0:
         return "the board's directory is not a git repository"
+    root = pathlib.Path(repo.stdout.strip())
+    if _git(["check-ignore", "--quiet", "--", str(board_path)], root).returncode == 0:
+        return "the board is ignored by git"
     if not _git(["remote"], board_path.parent).stdout.strip():
         return "the board's repository has no remote"
     return ""
@@ -420,6 +424,27 @@ INLINE = (
 
 # Set once at startup by `main`. One process serves one board.
 BOARD_PATH: pathlib.Path = pathlib.Path("board.json")
+
+
+def source_checkout_board_problem(path: pathlib.Path) -> str:
+    """Refuse sensitive board data outside the ignored directory in this checkout."""
+    source = pathlib.Path(__file__).resolve().parent
+    repo = _git(["rev-parse", "--show-toplevel"], source)
+    if repo.returncode != 0:
+        return ""
+    root = pathlib.Path(repo.stdout.strip()).resolve()
+    try:
+        relative = path.resolve().relative_to(root)
+    except ValueError:
+        return ""
+    safe = root / LOCAL_BOARD_DIR
+    if not relative.parts or relative.parts[0] != LOCAL_BOARD_DIR:
+        return (f"refusing board data outside the dedicated local-data directory; "
+                f"put this board under {safe}")
+    ignored = _git(["check-ignore", "--quiet", "--", str(path)], root)
+    if ignored.returncode == 0:
+        return ""
+    return f"refusing board data because git does not ignore {safe}"
 
 
 class RevisionConflict(status.BoardError):
@@ -3473,6 +3498,9 @@ def main() -> None:
                     help="override the port in the board file")
     args = ap.parse_args()
     BOARD_PATH = args.board.resolve()
+
+    if problem := source_checkout_board_problem(BOARD_PATH):
+        raise SystemExit(f"ERROR: {problem}")
 
     port = args.port or status.DEFAULT_PORT
     print(f"Serving {BOARD_PATH}")

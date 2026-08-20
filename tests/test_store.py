@@ -1,6 +1,7 @@
 """Transactional BoardStore behavior."""
 
 import pathlib
+import subprocess
 from concurrent.futures import ThreadPoolExecutor
 
 import pytest
@@ -95,3 +96,41 @@ def test_same_revision_concurrency_has_one_winner(tmp_path: pathlib.Path) -> Non
     saved = status.load(path)
     assert saved.revision == 1
     assert len(saved.items) == 1
+
+
+def test_source_checkout_requires_ignored_board_directory() -> None:
+    root = pathlib.Path(serve.__file__).resolve().parent
+    assert "refusing board data" in serve.source_checkout_board_problem(
+        root / "sensitive-board.json")
+    assert "refusing board data" in serve.source_checkout_board_problem(
+        root / ".venv" / "private.json")
+    assert serve.source_checkout_board_problem(root / "boards" / "private.json") == ""
+
+
+def test_source_checkout_refuses_boards_directory_when_ignore_rule_is_ineffective(
+        monkeypatch: pytest.MonkeyPatch) -> None:
+    root = pathlib.Path(serve.__file__).resolve().parent
+
+    def fake_git(args: list[str], _cwd: pathlib.Path) -> subprocess.CompletedProcess[str]:
+        if args[:2] == ["rev-parse", "--show-toplevel"]:
+            return subprocess.CompletedProcess(args, 0, str(root), "")
+        if args[:2] == ["check-ignore", "--quiet"]:
+            return subprocess.CompletedProcess(args, 1, "", "")
+        raise AssertionError(f"unexpected git command: {args}")
+
+    monkeypatch.setattr(serve, "_git", fake_git)
+    problem = serve.source_checkout_board_problem(root / "boards" / "private.json")
+    assert "git does not ignore" in problem
+
+
+def test_board_outside_source_checkout_remains_supported(tmp_path: pathlib.Path) -> None:
+    assert serve.source_checkout_board_problem(tmp_path / "board.json") == ""
+
+
+def test_ignored_board_disables_autopush(tmp_path: pathlib.Path) -> None:
+    subprocess.run(["git", "init", "--quiet", str(tmp_path)], check=True)
+    (tmp_path / ".gitignore").write_text("/boards/\n", encoding="utf-8")
+    board = tmp_path / "boards" / "private.json"
+    board.parent.mkdir()
+    assert serve.push_unavailable(board) == (
+        "the board is ignored by git")

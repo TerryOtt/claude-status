@@ -72,6 +72,21 @@ def request_json(url: str, *, token: str | None = None,
     raise AssertionError("request retry fell through")
 
 
+def assert_http_error(request: urllib.request.Request, expected: int) -> None:
+    """Assert an HTTP refusal, retrying one transient Windows socket abort."""
+    for attempt in range(2):
+        try:
+            urllib.request.urlopen(request, timeout=5)
+        except urllib.error.HTTPError as exc:
+            assert exc.code == expected
+            return
+        except ConnectionAbortedError:
+            if attempt:
+                raise
+            time.sleep(0.02)
+    raise AssertionError("request retry fell through")
+
+
 def test_board_and_status_reads(api: RunningApi) -> None:
     status_code, board = request_json(api.base + "/v1/board")
     health_code, health = request_json(api.base + "/v1/status")
@@ -133,14 +148,10 @@ def test_malformed_json_returns_400(api: RunningApi) -> None:
         headers={"Authorization": f"Bearer {serve.BROWSER_TOKEN}",
                  "Content-Type": "application/json",
                  "If-Match": '"revision-0"'})
-    with pytest.raises(urllib.error.HTTPError) as caught:
-        urllib.request.urlopen(request, timeout=5)
-    assert caught.value.code == 400
+    assert_http_error(request, 400)
     assert status.load(api.path).revision == 0
 
 
 def test_unknown_route_returns_404(api: RunningApi) -> None:
     request = urllib.request.Request(api.base + "/v1/unknown", data=b"{}", method="POST")
-    with pytest.raises(urllib.error.HTTPError) as caught:
-        urllib.request.urlopen(request, timeout=5)
-    assert caught.value.code == 404
+    assert_http_error(request, 404)
