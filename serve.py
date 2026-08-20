@@ -454,15 +454,19 @@ class RevisionConflict(status.BoardError):
 class BoardStore:
     """Serialize board commands and publish only snapshots that reached disk."""
 
-    def __init__(self, path: pathlib.Path) -> None:
+    def __init__(
+        self, path: pathlib.Path,
+        policy: status.TransitionPolicy | None = None,
+    ) -> None:
         self.path = path
+        self.policy = policy or status.TransitionPolicy.load()
         self._mutex = threading.RLock()
-        self._board = status.load(path)
+        self._board = status.load(path, self.policy)
 
     def snapshot(self) -> status.Board:
         """Return an isolated current snapshot, refreshing valid external edits."""
         with self._mutex:
-            board = status.load(self.path)
+            board = status.load(self.path, self.policy)
             self._board = board
             return copy.deepcopy(board)
 
@@ -470,7 +474,7 @@ class BoardStore:
                 command: Callable[[status.Board], str]) -> tuple[str, int]:
         """Apply one command under the file lock and commit one new revision."""
         with self._mutex:
-            with status.edit(self.path) as candidate:
+            with status.edit(self.path, self.policy) as candidate:
                 if candidate.revision != expected_revision:
                     raise RevisionConflict(
                         f"board revision is {candidate.revision}, not "
@@ -485,6 +489,17 @@ class BoardStore:
             # `status.edit` saves on exit. Publish in memory only after that succeeds.
             self._board = copy.deepcopy(committed)
             return result, committed.revision
+
+    def reload_policy_if_changed(self) -> str | None:
+        """Adopt a complete rules edit without changing other stores."""
+        with self._mutex:
+            # Refresh users first: actor validation joins per-board users with the
+            # tool-level transition policy, and either file may have changed.
+            self._board = status.load(self.path, self.policy)
+            actors = {user.id for user in self._board.users}
+            self.policy, message = self.policy.reload_if_changed(actors)
+            self._board.policy = self.policy
+            return message
 
 
 STORE: BoardStore | None = None
@@ -3092,6 +3107,8 @@ def payload() -> bytes:
     # `move()`, and that is exactly the news a board must not keep to itself.
     drift = board.verify()
     lanes = board.lanes()
+    policy = board.policy
+    browser_edges = policy.edges_for(board.browser_user)
 
     # **Card #0028. Relationships reach the page as LABELS, never as slugs.** The stored
     # row names `id`s because those are stable; Terry says "#0028" out loud, so the wire
@@ -3125,7 +3142,7 @@ def payload() -> bytes:
             # enforces.** `may_create` is what `/create` calls, so the button cannot
             # offer a lane the POST would refuse. Adding a lane to `create` in
             # `rules.json` grows a `+` with no code change here or in the page.
-            "creatable": status.may_create(status.BROWSER_USER, lane.state),
+            "creatable": policy.may_create(board.browser_user, lane.state),
             # **Card #0063. Counted on the server, beside the flag it counts**, so the
             # checkbox label and the hiding can never disagree about how many.
             "oldCount": sum(1 for i in lane.items if is_old(i)),
@@ -3136,7 +3153,7 @@ def payload() -> bytes:
                 "laneLabel": lane.label,
                 "subject": item.subject,
                 "priority": item.priority,
-                "priorityLabel": status.PRIORITY_LABEL.get(item.priority, ""),
+                "priorityLabel": policy.priority_label.get(item.priority, ""),
                 # **Card #0063.** Computed on the SERVER so one clock decides it, and
                 # so the 24-hour rule lives in exactly one place. The page re-fetches
                 # twice a second, so a card ages out on its own without a reload.
@@ -3161,7 +3178,7 @@ def payload() -> bytes:
                 "owner": item.owner,
                 # **Computed on the SERVER from the same table the server enforces**,
                 # so the cursor and the answer cannot disagree.
-                "draggable": any(a == item.state for a, _ in status.BROWSER_EDGES),
+                "draggable": any(a == item.state for a, _ in browser_edges),
                 "comments": [{"by": c.by, "when": when(c.at),
                               "text": inline(c.text)} for c in item.comments],
                 # **Newest first.** Terry: "needs to be newest at top (most
@@ -3178,8 +3195,8 @@ def payload() -> bytes:
                 # absent on a lane move. Card #0053.
                 "history": [{"by": h.by, "when": when(h.at),
                              "from": h.frm,
-                             "fromLabel": status.LANE_LABEL.get(h.frm or "", ""),
-                             "toLabel": status.LANE_LABEL.get(h.to, h.to),
+                             "fromLabel": policy.lane_label.get(h.frm or "", ""),
+                             "toLabel": policy.lane_label.get(h.to, h.to),
                              "ownerFrom": h.owner_frm,
                              "ownerTo": h.owner_to,
                              # Card #0070, the third entry shape.
@@ -3188,13 +3205,13 @@ def payload() -> bytes:
                             for h in reversed(item.history)],
             } for item in lane.items],
         } for lane in lanes],
-        "edges": sorted(status.BROWSER_EDGES),
+        "edges": sorted(browser_edges),
         # **The priority list ships from `rules.json`, never typed into the page.**
         # A range written in HTML is a second copy that goes stale silently -- and it
         # already nearly did: card #0047 was specified as "P1-P5" while `P0` exists.
-        "priorities": [{"id": p, "label": status.PRIORITY_LABEL.get(p, "")}
-                       for p in status.PRIORITIES],
-        "defaultPriority": status.DEFAULT_PRIORITY,
+        "priorities": [{"id": p, "label": policy.priority_label.get(p, "")}
+                       for p in policy.priorities],
+        "defaultPriority": policy.default_priority,
         # **The actor list ships from the server, never typed into the page.** Card
         # #0069, and the same rule the priorities already follow. **Card #0072 made it
         # configurable**, so a page naming Terry and Claude in markup would go stale the
@@ -3204,11 +3221,11 @@ def payload() -> bytes:
         # call worked for two lowercase ids and would have rendered `mcallister` as
         # `Mcallister`, which is a name spelled wrong on every card that person touches.
         "actors": [{"id": u.id, "label": u.label, "class": u.user_class,
-                    "color": u.color} for u in status.USERS],
+                    "color": u.color} for u in board.users],
         # **Who the PAGE writes as.** It labels the comment button and the new-card
         # note, both of which said "Terry" in markup until this card.
-        "browserUser": status.BROWSER_USER,
-        "defaultOwner": status.DEFAULT_OWNER,
+        "browserUser": board.browser_user,
+        "defaultOwner": board.default_owner,
         "counts": counts,
         "error": "; ".join(drift) if drift else None,
     }).encode("utf-8")
@@ -3312,13 +3329,17 @@ class Handler(http.server.BaseHTTPRequestHandler):
             #
             # Cost is one `stat` on a local file per poll, beside the board `stat` and
             # a 12 KB JSON parse that already happen here.
-            reloaded = status.reload_rules_if_changed()
+            reloaded = (STORE.reload_policy_if_changed() if STORE is not None
+                        else status.reload_rules_if_changed())
             if reloaded:
                 print(f"  {reloaded}", flush=True)
 
             try:
                 mtime = BOARD_PATH.stat().st_mtime
-                status.load(BOARD_PATH)
+                if STORE is not None:
+                    STORE.snapshot()
+                else:
+                    status.load(BOARD_PATH)
             except (OSError, status.BoardError, json.JSONDecodeError) as exc:
                 # **`build` rides on the FAILURE path too.** An unreadable board and a
                 # stale tab are independent problems, and the page must be able to tell
@@ -3424,7 +3445,9 @@ class Handler(http.server.BaseHTTPRequestHandler):
                     item_id = str(body.get("id") or slug_for(board, subject))
                     return board.create(
                         item_id, subject, state, actor,
-                        priority=str(body.get("priority") or status.DEFAULT_PRIORITY),
+                        priority=str(body.get("priority") or (
+                            STORE.policy.default_priority if STORE is not None
+                            else status.DEFAULT_PRIORITY)),
                         detail=str(body.get("detail") or ""),
                         owner=status.as_actor(str(body.get("owner") or status.DEFAULT_OWNER)),
                     )
