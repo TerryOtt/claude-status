@@ -917,7 +917,7 @@ PAGE = """<!doctype html>
      group-separation distance rather than two similar ones**, and the mark reads as
      belonging to the name rather than to the heartbeat. Both numbers are absolute, so
      a larger title cannot move either -- the property card #0058 relied on. */
-  #brandtitle { display: flex; align-items: center; gap: 6px; margin-left: 22px; }
+  #brandtitle { display: flex; align-items: center; gap: 10px; margin-left: 22px; }
   #brand { width: 28px; height: 22px; flex: 0 0 auto;
            background-image: url("%BRANDURI%");
            background-size: contain; background-repeat: no-repeat; }
