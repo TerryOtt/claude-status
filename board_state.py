@@ -170,7 +170,7 @@ def as_actor(value: str) -> Actor:
     **THE ONE PLACE A STRING BECOMES AN ACTOR**, and it exists because pyright found
     the same defect from two directions at once on 2026-08-19.
 
-    `serve.py`'s `/assign` route passed `str(body["owner"])` straight into `assign()`,
+    `api_endpoint.py`'s `/assign` route passed `str(body["owner"])` straight into `assign()`,
     whose parameter is annotated `Actor`. **The annotation was a lie at that call
     site**, and the browser could name any owner it liked. Meanwhile pyright reported
     `assign()`'s own `if owner not in ACTORS` guard as UNREACHABLE -- because the
@@ -333,7 +333,7 @@ def _index_edges(
 
     **`inbound` and `outbound` are still BUILT, and that is why nothing else changed.**
     The FILE stopped storing each edge twice; this index still answers both questions, so
-    `serve.py`, `may_move` and `edges_for` never learned that the format moved.
+    `api_endpoint.py`, `may_move` and `edges_for` never learned that the format moved.
 
     **Extracted from `_load_rules`**, which ruff correctly called too branchy once the
     edge validation landed in it -- the same call it made on `Board.from_json` an hour
@@ -442,7 +442,7 @@ def _pick_role(
     """Resolve `browserUser` or `cliUser`: configured if named, derived if unambiguous.
 
     **It REFUSES rather than guesses when there is a choice.** Terry's open question on
-    card #0072 is exactly this: *"serve.py posts browser comments as terry because
+    card #0072 is exactly this: *"api_endpoint.py posts browser comments as terry because
     loopback proves it is him. With two humans configured, that assumption breaks. Who is
     the browser?"*
 
@@ -719,9 +719,9 @@ USER_LABEL: dict[str, str] = {}
 USER_CLASS: dict[str, str] = {}
 USER_COLOR: dict[str, str] = {}
 
-#: Who `serve.py` writes as. Loopback proves the request came from this machine.
+#: Who `api_endpoint.py` writes as. Loopback proves the request came from this machine.
 BROWSER_USER: str = ""
-#: Who `status.py` writes as. **There is no flag to say otherwise** -- see `main`.
+#: Who `board_state.py` writes as. **There is no flag to say otherwise** -- see `main`.
 CLI_USER: str = ""
 #: Who a new card lands on when nobody says.
 DEFAULT_OWNER: str = ""
@@ -782,7 +782,7 @@ def rules_gaps(path: pathlib.Path = RULES_PATH) -> tuple[list[str], list[str]]:
     plausible filler to unblock itself -- which is worse than a blank, because filler
     reads as considered.
 
-    **So it is counted and shown instead.** `serve.py` prints it at startup, where Terry
+    **So it is counted and shown instead.** `api_endpoint.py` prints it at startup, where Terry
     already reads the permission table.
 
     **A SHARED reason is reported separately from a missing one.** They are different
@@ -926,7 +926,7 @@ def reload_rules_if_changed() -> str | None:
     """
     # **Nine globals rebound, and `global` is correct here rather than a smell.** The
     # rest of this module reads these names directly, and every caller reaches them as
-    # `status.RULES`, so **rebinding the module attribute IS the delivery mechanism.**
+    # `board_state.RULES`, so **rebinding the module attribute IS the delivery mechanism.**
     #
     # **PLW0603 is suppressed for one function, deliberately.** The lint is right in
     # general: global rebinding is hard to reason about. The alternative here is a
@@ -985,7 +985,7 @@ def lane_class(
 
     **It returned the literal `terry` or `claude` until card #0072**, which meant the
     stylesheet needed one hard-coded rule per person. It now returns the id of the SOLE
-    actor when there is one, and `serve.py` emits a CSS variable per configured user --
+    actor when there is one, and `api_endpoint.py` emits a CSS variable per configured user --
     so a third person gets their color with no stylesheet edit.
 
     **A lane SEVERAL actors share falls back to the browser's own user, and that is
@@ -1606,7 +1606,7 @@ class Board:
 
     # **THE CAST LIVES WITH THE DATA, NOT WITH THE CODE. Card #0083.**
     #
-    # Card #0072 put users in `rules.json`, which sits next to `status.py` inside the
+    # Card #0072 put users in `rules.json`, which sits next to `board_state.py` inside the
     # TOOL repository. **Terry called that "per-project cfg" and it is really
     # per-DEPLOYMENT**: a second person adding themselves would be editing a file inside
     # a repository they cloned, carrying that edit across every `git pull` forever.
@@ -1625,7 +1625,7 @@ class Board:
 
     def to_json(self) -> dict[str, Any]:
         # **THE USERS MUST BE WRITTEN BACK OR THE FIRST SAVE DELETES THEM.** Card #0083.
-        # `save()` rewrites the WHOLE file from this dict, and `serve.py` pushes it five
+        # `save()` rewrites the WHOLE file from this dict, and `api_endpoint.py` pushes it five
         # seconds later -- so a forgotten key here would erase the cast, commit the
         # erasure, and the next load would refuse to start.
         out: dict[str, Any] = {
@@ -2346,7 +2346,7 @@ def locked(path: pathlib.Path) -> Iterator[None]:
     test and set."* **It is needed, and the race is real rather than theoretical.**
 
     **Two writers exist and both rewrite the WHOLE file.** Terry's drag goes through
-    the server's `do_POST`; Claude's edits go through `status.py --move`. Each loads
+    the server's `do_POST`; Claude's edits go through `board_state.py --move`. Each loads
     the entire board, mutates it and saves it. Overlap them and the second save
     silently discards everything the first one did -- a lost update, and the atomic
     rename in `save()` makes that outcome CLEANER rather than safer, because the
@@ -2453,7 +2453,7 @@ def save(board: Board, path: pathlib.Path) -> None:
 
 
 # **MEASURED, not guessed: 7 failures in 400 saves, 1.75%.** Reproduced 2026-08-19 by
-# hammering `save()` on the SMB share while a `serve.py` polled the same file.
+# hammering `save()` on the SMB share while a `api_endpoint.py` polled the same file.
 #
 # Roughly 47 saves a second there, so the window is small and real. `X:` is an SMB
 # share and the server opens `board.json` every `POLL_MS = 400`; on Windows

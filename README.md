@@ -4,22 +4,22 @@ Claude-Terry swimlane task tracker
 A live, draggable board over one board JSON, served on loopback.
 
 ```
-python serve.py boards/<project>.json
+python api_endpoint.py boards/<project>.json
 ```
 
 Real board files kept inside this source checkout MUST live under `boards/`. That
 directory is explicitly ignored because a board contains identities, descriptions,
-comments and audit history. `serve.py` refuses to open a board elsewhere inside this
+comments and audit history. `api_endpoint.py` refuses to open a board elsewhere inside this
 public checkout, even if somebody later removes or weakens the ignore rule. Boards in
 separate repositories remain supported as an intentional deployment choice.
 
 The port comes from the board file's own `port` field rather than a flag, so one
-bookmark per project cannot open the wrong board. `status.py` is the library and the
+bookmark per project cannot open the wrong board. `board_state.py` is the library and the
 command line; `rules.json` is the permission model and is re-read live.
 
 ## Persistence and the REST API
 
-`serve.py` is the sole writer while a board is live. The browser and `status.py` CLI
+`api_endpoint.py` is the sole writer while a board is live. The browser and `board_state.py` CLI
 send domain commands to its loopback REST API; neither submits a replacement board.
 Each successful command validates the model, increments the board's monotonic
 `revision`, flushes a temporary JSON file and atomically replaces the prior snapshot.

@@ -6,24 +6,24 @@ import pathlib
 import pytest
 from conftest import USERS
 
-import status
+import board_state
 
 
-def saved_board(path: pathlib.Path) -> status.Board:
+def saved_board(path: pathlib.Path) -> board_state.Board:
     """Write one representative board and return it."""
-    board = status.Board(project="Round trip", revision=7, users=USERS,
+    board = board_state.Board(project="Round trip", revision=7, users=USERS,
                          browser_user="terry", cli_user="claude",
                          default_owner="claude")
     board.create("alpha", "Alpha", "backlog", "claude", detail="Detail")
     board.comment("alpha", "Comment", "claude")
-    status.save(board, path)
+    board_state.save(board, path)
     return board
 
 
 def test_save_load_round_trip(tmp_path: pathlib.Path) -> None:
     path = tmp_path / "board.json"
     original = saved_board(path)
-    assert status.load(path).to_json() == original.to_json()
+    assert board_state.load(path).to_json() == original.to_json()
 
 
 def test_legacy_board_without_revision_loads_at_zero(tmp_path: pathlib.Path) -> None:
@@ -32,7 +32,7 @@ def test_legacy_board_without_revision_loads_at_zero(tmp_path: pathlib.Path) -> 
     raw = board.to_json()
     del raw["revision"]
     path.write_text(json.dumps(raw), encoding="utf-8")
-    assert status.load(path).revision == 0
+    assert board_state.load(path).revision == 0
 
 
 @pytest.mark.parametrize("revision", [-1, "1", 1.5, None])
@@ -42,8 +42,8 @@ def test_invalid_revision_is_refused(tmp_path: pathlib.Path, revision: object) -
     raw = board.to_json()
     raw["revision"] = revision
     path.write_text(json.dumps(raw), encoding="utf-8")
-    with pytest.raises(status.BoardError, match="revision"):
-        status.load(path)
+    with pytest.raises(board_state.BoardError, match="revision"):
+        board_state.load(path)
 
 
 def test_duplicate_id_is_refused(tmp_path: pathlib.Path) -> None:
@@ -52,8 +52,8 @@ def test_duplicate_id_is_refused(tmp_path: pathlib.Path) -> None:
     raw = board.to_json()
     raw["items"].append(dict(raw["items"][0]))
     path.write_text(json.dumps(raw), encoding="utf-8")
-    with pytest.raises(status.BoardError, match="duplicate id"):
-        status.load(path)
+    with pytest.raises(board_state.BoardError, match="duplicate id"):
+        board_state.load(path)
 
 
 def test_duplicate_ticket_is_refused(tmp_path: pathlib.Path) -> None:
@@ -64,8 +64,8 @@ def test_duplicate_ticket_is_refused(tmp_path: pathlib.Path) -> None:
     duplicate["id"] = "beta"
     raw["items"].append(duplicate)
     path.write_text(json.dumps(raw), encoding="utf-8")
-    with pytest.raises(status.BoardError, match="duplicate ticket"):
-        status.load(path)
+    with pytest.raises(board_state.BoardError, match="duplicate ticket"):
+        board_state.load(path)
 
 
 def test_rewound_ticket_counter_is_refused(tmp_path: pathlib.Path) -> None:
@@ -74,8 +74,8 @@ def test_rewound_ticket_counter_is_refused(tmp_path: pathlib.Path) -> None:
     raw = board.to_json()
     raw["nextTicket"] = 1
     path.write_text(json.dumps(raw), encoding="utf-8")
-    with pytest.raises(status.BoardError, match="counter went backwards"):
-        status.load(path)
+    with pytest.raises(board_state.BoardError, match="counter went backwards"):
+        board_state.load(path)
 
 
 def test_unknown_parent_is_refused(tmp_path: pathlib.Path) -> None:
@@ -84,38 +84,38 @@ def test_unknown_parent_is_refused(tmp_path: pathlib.Path) -> None:
     raw = board.to_json()
     raw["items"][0]["parent"] = "missing"
     path.write_text(json.dumps(raw), encoding="utf-8")
-    with pytest.raises(status.BoardError, match="unknown parent"):
-        status.load(path)
+    with pytest.raises(board_state.BoardError, match="unknown parent"):
+        board_state.load(path)
 
 
 def test_failed_replace_leaves_previous_snapshot(
         tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch) -> None:
     path = tmp_path / "board.json"
     original = saved_board(path).to_json()
-    changed = status.load(path)
+    changed = board_state.load(path)
     changed.project = "Changed"
 
     def fail_replace(_tmp: pathlib.Path, _target: pathlib.Path) -> None:
         raise OSError("injected replacement failure")
 
-    monkeypatch.setattr(status, "_replace_with_retry", fail_replace)
+    monkeypatch.setattr(board_state, "_replace_with_retry", fail_replace)
     with pytest.raises(OSError, match="injected"):
-        status.save(changed, path)
-    assert status.load(path).to_json() == original
+        board_state.save(changed, path)
+    assert board_state.load(path).to_json() == original
     assert not list(tmp_path.glob("*.tmp*"))
 
 
 def test_edit_locks_load_mutate_save_as_one_operation(tmp_path: pathlib.Path) -> None:
     path = tmp_path / "board.json"
     saved_board(path)
-    with status.edit(path) as board:
+    with board_state.edit(path) as board:
         board.project = "Committed"
-    assert status.load(path).project == "Committed"
+    assert board_state.load(path).project == "Committed"
 
 
 def test_check_edges_reports_no_inconsistent_permissions() -> None:
-    assert status.check_edges() == []
+    assert board_state.check_edges() == []
 
 
 def test_sort_self_check_is_clean() -> None:
-    assert status.self_test_sort() == []
+    assert board_state.self_test_sort() == []

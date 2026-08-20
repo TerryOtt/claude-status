@@ -1,6 +1,6 @@
 """A live, draggable swimlane board over one board JSON, served on loopback.
 
-    python serve.py path/to/board.json
+    python api_endpoint.py path/to/board.json
     then open the URL it prints
 
 **RFC 2119 keywords, and the capitals are load-bearing.**
@@ -31,7 +31,7 @@ being provable.
 **This server binds to loopback.** Whoever reaches it is at his machine, so a drag IS
 Terry: no identity to forge, no token to leak, and `by` in the history can be trusted.
 
-**Permission is re-checked in `status.Board.move`, not here.** The page carries the edge
+**Permission is re-checked in `board_state.Board.move`, not here.** The page carries the edge
 list only so the cursor can answer without a round trip. **A guard that lives only in
 the client is decoration** -- and one that lives only in the server leaves the library
 Claude uses wide open, which is exactly what happened on the first version.
@@ -40,7 +40,7 @@ Claude uses wide open, which is exactly what happened on the first version.
 
 **A change to the BOARD FILE is live**, picked up within `POLL_MS`.
 
-**A change to THIS FILE or to `status.py` needs a RESTART.**
+**A change to THIS FILE or to `board_state.py` needs a RESTART.**
 
 **A change to the PAGE needs a BROWSER RELOAD on top of that.** The open tab still runs
 the script it was served, which produces a genuinely confusing halfway state: cards
@@ -74,7 +74,7 @@ import time
 import urllib.parse
 from collections.abc import Callable
 
-import status
+import board_state
 
 HOST = "127.0.0.1"
 CARD_COMMAND_PARTS = 4
@@ -84,7 +84,7 @@ LOCAL_BOARD_DIR = "boards"
 def build_id() -> str:
     """What this checkout is, for the stale-page check. Never raises.
 
-    **`git` is asked in serve.py's OWN directory**, not the working directory, because
+    **`git` is asked in api_endpoint.py's OWN directory**, not the working directory, because
     the tool and the board data live in different repositories and the caller is usually
     standing in neither.
 
@@ -130,7 +130,7 @@ BUILD = build_id()
 # correct, and which means **a stale SERVER makes the tab and the server AGREE.**
 # `drifted` is false and `#stale` stays hidden.
 #
-# **That is not theoretical. It bit twice on 2026-08-19.** `serve.py` was edited,
+# **That is not theoretical. It bit twice on 2026-08-19.** `api_endpoint.py` was edited,
 # committed and pushed while the process kept serving the old page with no flag. Then
 # `rules.json` gained an actor and the board went on showing the old lane owners --
 # **Terry noticed before any instrument did**, and his first guess was that the rule
@@ -155,10 +155,10 @@ BUILD = build_id()
 # not raise a banner Terry cannot act on -- **the same reason the toolchain check
 # refuses to shout on anything it has not confirmed.**
 # `module.__file__` is `str | None` to a type checker -- None for a namespace package,
-# which `status` is not. Falling back to this file keeps the annotation honest without
+# which `board_state` is not. Falling back to this file keeps the annotation honest without
 # pretending the impossible case cannot be typed.
 CODE_FILES = (pathlib.Path(__file__).resolve(),
-              pathlib.Path(status.__file__ or __file__).resolve())
+              pathlib.Path(board_state.__file__ or __file__).resolve())
 
 
 def _code_stamp() -> tuple[tuple[float, str], ...]:
@@ -297,7 +297,7 @@ def push_board(board_path: pathlib.Path) -> tuple[bool, str]:
     stamp = f"{when:%Y-%m-%d %I:%M:%S}" + f"{when:%p}".lower()
     message = (
         f"Board: automatic snapshot {stamp}\n\n"
-        "Written by serve.py's autopush thread, not by a person. The card's own\n"
+        "Written by api_endpoint.py's autopush thread, not by a person. The card's own\n"
         "history array carries the per-move audit, so this commit exists for\n"
         "durability rather than for granularity.\n")
     add = _git(["add", "--", str(board_path)], cwd)
@@ -447,7 +447,7 @@ def source_checkout_board_problem(path: pathlib.Path) -> str:
     return f"refusing board data because git does not ignore {safe}"
 
 
-class RevisionConflict(status.BoardError):
+class RevisionConflict(board_state.BoardError):
     """A command was based on a board snapshot that is no longer current."""
 
 
@@ -456,25 +456,25 @@ class BoardStore:
 
     def __init__(
         self, path: pathlib.Path,
-        policy: status.TransitionPolicy | None = None,
+        policy: board_state.TransitionPolicy | None = None,
     ) -> None:
         self.path = path
-        self.policy = policy or status.TransitionPolicy.load()
+        self.policy = policy or board_state.TransitionPolicy.load()
         self._mutex = threading.RLock()
-        self._board = status.load(path, self.policy)
+        self._board = board_state.load(path, self.policy)
 
-    def snapshot(self) -> status.Board:
+    def snapshot(self) -> board_state.Board:
         """Return an isolated current snapshot, refreshing valid external edits."""
         with self._mutex:
-            board = status.load(self.path, self.policy)
+            board = board_state.load(self.path, self.policy)
             self._board = board
             return copy.deepcopy(board)
 
     def execute(self, expected_revision: int,
-                command: Callable[[status.Board], str]) -> tuple[str, int]:
+                command: Callable[[board_state.Board], str]) -> tuple[str, int]:
         """Apply one command under the file lock and commit one new revision."""
         with self._mutex:
-            with status.edit(self.path, self.policy) as candidate:
+            with board_state.edit(self.path, self.policy) as candidate:
                 if candidate.revision != expected_revision:
                     raise RevisionConflict(
                         f"board revision is {candidate.revision}, not "
@@ -482,11 +482,11 @@ class BoardStore:
                 result = command(candidate)
                 problems = candidate.verify()
                 if problems:
-                    raise status.BoardError(
+                    raise board_state.BoardError(
                         "command would leave an invalid board: " + "; ".join(problems))
                 candidate.revision += 1
                 committed = candidate
-            # `status.edit` saves on exit. Publish in memory only after that succeeds.
+            # `board_state.edit` saves on exit. Publish in memory only after that succeeds.
             self._board = copy.deepcopy(committed)
             return result, committed.revision
 
@@ -495,7 +495,7 @@ class BoardStore:
         with self._mutex:
             # Refresh users first: actor validation joins per-board users with the
             # tool-level transition policy, and either file may have changed.
-            self._board = status.load(self.path, self.policy)
+            self._board = board_state.load(self.path, self.policy)
             actors = {user.id for user in self._board.users}
             self.policy, message = self.policy.reload_if_changed(actors)
             self._board.policy = self.policy
@@ -509,7 +509,7 @@ CLI_TOKEN = secrets.token_urlsafe(32)
 
 def service_file(path: pathlib.Path) -> pathlib.Path:
     """Machine-local rendezvous file used by the CLI to find this service."""
-    return status.service_descriptor_path(path)
+    return board_state.service_descriptor_path(path)
 
 
 def publish_service(path: pathlib.Path, port: int) -> None:
@@ -638,7 +638,7 @@ def inline(text: str) -> str:
 OLD_AFTER = datetime.timedelta(hours=24)
 
 
-def is_old(item: "status.Item") -> bool:
+def is_old(item: "board_state.Item") -> bool:
     """Whether a COMPLETED card has sat there long enough to hide. **Card #0063.**
 
     **Measured from when it ENTERED `completed`, not from when it was created.** A card
@@ -658,7 +658,7 @@ def is_old(item: "status.Item") -> bool:
     since = item.state_since
     if since is None:
         return False
-    return datetime.datetime.now().astimezone() - status.parse_stamp(since) >= OLD_AFTER
+    return datetime.datetime.now().astimezone() - board_state.parse_stamp(since) >= OLD_AFTER
 
 
 #: Where sRGB's transfer curve switches from its linear foot to the power segment.
@@ -735,16 +735,16 @@ def user_css() -> str:
     today; the whole point of the card is that it stops being a fixed number.
     """
     lines = []
-    for u in status.USERS:
+    for u in board_state.USERS:
         lines.append(f"  --user-{u.id}: {u.color};")
         # **A second variable per user, card #0089.** The accent paints borders and
         # fills, where a light color is fine. The ink paints NAMES on white, where it
         # is not. See `readable_on_white`.
         lines.append(f"  --user-{u.id}-ink: {readable_on_white(u.color)};")
-    lines.append(f"  --accent: var(--user-{status.BROWSER_USER});")
+    lines.append(f"  --accent: var(--user-{board_state.BROWSER_USER});")
     out = [":root {", *lines, "}"]
 
-    for u in status.USERS:
+    for u in board_state.USERS:
         var = f"var(--user-{u.id})"
         ink = f"var(--user-{u.id}-ink)"
         out += [
@@ -827,7 +827,7 @@ PAGE = """<!doctype html>
      server having answered 200 the whole time. -->
 <link rel="icon" type="image/svg+xml" href="/favicon.svg?v=%BUILD%">
 <style>
-  /* Inter, served from this repository. See the FONTS note in serve.py. */
+  /* Inter, served from this repository. See the FONTS note in api_endpoint.py. */
   @font-face {
     font-family: 'Inter'; font-style: normal; font-weight: 100 900;
     font-display: swap; src: url('/fonts/Inter-latin.woff2') format('woff2');
@@ -2806,7 +2806,7 @@ let lastOk = 0;
 let fileMs = 0;
 
 // **`lastOk` moves ONLY when Python confirms it read and parsed the board.** The
-// `/mtime` route performs a real `status.load()`, and its `ok` field is what this
+// `/mtime` route performs a real `board_state.load()`, and its `ok` field is what this
 // keys on -- not the HTTP status, because a socket answering proves the process is
 // up and nothing about the file.
 const LIVE_MS  = 5000;   // Terry's number: "read that file within last 5 seconds".
@@ -3079,7 +3079,7 @@ def _report_rule_gaps() -> None:
     considered. **A number he sees at every start is the pressure**; a blocked server is
     just a blocked server.
     """
-    blank, shared = status.rules_gaps()
+    blank, shared = board_state.rules_gaps()
     if not blank and not shared:
         return
     print("  rules.json, reasons still owed:")
@@ -3097,8 +3097,8 @@ def payload() -> bytes:
     because a blank tab and a broken parser look identical and one of them is a lie.
     """
     try:
-        board = STORE.snapshot() if STORE is not None else status.load(BOARD_PATH)
-    except (status.BoardError, OSError, json.JSONDecodeError) as exc:
+        board = STORE.snapshot() if STORE is not None else board_state.load(BOARD_PATH)
+    except (board_state.BoardError, OSError, json.JSONDecodeError) as exc:
         return json.dumps({"lanes": [], "edges": [], "counts": {},
                            "error": str(exc)}).encode("utf-8")
 
@@ -3187,7 +3187,7 @@ def payload() -> bytes:
                 # permanent record is the recent end, and a long trail otherwise
                 # buries the entry you opened the card to read.
                 #
-                # **Reversed HERE rather than in `status.py`.** The stored order is
+                # **Reversed HERE rather than in `board_state.py`.** The stored order is
                 # chronological and `verify()` replays it forwards; flipping the
                 # model to suit a drawer would break the audit.
                 # **Ownership entries ride the SAME list**, because the trail is one
@@ -3234,7 +3234,7 @@ def payload() -> bytes:
 SLUG_MAX = 48
 
 
-def slug_for(board: status.Board, subject: str) -> str:
+def slug_for(board: board_state.Board, subject: str) -> str:
     """A card id derived from its title, unique on this board.
 
     **The CLI makes Claude type a slug and the web form MUST NOT.** Terry is writing
@@ -3282,13 +3282,13 @@ class Handler(http.server.BaseHTTPRequestHandler):
             return None
         return body if isinstance(body, dict) else None
 
-    def _actor(self) -> status.Actor | None:
+    def _actor(self) -> board_state.Actor | None:
         """Map a bearer credential to a configured actor; never trust body data."""
         auth = self.headers.get("Authorization", "")
         if auth == f"Bearer {BROWSER_TOKEN}":
-            return status.BROWSER_USER
+            return board_state.BROWSER_USER
         if auth == f"Bearer {CLI_TOKEN}":
-            return status.CLI_USER
+            return board_state.CLI_USER
         return None
 
     def _expected_revision(self) -> int | None:
@@ -3330,7 +3330,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
             # Cost is one `stat` on a local file per poll, beside the board `stat` and
             # a 12 KB JSON parse that already happen here.
             reloaded = (STORE.reload_policy_if_changed() if STORE is not None
-                        else status.reload_rules_if_changed())
+                        else board_state.reload_rules_if_changed())
             if reloaded:
                 print(f"  {reloaded}", flush=True)
 
@@ -3339,8 +3339,8 @@ class Handler(http.server.BaseHTTPRequestHandler):
                 if STORE is not None:
                     STORE.snapshot()
                 else:
-                    status.load(BOARD_PATH)
-            except (OSError, status.BoardError, json.JSONDecodeError) as exc:
+                    board_state.load(BOARD_PATH)
+            except (OSError, board_state.BoardError, json.JSONDecodeError) as exc:
                 # **`build` rides on the FAILURE path too.** An unreadable board and a
                 # stale tab are independent problems, and the page must be able to tell
                 # them apart while one of them is happening.
@@ -3386,9 +3386,9 @@ class Handler(http.server.BaseHTTPRequestHandler):
             # **A broken board still serves its page.** The title falls back and
             # `/data` carries the real error to the banner.
             title = "Work board"
-            with contextlib.suppress(status.BoardError, OSError,
+            with contextlib.suppress(board_state.BoardError, OSError,
                                      json.JSONDecodeError):
-                title = status.load(BOARD_PATH).project or title
+                title = board_state.load(BOARD_PATH).project or title
             # **`%BUILD%` is baked into the page at request time**, so the constant the
             # JavaScript holds describes the code THIS tab loaded -- which is the whole
             # comparison. Fetching it later would just re-read the server and always agree.
@@ -3434,28 +3434,29 @@ class Handler(http.server.BaseHTTPRequestHandler):
 
         try:
             if STORE is None:
-                raise status.BoardError("board store is not initialized")
+                raise board_state.BoardError("board store is not initialized")
 
-            def mutate(board: status.Board) -> str:  # noqa: PLR0911, PLR0912
+            def mutate(board: board_state.Board) -> str:  # noqa: PLR0911, PLR0912
                 if is_create:
                     state = str(body["state"])
                     subject = str(body["subject"]).strip()
                     if not subject:
-                        raise status.BoardError("a card needs a title")
+                        raise board_state.BoardError("a card needs a title")
                     item_id = str(body.get("id") or slug_for(board, subject))
                     return board.create(
                         item_id, subject, state, actor,
                         priority=str(body.get("priority") or (
                             STORE.policy.default_priority if STORE is not None
-                            else status.DEFAULT_PRIORITY)),
+                            else board_state.DEFAULT_PRIORITY)),
                         detail=str(body.get("detail") or ""),
-                        owner=status.as_actor(str(body.get("owner") or status.DEFAULT_OWNER)),
+                        owner=board_state.as_actor(
+                            str(body.get("owner") or board_state.DEFAULT_OWNER)),
                     )
                 if is_project:
                     was = board.project
                     name = str(body["project"]).strip()
                     if not name:
-                        raise status.BoardError("a project needs a name")
+                        raise board_state.BoardError("a project needs a name")
                     board.project = name
                     return f"project renamed: {was!r} -> {name!r}"
 
@@ -3465,7 +3466,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
                 if action == "comment":
                     return board.comment(ref, str(body["text"]), actor)
                 if action == "assign":
-                    return board.assign(ref, status.as_actor(str(body["owner"])), actor)
+                    return board.assign(ref, board_state.as_actor(str(body["owner"])), actor)
                 if action == "priority":
                     return board.set_priority(ref, str(body["priority"]).upper(), actor)
                 if action == "subject":
@@ -3480,7 +3481,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
                     if body.get("remove"):
                         return board.unlink(ref, kind, other, actor)
                     return board.link(ref, kind, other, actor)
-                raise status.BoardError(f"unknown card command {action!r}")
+                raise board_state.BoardError(f"unknown card command {action!r}")
 
             result, revision = STORE.execute(expected, mutate)
         except KeyError as exc:
@@ -3489,7 +3490,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
         except RevisionConflict as exc:
             self._json({"error": str(exc)}, 412)
             return
-        except (status.BoardError, OSError, json.JSONDecodeError) as exc:
+        except (board_state.BoardError, OSError, json.JSONDecodeError) as exc:
             self._json({"error": str(exc)}, 409)
             return
 
@@ -3525,10 +3526,10 @@ def main() -> None:
     if problem := source_checkout_board_problem(BOARD_PATH):
         raise SystemExit(f"ERROR: {problem}")
 
-    port = args.port or status.DEFAULT_PORT
+    port = args.port or board_state.DEFAULT_PORT
     print(f"Serving {BOARD_PATH}")
     try:
-        board = status.load(BOARD_PATH)
+        board = board_state.load(BOARD_PATH)
         STORE = BoardStore(BOARD_PATH)
         if args.port is None:
             port = board.port
@@ -3541,13 +3542,13 @@ def main() -> None:
             print(f"  DRIFT: {len(drift)} item(s) disagree with their own history:")
             for problem in drift:
                 print(f"      {problem}")
-    except (status.BoardError, OSError, json.JSONDecodeError) as exc:
+    except (board_state.BoardError, OSError, json.JSONDecodeError) as exc:
         # **Loud, and it still serves.** The page renders the same message, so the
         # failure is visible in both places rather than as an empty board.
         print(f"  WARNING: {exc}")
         print("  The page will say so rather than look empty.")
 
-    bad_edges = status.check_edges()
+    bad_edges = board_state.check_edges()
     if bad_edges:
         print(f"  PERMISSION TABLE INCONSISTENT, {len(bad_edges)} problem(s):")
         for problem in bad_edges:
@@ -3569,8 +3570,8 @@ def main() -> None:
 
     print(f"  view      : http://{HOST}:{port}/")
     print(f"  polling   : every {POLL_MS} ms, repaints only when the file changes")
-    print(f"  {status.USER_LABEL[status.BROWSER_USER]} may drag:")
-    for a, b in sorted(status.BROWSER_EDGES):
+    print(f"  {board_state.USER_LABEL[board_state.BROWSER_USER]} may drag:")
+    for a, b in sorted(board_state.BROWSER_EDGES):
         print(f"      {a} -> {b}")
     # **A DAEMON thread, so Ctrl+C still stops the server.** A push in flight is a
     # `git` subprocess that finishes on its own; the worst case at shutdown is a commit

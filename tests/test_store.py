@@ -7,19 +7,19 @@ from concurrent.futures import ThreadPoolExecutor
 import pytest
 from conftest import USERS
 
-import serve
-import status
+import api_endpoint
+import board_state
 
 
-def make_store(path: pathlib.Path) -> serve.BoardStore:
+def make_store(path: pathlib.Path) -> api_endpoint.BoardStore:
     """Persist an empty board and return its store."""
-    board = status.Board(project="Store", users=USERS, browser_user="terry",
+    board = board_state.Board(project="Store", users=USERS, browser_user="terry",
                          cli_user="claude", default_owner="claude")
-    status.save(board, path)
-    return serve.BoardStore(path)
+    board_state.save(board, path)
+    return api_endpoint.BoardStore(path)
 
 
-def create_alpha(board: status.Board) -> str:
+def create_alpha(board: board_state.Board) -> str:
     """Representative store command."""
     return board.create("alpha", "Alpha", "backlog", "claude")
 
@@ -29,7 +29,7 @@ def test_success_increments_revision_after_save(tmp_path: pathlib.Path) -> None:
     store = make_store(path)
     result, revision = store.execute(0, create_alpha)
 
-    saved = status.load(path)
+    saved = board_state.load(path)
     assert "created" in result
     assert revision == 1
     assert saved.revision == 1
@@ -41,9 +41,9 @@ def test_stale_revision_changes_nothing(tmp_path: pathlib.Path) -> None:
     store = make_store(path)
     store.execute(0, create_alpha)
 
-    with pytest.raises(serve.RevisionConflict, match="revision is 1"):
+    with pytest.raises(api_endpoint.RevisionConflict, match="revision is 1"):
         store.execute(0, lambda board: board.comment("alpha", "stale", "claude"))
-    saved = status.load(path)
+    saved = board_state.load(path)
     assert saved.revision == 1
     assert saved.find("alpha").comments == []
 
@@ -52,10 +52,10 @@ def test_domain_refusal_changes_nothing(tmp_path: pathlib.Path) -> None:
     path = tmp_path / "board.json"
     store = make_store(path)
 
-    with pytest.raises(status.BoardError, match="may not create"):
+    with pytest.raises(board_state.BoardError, match="may not create"):
         store.execute(0, lambda board: board.create(
             "alpha", "Alpha", "completed", "claude"))
-    saved = status.load(path)
+    saved = board_state.load(path)
     assert saved.revision == 0
     assert saved.items == []
 
@@ -65,10 +65,10 @@ def test_save_failure_does_not_publish_candidate(
     path = tmp_path / "board.json"
     store = make_store(path)
 
-    def fail_save(_board: status.Board, _path: pathlib.Path) -> None:
+    def fail_save(_board: board_state.Board, _path: pathlib.Path) -> None:
         raise OSError("injected save failure")
 
-    monkeypatch.setattr(status, "save", fail_save)
+    monkeypatch.setattr(board_state, "save", fail_save)
     with pytest.raises(OSError, match="injected"):
         store.execute(0, create_alpha)
 
@@ -92,24 +92,24 @@ def test_same_revision_concurrency_has_one_winner(tmp_path: pathlib.Path) -> Non
     failures = [future.exception() for future in futures if future.exception() is not None]
     assert len(successes) == 1
     assert len(failures) == 1
-    assert isinstance(failures[0], serve.RevisionConflict)
-    saved = status.load(path)
+    assert isinstance(failures[0], api_endpoint.RevisionConflict)
+    saved = board_state.load(path)
     assert saved.revision == 1
     assert len(saved.items) == 1
 
 
 def test_source_checkout_requires_ignored_board_directory() -> None:
-    root = pathlib.Path(serve.__file__).resolve().parent
-    assert "refusing board data" in serve.source_checkout_board_problem(
+    root = pathlib.Path(api_endpoint.__file__).resolve().parent
+    assert "refusing board data" in api_endpoint.source_checkout_board_problem(
         root / "sensitive-board.json")
-    assert "refusing board data" in serve.source_checkout_board_problem(
+    assert "refusing board data" in api_endpoint.source_checkout_board_problem(
         root / ".venv" / "private.json")
-    assert serve.source_checkout_board_problem(root / "boards" / "private.json") == ""
+    assert api_endpoint.source_checkout_board_problem(root / "boards" / "private.json") == ""
 
 
 def test_source_checkout_refuses_boards_directory_when_ignore_rule_is_ineffective(
         monkeypatch: pytest.MonkeyPatch) -> None:
-    root = pathlib.Path(serve.__file__).resolve().parent
+    root = pathlib.Path(api_endpoint.__file__).resolve().parent
 
     def fake_git(args: list[str], _cwd: pathlib.Path) -> subprocess.CompletedProcess[str]:
         if args[:2] == ["rev-parse", "--show-toplevel"]:
@@ -118,13 +118,13 @@ def test_source_checkout_refuses_boards_directory_when_ignore_rule_is_ineffectiv
             return subprocess.CompletedProcess(args, 1, "", "")
         raise AssertionError(f"unexpected git command: {args}")
 
-    monkeypatch.setattr(serve, "_git", fake_git)
-    problem = serve.source_checkout_board_problem(root / "boards" / "private.json")
+    monkeypatch.setattr(api_endpoint, "_git", fake_git)
+    problem = api_endpoint.source_checkout_board_problem(root / "boards" / "private.json")
     assert "git does not ignore" in problem
 
 
 def test_board_outside_source_checkout_remains_supported(tmp_path: pathlib.Path) -> None:
-    assert serve.source_checkout_board_problem(tmp_path / "board.json") == ""
+    assert api_endpoint.source_checkout_board_problem(tmp_path / "board.json") == ""
 
 
 def test_ignored_board_disables_autopush(tmp_path: pathlib.Path) -> None:
@@ -132,5 +132,5 @@ def test_ignored_board_disables_autopush(tmp_path: pathlib.Path) -> None:
     (tmp_path / ".gitignore").write_text("/boards/\n", encoding="utf-8")
     board = tmp_path / "boards" / "private.json"
     board.parent.mkdir()
-    assert serve.push_unavailable(board) == (
+    assert api_endpoint.push_unavailable(board) == (
         "the board is ignored by git")

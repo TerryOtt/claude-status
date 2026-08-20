@@ -11,7 +11,7 @@
 # switched off, and every number in the ignore block is what it reported HERE.
 # A count copied from elsewhere is evidence for a decision nobody made.
 #
-# Measured 2026-08-18 against `status.py`, `serve.py` and `migrate_md.py`.
+# Measured 2026-08-18 against `board_state.py`, `api_endpoint.py` and `migrate_md.py`.
 
 target-version = "py313"
 line-length = 100

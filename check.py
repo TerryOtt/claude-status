@@ -6,7 +6,7 @@
 **This repository had NO gate at all until 2026-08-19**, and it was found the way
 these things always are: a `Stop` hook caught Claude writing the British spelling of
 "license" in a sentence to Terry, and the sweep that followed found the same word
-already committed in `status.py`. **941 lines of prose-heavy Python went in on one day
+already committed in `board_state.py`. **941 lines of prose-heavy Python went in on one day
 with nothing reading any of it.**
 
 | Where | What watches it |
@@ -17,7 +17,7 @@ with nothing reading any of it.**
 
 **The `Stop` hook watches speech, not files** -- its own docstring says so. So it could
 catch the word in a sentence and could never have caught the identical word sitting in
-`status.py`.
+`board_state.py`.
 
 ## The word table is BORROWED, not copied
 
@@ -123,13 +123,14 @@ def run_pyright() -> bool:
     **RUFF CHECKS THAT AN ANNOTATION EXISTS. PYRIGHT CHECKS THAT IT IS TRUE**, which is
     Terry's global rule, and this gate proved it the hour pyright was added.
 
-    **It found a real defect on its first run**: `serve.py`'s `/assign` route passed
+    **It found a real defect on its first run**: `api_endpoint.py`'s `/assign` route passed
     `str(body["owner"])` -- a value the browser controls -- into a parameter annotated
-    `Actor`. Ruff had been clean on that line every day. **`status.as_actor` now narrows
+    `Actor`. Ruff had been clean on that line every day. **`board_state.as_actor` now narrows
     it at the boundary.**
 
-    **It MUST run with `cwd=ROOT`.** `serve.py` imports `status` as a sibling module, so
-    pyright invoked from anywhere else reports `Import "status" could not be resolved`
+    **It MUST run with `cwd=ROOT`.** `api_endpoint.py` imports `board_state` as a sibling
+    module, so pyright invoked from anywhere else reports
+    `Import "board_state" could not be resolved`
     and stops before it reaches a single real finding. **That false error hid the true
     one for a full run**, which is the failure this docstring exists to prevent.
     """

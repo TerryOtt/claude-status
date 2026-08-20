@@ -8,7 +8,7 @@
 #
 # **A gate that silently does not run is worse than no gate**, which is the failure
 # this repository already paid for once: it had no gate at all until 2026-08-19, and
-# a British spelling reached `status.py` unnoticed.
+# a British spelling reached `board_state.py` unnoticed.
 #
 # **NO SECRET IS NEEDED, and that decided the design.** The word table lives in
 # `FlickrGroupAddr/backend-api`, which is PUBLIC. The `~/.claude` wrapper would have

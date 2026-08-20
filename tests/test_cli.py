@@ -9,21 +9,22 @@ from collections.abc import Iterator
 import pytest
 from conftest import USERS
 
-import serve
-import status
+import api_endpoint
+import board_state
 
 
 @pytest.fixture
 def served_board(tmp_path: pathlib.Path) -> Iterator[pathlib.Path]:
     """Publish the production rendezvous file for an isolated service."""
     path = tmp_path / "board.json"
-    board = status.Board(project="CLI", users=USERS, browser_user="terry",
+    board = board_state.Board(project="CLI", users=USERS, browser_user="terry",
                          cli_user="claude", default_owner="claude")
-    status.save(board, path)
-    serve.BOARD_PATH = path
-    serve.STORE = serve.BoardStore(path)
-    server = serve.http.server.ThreadingHTTPServer((serve.HOST, 0), serve.Handler)
-    serve.publish_service(path, server.server_address[1])
+    board_state.save(board, path)
+    api_endpoint.BOARD_PATH = path
+    api_endpoint.STORE = api_endpoint.BoardStore(path)
+    server = api_endpoint.http.server.ThreadingHTTPServer(
+        (api_endpoint.HOST, 0), api_endpoint.Handler)
+    api_endpoint.publish_service(path, server.server_address[1])
     thread = threading.Thread(target=server.serve_forever, daemon=True)
     thread.start()
     try:
@@ -32,14 +33,14 @@ def served_board(tmp_path: pathlib.Path) -> Iterator[pathlib.Path]:
         server.shutdown()
         server.server_close()
         thread.join(timeout=2)
-        serve.remove_service(path)
-        serve.STORE = None
+        api_endpoint.remove_service(path)
+        api_endpoint.STORE = None
 
 
 def run_cli(path: pathlib.Path, *arguments: str) -> subprocess.CompletedProcess[str]:
     """Invoke the real command-line entry point."""
     return subprocess.run(
-        [sys.executable, "status.py", str(path), *arguments],
+        [sys.executable, "board_state.py", str(path), *arguments],
         cwd=pathlib.Path(__file__).resolve().parents[1], capture_output=True,
         text=True, timeout=10, check=False)
 
@@ -64,7 +65,7 @@ def test_every_cli_mutation_uses_service(served_board: pathlib.Path) -> None:
     assert_cli(served_board, "--unlink", "a", "relates_to", "b")
     assert_cli(served_board, "--clear-parent", "b")
 
-    board = status.load(served_board)
+    board = board_state.load(served_board)
     item = board.find("a")
     assert board.revision == 12
     assert board.project == "Updated"
@@ -76,13 +77,13 @@ def test_every_cli_mutation_uses_service(served_board: pathlib.Path) -> None:
 
 def test_offline_mutation_has_no_direct_write(tmp_path: pathlib.Path) -> None:
     path = tmp_path / "board.json"
-    board = status.Board(project="Offline", users=USERS, browser_user="terry",
+    board = board_state.Board(project="Offline", users=USERS, browser_user="terry",
                          cli_user="claude", default_owner="claude")
-    status.save(board, path)
-    status.service_descriptor_path(path).unlink(missing_ok=True)
+    board_state.save(board, path)
+    board_state.service_descriptor_path(path).unlink(missing_ok=True)
 
     result = run_cli(path, "--create", "alpha", "Alpha", "--state", "backlog")
-    saved = status.load(path)
+    saved = board_state.load(path)
     assert result.returncode != 0
     assert "service is not running" in result.stderr
     assert "Traceback" not in result.stderr
@@ -91,10 +92,10 @@ def test_offline_mutation_has_no_direct_write(tmp_path: pathlib.Path) -> None:
 
 def test_read_only_report_works_offline(tmp_path: pathlib.Path) -> None:
     path = tmp_path / "board.json"
-    board = status.Board(project="Offline report", users=USERS,
+    board = board_state.Board(project="Offline report", users=USERS,
                          browser_user="terry", cli_user="claude",
                          default_owner="claude")
-    status.save(board, path)
+    board_state.save(board, path)
     result = run_cli(path)
     assert result.returncode == 0
     assert "Offline report" in result.stdout
