@@ -134,3 +134,53 @@ def test_ignored_board_disables_autopush(tmp_path: pathlib.Path) -> None:
     board.parent.mkdir()
     assert api_endpoint.push_unavailable(board) == (
         "the board is ignored by git")
+
+
+def test_autopush_is_disabled_unless_explicitly_enabled(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def unexpected_thread(**_kwargs: object) -> None:
+        raise AssertionError("disabled autopush must not create a thread")
+
+    monkeypatch.setattr(api_endpoint.threading, "Thread", unexpected_thread)
+
+    worker = api_endpoint.start_autopush(tmp_path / "board.json", enabled=False)
+
+    assert worker is None
+    assert api_endpoint.push_status()["state"] == "off"
+    assert "--autopush" in str(api_endpoint.push_status()["detail"])
+
+
+def test_enabled_autopush_starts_one_daemon_for_the_board(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    board = tmp_path / "board.json"
+    captured: dict[str, object] = {}
+
+    class FakeWorker:
+        def start(self) -> None:
+            captured["started"] = True
+
+    def fake_thread(**kwargs: object) -> FakeWorker:
+        captured.update(kwargs)
+        worker = FakeWorker()
+        captured["worker"] = worker
+        return worker
+
+    monkeypatch.setattr(api_endpoint.threading, "Thread", fake_thread)
+
+    worker = api_endpoint.start_autopush(board, enabled=True)
+
+    assert worker is captured["worker"]
+    assert captured["args"] == (board,)
+    assert captured["name"] == "autopush"
+    assert captured["daemon"] is True
+    assert captured["started"] is True
+
+
+def test_autopush_flag_and_default_are_parsed() -> None:
+    default = api_endpoint.parse_args(["board.json"])
+    enabled = api_endpoint.parse_args(["--autopush", "board.json"])
+
+    assert default.autopush is False
+    assert enabled.autopush is True

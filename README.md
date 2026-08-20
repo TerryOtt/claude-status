@@ -4,7 +4,7 @@ Claude-Terry swimlane task tracker
 A live, draggable board over one board JSON, served on loopback.
 
 ```
-python api_endpoint.py boards/<project>.json
+python api_endpoint.py [--autopush] boards/<project>.json
 ```
 
 Real board files kept inside this source checkout MUST live under `boards/`. That
@@ -16,6 +16,11 @@ separate repositories remain supported as an intentional deployment choice.
 The port comes from the board file's own `port` field rather than a flag, so one
 bookmark per project cannot open the wrong board. `board_state.py` is the library and the
 command line; `rules.json` is the permission model and is re-read live.
+
+Automatic Git commits and pushes are OFF by default. Pass `--autopush` only when the
+board lives in a repository whose configured remote is appropriate for its sensitive
+contents. When enabled, the server commits only the board path after five quiet seconds
+and pushes that board repository's current branch.
 
 ## Transition permissions
 

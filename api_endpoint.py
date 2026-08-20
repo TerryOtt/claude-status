@@ -333,10 +333,11 @@ def _reexec_if_requested() -> None:
     os.execv(sys.executable, [sys.executable, *sys.argv])
 
 # ---------------------------------------------------------------------------
-# AUTOPUSH: THE BOARD REACHES GITHUB WITHOUT ANYBODY REMEMBERING TO SEND IT
+# OPT-IN AUTOPUSH: THE BOARD MAY REACH ITS OWN GIT REMOTE AFTER IT GOES QUIET
 #
-# **Card #0013. Terry, 2026-08-19: *"I def want automated push. When server sees a
-# local JSON change I want that local change in private Github ASAP."***
+# **It is OFF unless the process starts with `--autopush`.** A board contains
+# identities, descriptions, comments, and audit history. The server can validate that
+# the board is tracked and has a remote; it cannot prove that remote is private.
 #
 # **The hole this closes:** the board lived on a NAS and reached GitHub only when
 # Claude happened to be in session and happened to run `git push`. **Terry drags ten
@@ -480,6 +481,20 @@ def _push_loop(board_path: pathlib.Path) -> None:
         _set_push("ok" if ok else "failed", detail)
         if not ok:
             print(f"  AUTOPUSH FAILED: {detail}", flush=True)
+
+
+def start_autopush(
+    board_path: pathlib.Path, *, enabled: bool,
+) -> threading.Thread | None:
+    """Start the optional publisher, or publish an explicit disabled status."""
+    if not enabled:
+        _set_push("off", "disabled; start the server with --autopush to enable")
+        print("  autopush  : OFF -- enable with --autopush", flush=True)
+        return None
+    worker = threading.Thread(
+        target=_push_loop, args=(board_path,), name="autopush", daemon=True)
+    worker.start()
+    return worker
 
 
 # Far below the time a human takes to switch windows, and a stat() against a local file
@@ -3749,13 +3764,21 @@ class Handler(http.server.BaseHTTPRequestHandler):
             print(f"  Served {first.split()[1] if ' ' in first else first}", flush=True)
 
 
-def main() -> None:
-    global BOARD_PATH, STORE  # noqa: PLW0603 -- one process serves one board
+def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
+    """Parse the service command line, including opt-in external side effects."""
     ap = argparse.ArgumentParser(description="Serve a claude-status board.")
     ap.add_argument("board", type=pathlib.Path, help="path to the board JSON")
     ap.add_argument("--port", type=int, default=None,
                     help="override the port in the board file")
-    args = ap.parse_args()
+    ap.add_argument(
+        "--autopush", action="store_true",
+        help="commit and push quiet board changes to the board repository's remote")
+    return ap.parse_args(argv)
+
+
+def main() -> None:
+    global BOARD_PATH, STORE  # noqa: PLW0603 -- one process serves one board
+    args = parse_args()
     BOARD_PATH = args.board.resolve()
 
     if problem := source_checkout_board_problem(BOARD_PATH):
@@ -3810,10 +3833,9 @@ def main() -> None:
         print(f"      {a} -> {b}")
     # **A DAEMON thread, so Ctrl+C still stops the server.** A push in flight is a
     # `git` subprocess that finishes on its own; the worst case at shutdown is a commit
-    # that lands without its push, and the next start reconciles that because the loop
-    # begins armed.
-    threading.Thread(target=_push_loop, args=(BOARD_PATH,),
-                     name="autopush", daemon=True).start()
+    # that lands without its push, and the next --autopush start reconciles it because
+    # the loop begins armed.
+    start_autopush(BOARD_PATH, enabled=args.autopush)
 
     server = BoardHttpServer((HOST, port), Handler)
     publish_service(BOARD_PATH, port)
