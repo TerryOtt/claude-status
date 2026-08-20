@@ -1,34 +1,92 @@
-# claude-status
-Claude-Terry swimlane task tracker
+# localswim
 
-A live, draggable board over one board JSON, served on loopback.
+A small, local swimlane board for one human and one automation agent. It serves a
+draggable browser UI over a single JSON file, binds only to loopback, and has no runtime
+dependencies outside Python's standard library.
 
-```
-python api_endpoint.py [--autopush] boards/<project>.json
-```
+## Quick start
 
-Real board files kept inside this source checkout MUST live under `boards/`. That
-directory is explicitly ignored because a board contains identities, descriptions,
-comments and audit history. `api_endpoint.py` refuses to open a board elsewhere inside this
-public checkout, even if somebody later removes or weakens the ignore rule. Boards in
-separate repositories remain supported as an intentional deployment choice.
+Requirements:
 
-The port comes from the board file's own `port` field rather than a flag, so one
-bookmark per project cannot open the wrong board. `board_state.py` is the library and the
-command line; `rules.json` is the permission model and is re-read live.
+- Python 3.13 or newer
+- A modern browser
+- Git only if you want build identifiers or opt-in automatic pushes
 
-Automatic Git commits and pushes are OFF by default. Pass `--autopush` only when the
-board lives in a repository whose configured remote is appropriate for its sensitive
-contents. When enabled, the server commits only the board path after five quiet seconds
-and pushes that board repository's current branch.
+Clone the repository, create a private board directory, and copy the example:
+
+~~~text
+boards/
+└── my-project.json    <- copy of examples/board.example.json
+~~~
+
+Then start the service:
+
+~~~console
+python api_endpoint.py boards/my-project.json
+~~~
+
+Open the URL it prints, normally **http://127.0.0.1:8792/**. The port comes from the
+board file so different projects can have stable bookmarks. The --port option provides
+a temporary override.
+
+The boards/ directory is ignored by Git and is the only permitted location for board
+files kept inside this public checkout. A board may instead live in a separate
+repository or directory.
+
+## Board configuration
+
+The checked [example board](examples/board.example.json) is valid, empty and ready to
+run with the repository's default terry and claude permission actors.
+
+The important fields are:
+
+| Field | Meaning |
+|---|---|
+| schema | Board format version; currently 2. |
+| project | Name shown in the browser. |
+| port | Loopback TCP port; defaults to 8792 if omitted. |
+| users | Valid identities, labels, classes (human or bot), and UI colors. |
+| browserUser | Identity used for browser changes. |
+| cliUser | Identity used for CLI changes. |
+| defaultOwner | Owner assigned when a new card does not specify one. |
+| revision | Monotonic write version; start a new board at 0. |
+| nextTicket | Next display number; start an empty board at 1. |
+| items | Cards; start an empty board with an empty list. |
+
+User IDs are case-sensitive. The two transition actors in rules.json MUST exactly match
+browserUser and cliUser. To rename the actors, update both files together. Malformed
+JSON and invalid fields fail with a path, line or field-specific explanation.
+
+## Daily use
+
+The browser supports creating, moving, editing, assigning, prioritizing and relating
+cards. The CLI can inspect the snapshot while the service is stopped or running:
+
+~~~console
+python board_state.py boards/my-project.json
+python board_state.py boards/my-project.json --verify
+python board_state.py boards/my-project.json --json
+~~~
+
+CLI mutations use the running REST service so browser and CLI writes share validation,
+locking and revision checks:
+
+~~~console
+python board_state.py boards/my-project.json --create docs "Write setup docs" --state ready_for_claude
+python board_state.py boards/my-project.json --comment docs "First draft is ready"
+python board_state.py boards/my-project.json --move docs in_progress
+~~~
+
+Run **python board_state.py --help** for the complete command list. CLI changes are
+attributed to cliUser; browser changes are attributed to browserUser. Request bodies
+cannot choose another identity.
 
 ## Transition permissions
 
-`rules.json` groups allowed transitions under exactly two actor ids. Those ids MUST be
-different and MUST exactly match the board's `browserUser` and `cliUser` values,
-including case:
+rules.json is the allow-list for lanes, priorities, card creation and movement. Edges
+are grouped under exactly two actor IDs:
 
-```
+~~~json
 "edges": {
   "terry": [
     {
@@ -44,98 +102,86 @@ including case:
     }
   ]
 }
-```
+~~~
 
-Each edge MUST contain string `from` and `to` lane ids, MAY contain a string
-`description`, and MUST contain no other fields. Unknown lanes, self-loops, duplicate
-actor edges, duplicate JSON keys, and actor/config mismatches are rejected. Syntax
-errors report the file, line, column, and parser explanation; structural errors report
-the failing field path.
+Each edge MUST contain string from and to lane IDs, MAY contain a string description,
+and MUST contain no other fields. Unknown lanes, self-loops, duplicate actor edges and
+duplicate JSON keys are rejected. Valid rules.json edits reload live.
 
-## Persistence and the REST API
+## Data safety and Git
 
-`api_endpoint.py` is the sole writer while a board is live. The browser and `board_state.py` CLI
-send domain commands to its loopback REST API; neither submits a replacement board.
-Each successful command validates the model, increments the board's monotonic
-`revision`, flushes a temporary JSON file and atomically replaces the prior snapshot.
+api_endpoint.py is the sole writer while a board is live. Every mutation validates the
+model, increments revision, flushes a temporary file in the board's directory and
+atomically replaces the previous snapshot. Stale writes receive HTTP 412 instead of
+overwriting newer state.
 
-Mutation requests use `If-Match: "revision-N"`. A stale client receives HTTP 412 and
-must refresh rather than overwrite a newer command. Bearer credentials are published
-in a user-local temporary rendezvous file: the browser credential maps to the board's
-`browserUser`, and the CLI credential maps to `cliUser`. Request bodies cannot choose
-their actor.
+Board JSON contains identities, descriptions, comments and audit history. Keep it out
+of this public source repository.
 
-The primary routes are:
+Automatic Git commits and pushes are OFF by default. Enable them only for a board stored
+in an appropriate Git repository:
 
-```
+~~~console
+python api_endpoint.py --autopush path/to/board.json
+~~~
+
+When enabled, the server commits only the board path after five quiet seconds and pushes
+the board repository's current branch. It refuses ignored boards, non-repositories and
+repositories without a remote; it cannot prove that a configured remote is private.
+
+## REST API
+
+The browser and CLI use these loopback routes:
+
+~~~text
 GET  /v1/status
 GET  /v1/board
 POST /v1/cards
 POST /v1/cards/<id>/{move,comment,assign,priority,subject,detail,link,parent}
 POST /v1/board/project
-```
+~~~
 
-CLI reports remain available directly from the JSON snapshot. CLI mutations require
-the board service to be running and fail without changing anything when it is absent;
-there is deliberately no direct-write fallback.
+Mutations require the per-process bearer credential and an
+If-Match: "revision-N" header. Credentials are published in a user-local temporary
+service descriptor; they are not stored in the board.
 
 ## Live code updates
 
-The running server watches `api_endpoint.py` and `board_state.py`. When either source
-changes, it waits briefly for the editor to finish, syntax-checks both files, imports
-them in a child Python process, finishes active HTTP requests, closes its socket, and
-re-executes its original command. A broken edit leaves the existing server running and
-shows the specific preflight failure in the UI.
+The server watches api_endpoint.py and board_state.py. A valid change is debounced,
+preflighted in a child Python process and applied by gracefully re-executing the server.
+An invalid change leaves the healthy process running and reports the preflight error.
 
-After the new process starts, an open tab detects the changed build and reloads itself.
-Comment drafts, an open card and editor, a partially written new card, search text, and
-the current old-card visibility choice are carried through that reload in per-tab
-session storage. A build query permits one cache-busting reload and prevents a broken
-deployment from causing an infinite reload loop.
+Open tabs detect the new build and reload once. Comment drafts, active editors, a
+partially written card, search text and view state survive in per-tab session storage.
 
-## The gate
+## Development
 
-```
-python check.py
-```
+Install the development tools:
 
-Runs `ruff`, `pyright`, the `pytest` behavioral suite and the US English /
-house-vocabulary check over every tracked `.py`, `.md` and `.json`. **Run it before
-committing.**
-
-The runtime remains standard-library-only. Install the development tools once with:
-
-```
+~~~console
 python -m pip install ruff pyright pytest
-```
+~~~
 
-### Turn on the pre-commit hook. It is one command and a fresh clone skips it
+Run the complete gate:
 
-```
+~~~console
+python check.py
+~~~
+
+The gate runs LF line-ending validation, Ruff, Pyright, pytest and the project's US
+English vocabulary check. The vocabulary table comes from the public
+FlickrGroupAddr/backend-api repository; pass its path with
+**--word-table path/to/claude-dirty-words.py** if it is not in a neighboring checkout.
+
+Enable the local pre-commit hook once per clone:
+
+~~~console
 git config core.hooksPath .githooks
-```
+~~~
 
-**Until that is set the hook does not run, and nothing says so.** That is the weak link
-in the whole arrangement, which is why it sits at the top of this section rather than
-further down: a gate that silently does not run is worse than no gate, because it reads
-as a pass.
+GitHub Actions runs the same gate on pushes and pull requests. Text files are enforced
+as UTF-8 with LF endings by .editorconfig, .gitattributes and the gate.
 
-**GitHub Actions covers the case where somebody forgets.** `.github/workflows/gate.yml`
-runs the identical `check.py` on every push, on a machine nobody configured. **The two
-mechanisms fail in opposite directions, which is why there are two.**
+## License
 
-### The word table is borrowed, not copied
-
-`check.py` imports `hits_in` from **`FlickrGroupAddr/backend-api`'s
-`scripts/claude-dirty-words.py`**, which is the canonical list. A second copy would
-drift, and the list is the whole tool.
-
-It is looked for in this order:
-
-1. `--word-table <path>`
-2. the `CLAUDE_WORD_TABLE` environment variable
-3. a few known checkout locations
-
-**If it is found nowhere the gate FAILS and prints a banner saying nothing was
-checked.** It is never skipped quietly -- a checker that did not run has checked
-nothing, and that must not read like a clean result.
+MIT. See LICENSE.

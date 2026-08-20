@@ -206,7 +206,7 @@ tempCodeRunnerFile.py
 # Ruff stuff:
 .ruff_cache/
 
-# Local claude-status board data. Board JSON contains card descriptions, comments,
+# Local localswim board data. Board JSON contains card descriptions, comments,
 # identities and audit history; it MUST NOT enter this public source repository.
 /boards/
 

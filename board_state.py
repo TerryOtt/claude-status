@@ -2646,7 +2646,7 @@ def _remote_apply(path: pathlib.Path, args: argparse.Namespace) -> str:  # noqa:
 
 def main() -> None:
     """A small CLI, so a board can be inspected and moved without the browser."""
-    ap = argparse.ArgumentParser(description="Inspect or update a claude-status board.")
+    ap = argparse.ArgumentParser(description="Inspect or update a localswim board.")
     ap.add_argument("board", type=pathlib.Path, help="path to the board JSON")
     ap.add_argument("--json", action="store_true", help="dump the parsed board")
     ap.add_argument("--verify", action="store_true",

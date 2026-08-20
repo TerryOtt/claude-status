@@ -3766,7 +3766,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     """Parse the service command line, including opt-in external side effects."""
-    ap = argparse.ArgumentParser(description="Serve a claude-status board.")
+    ap = argparse.ArgumentParser(description="Serve a localswim board.")
     ap.add_argument("board", type=pathlib.Path, help="path to the board JSON")
     ap.add_argument("--port", type=int, default=None,
                     help="override the port in the board file")

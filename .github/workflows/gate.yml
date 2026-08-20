@@ -25,7 +25,7 @@ jobs:
   gate:
     runs-on: ubuntu-latest
     steps:
-      - name: Check out claude-status
+      - name: Check out localswim
         uses: actions/checkout@v4
 
       # **The canonical word table, borrowed rather than copied.** A second copy of

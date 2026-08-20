@@ -230,7 +230,7 @@ def main() -> int:
                         help="path to FlickrGroupAddr's scripts/claude-dirty-words.py")
     args = parser.parse_args()
 
-    print(f"\n{RULE}\n  claude-status gate\n{RULE}\n")
+    print(f"\n{RULE}\n  localswim gate\n{RULE}\n")
     failures: list[str] = []
 
     if not run_line_endings():

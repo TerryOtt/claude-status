@@ -1,0 +1,25 @@
+{
+  "schema": 2,
+  "revision": 0,
+  "project": "Example project",
+  "port": 8792,
+  "users": [
+    {
+      "id": "terry",
+      "label": "Terry",
+      "class": "human",
+      "color": "#2266AA"
+    },
+    {
+      "id": "claude",
+      "label": "Claude",
+      "class": "bot",
+      "color": "#AA6622"
+    }
+  ],
+  "browserUser": "terry",
+  "cliUser": "claude",
+  "defaultOwner": "claude",
+  "nextTicket": 1,
+  "items": []
+}
