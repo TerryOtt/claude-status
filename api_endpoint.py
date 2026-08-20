@@ -44,7 +44,8 @@ Claude uses wide open, which is exactly what happened on the first version.
 
 **A change to the PAGE triggers a guarded BROWSER RELOAD.** The open tab still runs the
 script it was served, which produces a genuinely confusing halfway state: cards render
-correctly because their content comes from `/data`, while new CSS and new counts do not.
+correctly because their content comes from `/api/v001/board`, while new CSS and new
+counts do not.
 The client preserves unsent form state in session storage and reloads itself once.
 
 ## The browser rules this had to satisfy
@@ -79,7 +80,9 @@ from collections.abc import Callable
 import board_state
 
 HOST = "127.0.0.1"
-CARD_COMMAND_PARTS = 4
+API_PREFIX = board_state.API_PREFIX
+API_PARTS = API_PREFIX.strip("/").split("/")
+CARD_COMMAND_PARTS = 3
 LOCAL_BOARD_DIR = "boards"
 
 
@@ -346,7 +349,8 @@ def _reexec_if_requested() -> None:
 # about.
 #
 # **It runs on its OWN THREAD, not on the request path.** This server is passive: it
-# reads the board only when a browser polls `/mtime`. Hanging the push off a request
+# reads the board only when a browser polls `/api/v001/status`. Hanging the push off
+# a request
 # would mean a closed tab stops the backups, which is the failure wearing a new hat.
 #
 # **A `git push` takes seconds and MUST NOT block a request** in any case.
@@ -362,7 +366,7 @@ _push_state: dict[str, object] = {"state": "off", "at": 0.0, "detail": "not star
 
 
 def _set_push(state: str, detail: str) -> None:
-    """Publish the autopush verdict for `/mtime` to read."""
+    """Publish the autopush verdict for the status endpoint to read."""
     with _push_lock:
         _push_state["state"] = state
         _push_state["detail"] = detail
@@ -1788,6 +1792,7 @@ move any card whoever owns it. Click to hand it over."></button>
 
 <script>
 const API_TOKEN = '%TOKEN%';
+const API_PREFIX = '%API_PREFIX%';
 
 async function apiPost(path, body) {
   return fetch(path, {
@@ -1819,7 +1824,8 @@ let seen = null, openId = null;
 // refresh that keeps the panel honest was destroying whatever he was mid-sentence on.
 //
 // **A draft is the one thing on this page the SERVER does not have a copy of.** Every
-// other pixel can be rebuilt from /data; typed text that has not been posted exists
+// other pixels can be rebuilt from /api/v001/board; typed text that has not been posted
+// exists
 // nowhere else, so the automatic stale-code reload carries it through sessionStorage.
 const STALE_RELOAD_STATE_KEY = 'localswim-stale-reload-state-v1';
 const STALE_RELOAD_QUERY = '_localswim_build';
@@ -1899,7 +1905,7 @@ async function saveSubject() {
   if (it && wanted === it.subject) { closeEditors(); return; }
   box.disabled = true;
   try {
-    const res = await apiPost('/v1/cards/' + encodeURIComponent(openId) + '/subject',
+    const res = await apiPost(API_PREFIX + '/cards/' + encodeURIComponent(openId) + '/subject',
                               {subject: wanted});
     const out = await res.json();
     acceptRevision(out);
@@ -1934,7 +1940,7 @@ async function saveDetail() {
   if (!wanted.trim()) { toast('A description cannot be blank', true); return; }
   save.disabled = true;
   try {
-    const res = await apiPost('/v1/cards/' + encodeURIComponent(openId) + '/detail',
+    const res = await apiPost(API_PREFIX + '/cards/' + encodeURIComponent(openId) + '/detail',
                               {detail: wanted});
     const out = await res.json();
     acceptRevision(out);
@@ -2270,7 +2276,7 @@ async function postComment() {
   // **This guard is why Enter on an empty box is safe for free.** It predates the
   // key binding and covers it without a second check.
   if (!openId || !text) return;
-  const res = await apiPost('/v1/cards/' + encodeURIComponent(openId) + '/comment',
+  const res = await apiPost(API_PREFIX + '/cards/' + encodeURIComponent(openId) + '/comment',
                             {text: text});
   const out = await res.json();
   acceptRevision(out);
@@ -2326,7 +2332,7 @@ document.getElementById('p-owner').addEventListener('click', async () => {
   const own = document.getElementById('p-owner');
   own.disabled = true;
   try {
-    const res = await apiPost('/v1/cards/' + encodeURIComponent(openId) + '/assign',
+    const res = await apiPost(API_PREFIX + '/cards/' + encodeURIComponent(openId) + '/assign',
                               {owner: nextOwner(it.owner)});
     const out = await res.json();
     acceptRevision(out);
@@ -2357,7 +2363,7 @@ document.getElementById('p-pri').addEventListener('change', async (ev) => {
   const wanted = pri.value;
   pri.disabled = true;
   try {
-    const res = await apiPost('/v1/cards/' + encodeURIComponent(openId) + '/priority',
+    const res = await apiPost(API_PREFIX + '/cards/' + encodeURIComponent(openId) + '/priority',
                               {priority: wanted});
     const out = await res.json();
     acceptRevision(out);
@@ -2423,7 +2429,8 @@ function openMake(lane) {
   document.getElementById('mk-where').textContent =
     'It will be created in ' + lane.label + ', by ' + userLabel(data.browserUser) + '.';
   const pri = document.getElementById('mk-priority');
-  // **Priorities come from `rules.json` via /data.** P0 exists and a range typed
+  // **Priorities come from `rules.json` via /api/v001/board.** P0 exists and a range
+  // typed
   // into the page would be a second copy of the list. Card #0047.
   pri.innerHTML = '';
   for (const p of data.priorities) {
@@ -2490,7 +2497,7 @@ async function submitMake() {
   const go = document.getElementById('mk-go');
   go.disabled = true;
   try {
-    const res = await apiPost('/v1/cards', {
+    const res = await apiPost(API_PREFIX + '/cards', {
         state: mkOpen,
         subject: subject,
         detail: document.getElementById('mk-detail').value,
@@ -2649,7 +2656,7 @@ function laneEl(lane) {
       toast('Not yours to drop there: ' + payload.from + ' \\u2192 ' + lane.state, true);
       return;
     }
-    const res = await apiPost('/v1/cards/' + encodeURIComponent(payload.id) + '/move',
+    const res = await apiPost(API_PREFIX + '/cards/' + encodeURIComponent(payload.id) + '/move',
                               {to: lane.state});
     const out = await res.json();
     acceptRevision(out);
@@ -2805,7 +2812,8 @@ syncAlerts();
 // point: the reasoning he is trying to find again lives in the body of a card, and a
 // title-only search would answer "no" to most of the questions he actually asks.
 //
-// **Entirely client-side.** `/data` already carries `detail` and `comments`, so no
+// **Entirely client-side.** `/api/v001/board` already carries `detail` and `comments`,
+// so no
 // request is made and the result appears while he types.
 let query = (staleReloadState && typeof staleReloadState.query === 'string')
   ? staleReloadState.query : '';
@@ -2958,9 +2966,9 @@ let lastOk = 0;
 let fileMs = 0;
 
 // **`lastOk` moves ONLY when Python confirms it read and parsed the board.** The
-// `/mtime` route performs a real `board_state.load()`, and its `ok` field is what this
-// keys on -- not the HTTP status, because a socket answering proves the process is
-// up and nothing about the file.
+// `/api/v001/status` route performs a real `board_state.load()`, and its `ok` field
+// is what this keys on -- not the HTTP status, because a socket answering proves the
+// process is up and nothing about the file.
 const LIVE_MS  = 5000;   // Terry's number: "read that file within last 5 seconds".
 
 // **What THIS TAB is running, frozen at load time.** The server stamps it into the HTML,
@@ -3258,7 +3266,7 @@ function renderLive() {
 // plus a 12 KB JSON parse against a local file.
 async function tick() {
   try {
-    const meta = await (await fetch('/v1/status', {cache: 'no-store'})).json();
+    const meta = await (await fetch(API_PREFIX + '/status', {cache: 'no-store'})).json();
     // **Captured before the ok check**, because a stale tab and an unreadable board
     // are independent failures and either can be true while the other is.
     if (meta.build) serverBuild = meta.build;
@@ -3277,7 +3285,7 @@ async function tick() {
     if (meta.ok === false) { renderLive(); return; }
     fileMs = meta.mtime * 1000;
     if (meta.mtime !== seen) {
-      data = await (await fetch('/v1/board', {cache: 'no-store'})).json();
+      data = await (await fetch(API_PREFIX + '/board', {cache: 'no-store'})).json();
       // **The search cache MUST die with the data that filled it.** Card #0061. A card
       // that gains a comment keeps its id, so a cache keyed on the id alone would go on
       // answering from the text that card had a minute ago -- and a search for a
@@ -3514,6 +3522,12 @@ class Handler(http.server.BaseHTTPRequestHandler):
     def _json(self, obj: dict[str, object], code: int = 200) -> None:
         self._send(json.dumps(obj).encode("utf-8"), "application/json", code)
 
+    def _redirect(self, location: str) -> None:
+        self.send_response(307)
+        self.send_header("Location", location)
+        self.send_header("Cache-Control", "no-store, max-age=0")
+        self.end_headers()
+
     def _read_json(self) -> dict[str, object] | None:
         try:
             length = int(self.headers.get("Content-Length") or 0)
@@ -3539,7 +3553,12 @@ class Handler(http.server.BaseHTTPRequestHandler):
 
     def do_GET(self) -> None:
         route = self.path.partition("?")[0]
-        if route in ("/mtime", "/v1/status"):
+        if route in ("/v1/status", "/mtime"):
+            # A pre-upgrade page needs one successful poll to discover the new build
+            # and reload itself. This redirect preserves that migration path without
+            # retaining a second implementation of the status endpoint.
+            self._redirect(API_PREFIX + "/status")
+        elif route == API_PREFIX + "/status":
             # **THE GREEN CIRCLE MEANS "PYTHON READ THAT FILE JUST NOW", so this
             # route actually reads it.** Terry set the bar: *"green circle means
             # python has actively polled and read that file within last 5 seconds."*
@@ -3605,7 +3624,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
             # failures, and either can be true while the other is.
             self._json({"ok": True, "mtime": mtime, "stamp": stamp,
                         **code_meta, "push": push_status()})
-        elif route in ("/data", "/v1/board"):
+        elif route == API_PREFIX + "/board":
             self._send(payload(), "application/json")
         elif route == "/favicon.svg":
             # **Cached, unlike everything else here.** The no-store rule on `_send`
@@ -3634,7 +3653,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
             self.wfile.write(blob)
         elif route in ("/", "/index.html"):
             # **A broken board still serves its page.** The title falls back and
-            # `/data` carries the real error to the banner.
+            # `/api/v001/board` carries the real error to the banner.
             title = "Work board"
             with contextlib.suppress(board_state.BoardError, OSError,
                                      json.JSONDecodeError):
@@ -3645,6 +3664,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
             page = (PAGE.replace("%POLL%", str(POLL_MS))
                     .replace("%BUILD%", html.escape(BUILD))
                     .replace("%TOKEN%", BROWSER_TOKEN)
+                    .replace("%API_PREFIX%", API_PREFIX)
                     # **The bar's mark comes from the same `FAVICON` the tab icon
                     # uses.** Card #0095. One definition, so a recolor cannot land in
                     # one place and miss the other.
@@ -3661,10 +3681,11 @@ class Handler(http.server.BaseHTTPRequestHandler):
         """Execute one authenticated, revision-checked domain command."""
         route = self.path.partition("?")[0]
         parts = [urllib.parse.unquote(part) for part in route.strip("/").split("/")]
-        is_create = parts == ["v1", "cards"]
-        is_project = parts == ["v1", "board", "project"]
-        is_card_command = (len(parts) == CARD_COMMAND_PARTS
-                           and parts[:2] == ["v1", "cards"])
+        command_parts = parts[len(API_PARTS):] if parts[:len(API_PARTS)] == API_PARTS else []
+        is_create = command_parts == ["cards"]
+        is_project = command_parts == ["board", "project"]
+        is_card_command = (len(command_parts) == CARD_COMMAND_PARTS
+                           and command_parts[0] == "cards")
         if not (is_create or is_project or is_card_command):
             self.send_error(404)
             return
@@ -3710,7 +3731,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
                     board.project = name
                     return f"project renamed: {was!r} -> {name!r}"
 
-                ref, action = parts[2], parts[3]
+                ref, action = command_parts[1], command_parts[2]
                 if action == "move":
                     return board.move(ref, str(body["to"]), actor)
                 if action == "comment":
@@ -3760,7 +3781,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
         # with `("code %d, message %s", 404, ...)`, an int first, and an unguarded `in`
         # test raises inside the handler and closes the socket with no response.
         first = args[0] if args else ""
-        if isinstance(first, str) and "/data" in first:
+        if isinstance(first, str) and API_PREFIX + "/board" in first:
             print(f"  Served {first.split()[1] if ' ' in first else first}", flush=True)
 
 

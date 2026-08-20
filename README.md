@@ -134,12 +134,16 @@ repositories without a remote; it cannot prove that a configured remote is priva
 The browser and CLI use these loopback routes:
 
 ~~~text
-GET  /v1/status
-GET  /v1/board
-POST /v1/cards
-POST /v1/cards/<id>/{move,comment,assign,priority,subject,detail,link,parent}
-POST /v1/board/project
+GET  /api/v001/status
+GET  /api/v001/board
+POST /api/v001/cards
+POST /api/v001/cards/<id>/{move,comment,assign,priority,subject,detail,link,parent}
+POST /api/v001/board/project
 ~~~
+
+Only the `/api/v001` routes are API endpoints. For seamless upgrades of already-open
+tabs, `/v1/status` and `/mtime` issue no-cache redirects to
+`/api/v001/status`. Earlier board and mutation routes are not retained.
 
 Mutations require the per-process bearer credential and an
 If-Match: "revision-N" header. Credentials are published in a user-local temporary

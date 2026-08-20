@@ -71,6 +71,7 @@ from typing import Any, Self
 # **The file is JSON so a person can read the diff**, and that is worth two dozen lines.
 
 SCHEMA = 2
+API_PREFIX = "/api/v001"
 
 # **A SECOND, INDEPENDENT NUMBER, and splitting it was the first thing card #0064 had to
 # do.** One `SCHEMA` used to gate both `board.json` and `rules.json`, so flattening the
@@ -2594,7 +2595,7 @@ def _remote_apply(path: pathlib.Path, args: argparse.Namespace) -> str:  # noqa:
     descriptor = _service_descriptor(path)
     base = f"http://{descriptor['host']}:{descriptor['port']}"
     token = str(descriptor["token"])
-    snapshot = _service_json(base + "/v1/board", token)
+    snapshot = _service_json(base + API_PREFIX + "/board", token)
     revision = snapshot.get("revision")
     if not isinstance(revision, int):
         raise BoardError("board service response has no revision")
@@ -2604,36 +2605,39 @@ def _remote_apply(path: pathlib.Path, args: argparse.Namespace) -> str:  # noqa:
     def quote(value: object) -> str:
         return urllib.parse.quote(str(value), safe="")
     if args.create:
-        route = "/v1/cards"
+        route = API_PREFIX + "/cards"
         body = {"id": args.create[0], "subject": args.create[1], "state": args.state,
                 "priority": args.priority, "detail": _detail_text(args),
                 "owner": args.owner or DEFAULT_OWNER}
     elif args.set_project:
-        route, body = "/v1/board/project", {"project": args.set_project}
+        route, body = API_PREFIX + "/board/project", {"project": args.set_project}
     elif args.move:
-        route, body = f"/v1/cards/{quote(args.move[0])}/move", {"to": args.move[1]}
+        route, body = f"{API_PREFIX}/cards/{quote(args.move[0])}/move", {"to": args.move[1]}
     elif args.comment:
-        route, body = f"/v1/cards/{quote(args.comment[0])}/comment", {"text": args.comment[1]}
+        route, body = (f"{API_PREFIX}/cards/{quote(args.comment[0])}/comment",
+                       {"text": args.comment[1]})
     elif args.assign:
-        route, body = f"/v1/cards/{quote(args.assign[0])}/assign", {"owner": args.assign[1]}
+        route, body = (f"{API_PREFIX}/cards/{quote(args.assign[0])}/assign",
+                       {"owner": args.assign[1]})
     elif args.set_priority:
-        route, body = (f"/v1/cards/{quote(args.set_priority[0])}/priority",
+        route, body = (f"{API_PREFIX}/cards/{quote(args.set_priority[0])}/priority",
                        {"priority": args.set_priority[1]})
     elif args.set_detail:
-        route, body = f"/v1/cards/{quote(args.set_detail)}/detail", {
+        route, body = f"{API_PREFIX}/cards/{quote(args.set_detail)}/detail", {
             "detail": _detail_text(args)}
     elif args.set_subject:
-        route, body = f"/v1/cards/{quote(args.set_subject[0])}/subject", {
+        route, body = f"{API_PREFIX}/cards/{quote(args.set_subject[0])}/subject", {
             "subject": args.set_subject[1]}
     elif args.link or args.unlink:
         values = args.link or args.unlink
-        route, body = f"/v1/cards/{quote(values[0])}/link", {
+        route, body = f"{API_PREFIX}/cards/{quote(values[0])}/link", {
             "kind": values[1], "other": values[2], "remove": bool(args.unlink)}
     elif args.set_parent:
-        route, body = f"/v1/cards/{quote(args.set_parent[0])}/parent", {
+        route, body = f"{API_PREFIX}/cards/{quote(args.set_parent[0])}/parent", {
             "parent": args.set_parent[1]}
     elif args.clear_parent:
-        route, body = f"/v1/cards/{quote(args.clear_parent)}/parent", {"parent": None}
+        route, body = (f"{API_PREFIX}/cards/{quote(args.clear_parent)}/parent",
+                       {"parent": None})
     else:
         raise BoardError("no mutation requested")
 

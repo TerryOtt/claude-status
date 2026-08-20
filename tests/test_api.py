@@ -18,6 +18,8 @@ from conftest import USERS
 import api_endpoint
 import board_state
 
+API = api_endpoint.API_PREFIX
+
 
 @dataclass(frozen=True)
 class RunningApi:
@@ -91,8 +93,8 @@ def assert_http_error(request: urllib.request.Request, expected: int) -> None:
 
 
 def test_board_and_status_reads(api: RunningApi) -> None:
-    status_code, board = request_json(api.base + "/v1/board")
-    health_code, health = request_json(api.base + "/v1/status")
+    status_code, board = request_json(api.base + API + "/board")
+    health_code, health = request_json(api.base + API + "/status")
     assert status_code == 200 and board["revision"] == 0
     assert health_code == 200 and health["ok"] is True
     assert health["restarting"] is False
@@ -109,6 +111,8 @@ def test_page_contains_guarded_auto_reload_and_state_restore(api: RunningApi) ->
     assert "saved.editing === 'detail'" in page
     assert "if (saved.make)" in page
     assert "AUTO-RELOAD FAILED" in page
+    assert "const API_PREFIX = '/api/v001';" in page
+    assert "/v1/" not in page
     assert response.headers["Cache-Control"] == "no-store, max-age=0"
 
 
@@ -244,7 +248,7 @@ def test_requested_restart_reexecs_the_original_python_command(
 
 def test_authenticated_create_uses_browser_actor(api: RunningApi) -> None:
     code, response = request_json(
-        api.base + "/v1/cards", token=api_endpoint.BROWSER_TOKEN, revision=0,
+        api.base + API + "/cards", token=api_endpoint.BROWSER_TOKEN, revision=0,
         body={"subject": "Alpha", "state": "backlog"})
     saved = board_state.load(api.path)
     assert code == 200
@@ -254,7 +258,7 @@ def test_authenticated_create_uses_browser_actor(api: RunningApi) -> None:
 
 def test_missing_credential_returns_401(api: RunningApi) -> None:
     code, response = request_json(
-        api.base + "/v1/cards", revision=0,
+        api.base + API + "/cards", revision=0,
         body={"subject": "Alpha", "state": "backlog"})
     assert code == 401
     assert "credential" in response["error"]
@@ -262,17 +266,17 @@ def test_missing_credential_returns_401(api: RunningApi) -> None:
 
 def test_missing_revision_returns_428(api: RunningApi) -> None:
     code, response = request_json(
-        api.base + "/v1/cards", token=api_endpoint.BROWSER_TOKEN,
+        api.base + API + "/cards", token=api_endpoint.BROWSER_TOKEN,
         body={"subject": "Alpha", "state": "backlog"})
     assert code == 428
     assert "If-Match" in response["error"]
 
 
 def test_stale_revision_returns_412_without_write(api: RunningApi) -> None:
-    request_json(api.base + "/v1/cards", token=api_endpoint.BROWSER_TOKEN, revision=0,
+    request_json(api.base + API + "/cards", token=api_endpoint.BROWSER_TOKEN, revision=0,
                  body={"subject": "Alpha", "state": "backlog"})
     code, response = request_json(
-        api.base + "/v1/cards/1/comment", token=api_endpoint.BROWSER_TOKEN, revision=0,
+        api.base + API + "/cards/1/comment", token=api_endpoint.BROWSER_TOKEN, revision=0,
         body={"text": "stale"})
     saved = board_state.load(api.path)
     assert code == 412
@@ -283,7 +287,7 @@ def test_stale_revision_returns_412_without_write(api: RunningApi) -> None:
 
 def test_domain_refusal_returns_409(api: RunningApi) -> None:
     code, response = request_json(
-        api.base + "/v1/cards", token=api_endpoint.CLI_TOKEN, revision=0,
+        api.base + API + "/cards", token=api_endpoint.CLI_TOKEN, revision=0,
         body={"id": "alpha", "subject": "Alpha", "state": "completed"})
     assert code == 409
     assert "may not create" in response["error"]
@@ -292,7 +296,7 @@ def test_domain_refusal_returns_409(api: RunningApi) -> None:
 
 def test_malformed_json_returns_400(api: RunningApi) -> None:
     request = urllib.request.Request(
-        api.base + "/v1/cards", data=b"{", method="POST",
+        api.base + API + "/cards", data=b"{", method="POST",
         headers={"Authorization": f"Bearer {api_endpoint.BROWSER_TOKEN}",
                  "Content-Type": "application/json",
                  "If-Match": '"revision-0"'})
@@ -301,5 +305,30 @@ def test_malformed_json_returns_400(api: RunningApi) -> None:
 
 
 def test_unknown_route_returns_404(api: RunningApi) -> None:
-    request = urllib.request.Request(api.base + "/v1/unknown", data=b"{}", method="POST")
+    request = urllib.request.Request(
+        api.base + API + "/unknown", data=b"{}", method="POST")
+    assert_http_error(request, 404)
+
+
+@pytest.mark.parametrize("route", ["/v1/board", "/data"])
+def test_retired_read_routes_return_404(api: RunningApi, route: str) -> None:
+    assert_http_error(urllib.request.Request(api.base + route), 404)
+
+
+@pytest.mark.parametrize("route", ["/v1/status", "/mtime"])
+def test_retired_status_routes_redirect_stale_tabs(
+    api: RunningApi, route: str,
+) -> None:
+    with urllib.request.urlopen(api.base + route, timeout=5) as response:
+        health = json.loads(response.read())
+        assert response.url == api.base + API + "/status"
+        assert response.headers["Cache-Control"] == "no-store, max-age=0"
+    assert health["ok"] is True
+
+
+def test_retired_mutation_route_returns_404(api: RunningApi) -> None:
+    request = urllib.request.Request(
+        api.base + "/v1/cards", data=b"{}", method="POST",
+        headers={"Authorization": f"Bearer {api_endpoint.BROWSER_TOKEN}",
+                 "If-Match": '"revision-0"'})
     assert_http_error(request, 404)
