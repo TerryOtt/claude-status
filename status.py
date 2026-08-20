@@ -49,12 +49,17 @@ either. **It would have added a dependency and moved the rules, not enforced the
 import argparse
 import contextlib
 import datetime
+import hashlib
 import itertools
 import json
 import os
 import pathlib
 import re
+import tempfile
 import time
+import urllib.error
+import urllib.parse
+import urllib.request
 from collections.abc import Callable, Iterator
 from dataclasses import dataclass, field
 from typing import Any, Self
@@ -1463,6 +1468,10 @@ class Board:
     port: int = DEFAULT_PORT
     items: list[Item] = field(default_factory=list)
 
+    # Monotonic optimistic-concurrency token. Older schema-2 boards predate the field
+    # and enter at revision zero; the first service mutation writes revision one.
+    revision: int = 0
+
     # **The next ticket to hand out. It only ever goes UP.**
     #
     # **A number MUST NOT be reused, even after a card is archived or deleted.** The
@@ -1504,6 +1513,7 @@ class Board:
         # erasure, and the next load would refuse to start.
         out: dict[str, Any] = {
             "schema": SCHEMA,
+            "revision": self.revision,
             "project": self.project,
             "port": self.port,
             "users": [{"id": u.id, "label": u.label, "class": u.user_class,
@@ -1540,6 +1550,10 @@ class Board:
         port = raw.get("port", DEFAULT_PORT)
         if not isinstance(port, int) or not MIN_PORT <= port <= MAX_PORT:
             raise BoardError(f"{where}: port {port!r} is not a TCP port number")
+
+        revision = raw.get("revision", 0)
+        if not isinstance(revision, int) or revision < 0:
+            raise BoardError(f"{where}: revision {revision!r} is not a non-negative integer")
 
         # **Users are parsed and INSTALLED before the items**, because `Item.from_json`
         # validates each card's owner against the cast. Card #0083.
@@ -1582,6 +1596,7 @@ class Board:
                 f"#{max(tickets):04d} already exists -- the counter went backwards")
 
         board = cls(project=str(raw.get("project", "")), port=port, items=items,
+                    revision=revision,
                     next_ticket=next_ticket,
                     links=_links_from_json(raw.get("links", []), seen, where),
                     users=users, browser_user=browser_user, cli_user=cli_user,
@@ -1778,6 +1793,9 @@ class Board:
             raise BoardError(f"duplicate id {item_id!r}")
         if priority not in PRIORITIES:
             raise BoardError(f"unknown priority {priority!r}")
+        chosen_owner = owner or self.default_owner or DEFAULT_OWNER
+        if chosen_owner not in ACTORS:
+            raise BoardError(f"unknown owner {chosen_owner!r}")
         # **Taken from the counter and the counter advances**, never derived from the
         # items. See `next_ticket` for why both obvious derivations collide.
         # **NO ownership entry, even though the owner is now chosen rather than assumed.**
@@ -1788,7 +1806,7 @@ class Board:
         # change to record.
         item = Item(
             id=item_id, subject=subject, state=state, ticket=self.next_ticket,
-            priority=priority, detail=detail, owner=owner,
+            priority=priority, detail=detail, owner=chosen_owner,
             history=[Change(at=now(), to=state, by=by)])
         self.next_ticket += 1
         self.items.append(item)
@@ -2174,6 +2192,13 @@ def load(path: pathlib.Path) -> Board:
     return Board.from_json(raw, str(path))
 
 
+def service_descriptor_path(path: pathlib.Path) -> pathlib.Path:
+    """Stable machine-local rendezvous path for one resolved board file."""
+    identity = str(path.resolve()).casefold().encode("utf-8")
+    name = hashlib.sha256(identity).hexdigest()[:20] + ".json"
+    return pathlib.Path(tempfile.gettempdir()) / "claude-status" / name
+
+
 # **How long to wait for another writer, and when to call a lock abandoned.**
 # A real edit is a file read, a dict mutation and a 13 KB write -- microseconds. A
 # second of patience covers any honest contention; ten means the holder is dead.
@@ -2329,6 +2354,104 @@ def _replace_with_retry(tmp: pathlib.Path, target: pathlib.Path) -> None:
             return
 
 
+def _service_descriptor(path: pathlib.Path) -> dict[str, Any]:
+    """Read and validate the local service rendezvous file."""
+    service = service_descriptor_path(path)
+    try:
+        raw = json.loads(service.read_text(encoding="utf-8"))
+    except (OSError, ValueError) as exc:
+        raise BoardError(
+            f"board service is not running ({service} is unavailable); nothing changed") from exc
+    if not isinstance(raw, dict) or raw.get("schema") != 1:
+        raise BoardError(f"{service}: unsupported service descriptor")
+    host, port, token = raw.get("host"), raw.get("port"), raw.get("token")
+    if host != "127.0.0.1" or not isinstance(port, int) or not isinstance(token, str):
+        raise BoardError(f"{service}: invalid loopback service endpoint")
+    return raw
+
+
+def _service_json(url: str, token: str, *, body: dict[str, object] | None = None,
+                  revision: int | None = None) -> dict[str, Any]:
+    """Make one authenticated service request and turn refusals into BoardError."""
+    headers = {"Authorization": f"Bearer {token}"}
+    data: bytes | None = None
+    if body is not None:
+        headers["Content-Type"] = "application/json"
+        headers["If-Match"] = f'"revision-{revision}"'
+        data = json.dumps(body).encode("utf-8")
+    request = urllib.request.Request(url, data=data, headers=headers,
+                                     method="POST" if body is not None else "GET")
+    try:
+        with urllib.request.urlopen(request, timeout=5) as response:
+            raw = json.loads(response.read())
+    except urllib.error.HTTPError as exc:
+        try:
+            error = json.loads(exc.read()).get("error", str(exc))
+        except (ValueError, AttributeError):
+            error = str(exc)
+        raise BoardError(f"board service refused the command: {error}") from exc
+    except (OSError, urllib.error.URLError, ValueError) as exc:
+        raise BoardError(f"could not reach board service; nothing changed: {exc}") from exc
+    if not isinstance(raw, dict):
+        raise BoardError("board service returned a non-object response")
+    return raw
+
+
+def _remote_apply(path: pathlib.Path, args: argparse.Namespace) -> str:  # noqa: PLR0912
+    """Translate one CLI mutation into the same REST command the browser uses."""
+    descriptor = _service_descriptor(path)
+    base = f"http://{descriptor['host']}:{descriptor['port']}"
+    token = str(descriptor["token"])
+    snapshot = _service_json(base + "/v1/board", token)
+    revision = snapshot.get("revision")
+    if not isinstance(revision, int):
+        raise BoardError("board service response has no revision")
+
+    route: str
+    body: dict[str, object]
+    def quote(value: object) -> str:
+        return urllib.parse.quote(str(value), safe="")
+    if args.create:
+        route = "/v1/cards"
+        body = {"id": args.create[0], "subject": args.create[1], "state": args.state,
+                "priority": args.priority, "detail": _detail_text(args),
+                "owner": args.owner or DEFAULT_OWNER}
+    elif args.set_project:
+        route, body = "/v1/board/project", {"project": args.set_project}
+    elif args.move:
+        route, body = f"/v1/cards/{quote(args.move[0])}/move", {"to": args.move[1]}
+    elif args.comment:
+        route, body = f"/v1/cards/{quote(args.comment[0])}/comment", {"text": args.comment[1]}
+    elif args.assign:
+        route, body = f"/v1/cards/{quote(args.assign[0])}/assign", {"owner": args.assign[1]}
+    elif args.set_priority:
+        route, body = (f"/v1/cards/{quote(args.set_priority[0])}/priority",
+                       {"priority": args.set_priority[1]})
+    elif args.set_detail:
+        route, body = f"/v1/cards/{quote(args.set_detail)}/detail", {
+            "detail": _detail_text(args)}
+    elif args.set_subject:
+        route, body = f"/v1/cards/{quote(args.set_subject[0])}/subject", {
+            "subject": args.set_subject[1]}
+    elif args.link or args.unlink:
+        values = args.link or args.unlink
+        route, body = f"/v1/cards/{quote(values[0])}/link", {
+            "kind": values[1], "other": values[2], "remove": bool(args.unlink)}
+    elif args.set_parent:
+        route, body = f"/v1/cards/{quote(args.set_parent[0])}/parent", {
+            "parent": args.set_parent[1]}
+    elif args.clear_parent:
+        route, body = f"/v1/cards/{quote(args.clear_parent)}/parent", {"parent": None}
+    else:
+        raise BoardError("no mutation requested")
+
+    response = _service_json(base + route, token, body=body, revision=revision)
+    result = response.get("result")
+    if not isinstance(result, str):
+        raise BoardError("board service returned no result")
+    return result
+
+
 def main() -> None:
     """A small CLI, so a board can be inspected and moved without the browser."""
     ap = argparse.ArgumentParser(description="Inspect or update a claude-status board.")
@@ -2409,23 +2532,10 @@ def main() -> None:
         ap.error("--create needs --state")
 
     if any(getattr(args, name) for name in MUTATIONS):
-        # **The lock is held across load, mutate and save.** Reading first and
-        # locking second would hand out a snapshot another writer can invalidate.
-        #
-        # **THE PRINT IS OUTSIDE THE BLOCK, and that ordering is the whole point.**
-        # `edit()` saves on the way out, so printing inside it reports a result the
-        # disk has not accepted yet. On 2026-08-18 `--move 31 ready_for_review`
-        # printed its success line and the card did not move: `save()` then raised
-        # `PermissionError: [WinError 5]` from `tmp.replace(target)`, because the
-        # board lives on a NAS share and `os.replace` over SMB can return
-        # access-denied while another handle is briefly open.
-        #
-        # **This is the library's own rule, one layer up.** `move()` records Terry's
-        # instruction verbatim -- *"I'd rather log fail and then we abort vs write
-        # file succeed and succeed THEN log fails. Leaves you in a bad spot."* A
-        # failed save now raises before anything reaches the screen.
-        with edit(args.board) as board:
-            result = _apply(board, args)
+        try:
+            result = _remote_apply(args.board.resolve(), args)
+        except BoardError as exc:
+            raise SystemExit(f"  ERROR: {exc}") from None
         print(f"  {result}")
         return
 

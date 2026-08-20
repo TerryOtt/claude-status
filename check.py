@@ -141,6 +141,16 @@ def run_pyright() -> bool:
     return ok
 
 
+def run_tests() -> bool:
+    """Run the behavioral suite after static checks establish it can import."""
+    print("  pytest")
+    done = subprocess.run([sys.executable, "-m", "pytest", "-q"],
+                          cwd=ROOT, check=False)
+    ok = done.returncode == 0
+    print(f"    {'ok' if ok else 'FAIL'}\n")
+    return ok
+
+
 def missing_table_banner(explicit: str | None) -> None:
     """Say loudly that nothing was checked. **Silence here would read as a pass.**"""
     print(RULE)
@@ -183,7 +193,7 @@ def run_words(table: pathlib.Path, files: list[pathlib.Path]) -> bool:
 
 def main() -> int:
     parser = argparse.ArgumentParser(
-        description="Lint and prose gate for claude-status. Run before committing.")
+        description="Behavior, static-analysis and prose gate. Run before committing.")
     parser.add_argument("--word-table", default=None,
                         help="path to FlickrGroupAddr's scripts/claude-dirty-words.py")
     args = parser.parse_args()
@@ -196,6 +206,9 @@ def main() -> int:
 
     if not run_pyright():
         failures.append("pyright")
+
+    if not run_tests():
+        failures.append("pytest")
 
     table = find_table(args.word_table)
     files = tracked((".py", ".md", ".json"))

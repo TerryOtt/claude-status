@@ -40,11 +40,10 @@ jobs:
         with:
           python-version: '3.x'
 
-      # **Both, because they check different things.** Ruff checks that an annotation
-      # EXISTS. Pyright checks that it is TRUE -- and it found a real defect the hour it
-      # was added here, on a line ruff had passed every day.
-      - name: Install ruff and pyright
-        run: python -m pip install --upgrade ruff pyright
+      # **All three answer different questions.** Ruff checks that an annotation
+      # EXISTS, Pyright checks that it is TRUE, and pytest checks behavior at runtime.
+      - name: Install ruff, pyright and pytest
+        run: python -m pip install --upgrade ruff pyright pytest
 
       # **The path is passed explicitly rather than guessed.** `check.py`'s fallback
       # guesses are Terry's machine; CI knows exactly where it put things, and saying

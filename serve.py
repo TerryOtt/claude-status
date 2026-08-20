@@ -58,21 +58,26 @@ do not. **Half the change appearing is more disorienting than none of it.**
 
 import argparse
 import contextlib
+import copy
 import datetime
 import hashlib
 import html
 import http.server
 import json
+import os
 import pathlib
 import re
+import secrets
 import subprocess
 import threading
 import time
 import urllib.parse
+from collections.abc import Callable
 
 import status
 
 HOST = "127.0.0.1"
+CARD_COMMAND_PARTS = 4
 
 
 def build_id() -> str:
@@ -415,6 +420,88 @@ INLINE = (
 
 # Set once at startup by `main`. One process serves one board.
 BOARD_PATH: pathlib.Path = pathlib.Path("board.json")
+
+
+class RevisionConflict(status.BoardError):
+    """A command was based on a board snapshot that is no longer current."""
+
+
+class BoardStore:
+    """Serialize board commands and publish only snapshots that reached disk."""
+
+    def __init__(self, path: pathlib.Path) -> None:
+        self.path = path
+        self._mutex = threading.RLock()
+        self._board = status.load(path)
+
+    def snapshot(self) -> status.Board:
+        """Return an isolated current snapshot, refreshing valid external edits."""
+        with self._mutex:
+            board = status.load(self.path)
+            self._board = board
+            return copy.deepcopy(board)
+
+    def execute(self, expected_revision: int,
+                command: Callable[[status.Board], str]) -> tuple[str, int]:
+        """Apply one command under the file lock and commit one new revision."""
+        with self._mutex:
+            with status.edit(self.path) as candidate:
+                if candidate.revision != expected_revision:
+                    raise RevisionConflict(
+                        f"board revision is {candidate.revision}, not "
+                        f"{expected_revision}; refresh and try again")
+                result = command(candidate)
+                problems = candidate.verify()
+                if problems:
+                    raise status.BoardError(
+                        "command would leave an invalid board: " + "; ".join(problems))
+                candidate.revision += 1
+                committed = candidate
+            # `status.edit` saves on exit. Publish in memory only after that succeeds.
+            self._board = copy.deepcopy(committed)
+            return result, committed.revision
+
+
+STORE: BoardStore | None = None
+BROWSER_TOKEN = secrets.token_urlsafe(32)
+CLI_TOKEN = secrets.token_urlsafe(32)
+
+
+def service_file(path: pathlib.Path) -> pathlib.Path:
+    """Machine-local rendezvous file used by the CLI to find this service."""
+    return status.service_descriptor_path(path)
+
+
+def publish_service(path: pathlib.Path, port: int) -> None:
+    """Atomically publish the CLI endpoint and its process credential."""
+    target = service_file(path)
+    target.parent.mkdir(parents=True, exist_ok=True)
+    tmp = target.with_name(target.name + f".tmp{os.getpid()}")
+    doc = {"schema": 1, "pid": os.getpid(), "host": HOST, "port": port,
+           "token": CLI_TOKEN, "board": str(path.resolve())}
+    try:
+        with tmp.open("w", encoding="utf-8", newline="\n") as fh:
+            json.dump(doc, fh, indent=2)
+            fh.write("\n")
+            fh.flush()
+            os.fsync(fh.fileno())
+        with contextlib.suppress(OSError):
+            tmp.chmod(0o600)
+        tmp.replace(target)
+    except OSError:
+        tmp.unlink(missing_ok=True)
+        raise
+
+
+def remove_service(path: pathlib.Path) -> None:
+    """Remove only the rendezvous file published by this process."""
+    target = service_file(path)
+    try:
+        raw = json.loads(target.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return
+    if isinstance(raw, dict) and raw.get("token") == CLI_TOKEN:
+        target.unlink(missing_ok=True)
 
 # **Inter, bundled rather than linked, under the SIL Open Font License 1.1.**
 # `vendor/typefaces/inter/README.md` carries the copyright, the license text and the
@@ -1522,6 +1609,24 @@ move any card whoever owns it. Click to hand it over."></button>
   <div id="toast"></div>
 
 <script>
+const API_TOKEN = '%TOKEN%';
+
+async function apiPost(path, body) {
+  return fetch(path, {
+    method: 'POST',
+    headers: {
+      'Authorization': 'Bearer ' + API_TOKEN,
+      'Content-Type': 'application/json',
+      'If-Match': '"revision-' + data.revision + '"',
+    },
+    body: JSON.stringify(body),
+  });
+}
+
+function acceptRevision(out) {
+  if (Number.isInteger(out.revision)) data.revision = out.revision;
+}
+
 // **The repaint counter is GONE, deliberately.** It only moved when the file
 // changed, so a healthy quiet board and a dead poll showed the same number --
 // which is the exact confusion the LIVE badge replaced. Two signals telling the
@@ -1603,11 +1708,10 @@ async function saveSubject() {
   if (it && wanted === it.subject) { closeEditors(); return; }
   box.disabled = true;
   try {
-    const res = await fetch('/subject', {
-      method: 'POST', headers: {'Content-Type': 'application/json'},
-      body: JSON.stringify({id: openId, subject: wanted}),
-    });
+    const res = await apiPost('/v1/cards/' + encodeURIComponent(openId) + '/subject',
+                              {subject: wanted});
     const out = await res.json();
+    acceptRevision(out);
     if (!res.ok) { toast(out.error || 'Rename refused', true); return; }
     toast(out.result);
     seen = null;
@@ -1639,11 +1743,10 @@ async function saveDetail() {
   if (!wanted.trim()) { toast('A description cannot be blank', true); return; }
   save.disabled = true;
   try {
-    const res = await fetch('/detail', {
-      method: 'POST', headers: {'Content-Type': 'application/json'},
-      body: JSON.stringify({id: openId, detail: wanted}),
-    });
+    const res = await apiPost('/v1/cards/' + encodeURIComponent(openId) + '/detail',
+                              {detail: wanted});
     const out = await res.json();
+    acceptRevision(out);
     if (!res.ok) { toast(out.error || 'Edit refused', true); return; }
     toast(out.result);
     seen = null;
@@ -1976,11 +2079,10 @@ async function postComment() {
   // **This guard is why Enter on an empty box is safe for free.** It predates the
   // key binding and covers it without a second check.
   if (!openId || !text) return;
-  const res = await fetch('/comment', {
-    method: 'POST', headers: {'Content-Type': 'application/json'},
-    body: JSON.stringify({id: openId, text: text}),
-  });
+  const res = await apiPost('/v1/cards/' + encodeURIComponent(openId) + '/comment',
+                            {text: text});
   const out = await res.json();
+  acceptRevision(out);
   if (!res.ok) { toast(out.error || 'Comment refused', true); return; }
   document.getElementById('say').value = '';
   // **The stash MUST be dropped too, or the text just sent comes back on reopen** --
@@ -2033,11 +2135,10 @@ document.getElementById('p-owner').addEventListener('click', async () => {
   const own = document.getElementById('p-owner');
   own.disabled = true;
   try {
-    const res = await fetch('/assign', {
-      method: 'POST', headers: {'Content-Type': 'application/json'},
-      body: JSON.stringify({id: openId, owner: nextOwner(it.owner)}),
-    });
+    const res = await apiPost('/v1/cards/' + encodeURIComponent(openId) + '/assign',
+                              {owner: nextOwner(it.owner)});
     const out = await res.json();
+    acceptRevision(out);
     if (!res.ok) { toast(out.error || 'Reassign refused', true); return; }
     toast(out.result);
     seen = null;
@@ -2065,11 +2166,10 @@ document.getElementById('p-pri').addEventListener('change', async (ev) => {
   const wanted = pri.value;
   pri.disabled = true;
   try {
-    const res = await fetch('/priority', {
-      method: 'POST', headers: {'Content-Type': 'application/json'},
-      body: JSON.stringify({id: openId, priority: wanted}),
-    });
+    const res = await apiPost('/v1/cards/' + encodeURIComponent(openId) + '/priority',
+                              {priority: wanted});
     const out = await res.json();
+    acceptRevision(out);
     if (!res.ok) {
       toast(out.error || 'Priority change refused', true);
       const it = itemById(openId);
@@ -2199,17 +2299,15 @@ async function submitMake() {
   const go = document.getElementById('mk-go');
   go.disabled = true;
   try {
-    const res = await fetch('/create', {
-      method: 'POST', headers: {'Content-Type': 'application/json'},
-      body: JSON.stringify({
+    const res = await apiPost('/v1/cards', {
         state: mkOpen,
         subject: subject,
         detail: document.getElementById('mk-detail').value,
         priority: document.getElementById('mk-priority').value,
         owner: document.getElementById('mk-owner').value,
-      }),
     });
     const out = await res.json();
+    acceptRevision(out);
     if (!res.ok) { toast(out.error || 'Card refused', true); return; }
     // **Only cleared once the server has it.** Clearing on click would throw the
     // text away on a refusal, which is the same defect as the repaint wipe
@@ -2360,11 +2458,10 @@ function laneEl(lane) {
       toast('Not yours to drop there: ' + payload.from + ' \\u2192 ' + lane.state, true);
       return;
     }
-    const res = await fetch('/move', {
-      method: 'POST', headers: {'Content-Type': 'application/json'},
-      body: JSON.stringify({id: payload.id, to: lane.state}),
-    });
+    const res = await apiPost('/v1/cards/' + encodeURIComponent(payload.id) + '/move',
+                              {to: lane.state});
     const out = await res.json();
+    acceptRevision(out);
     if (!res.ok) { toast(out.error || 'Move refused', true); return; }
     toast(out.result);
     seen = null;
@@ -2884,7 +2981,7 @@ function renderLive() {
 // plus a 12 KB JSON parse against a local file.
 async function tick() {
   try {
-    const meta = await (await fetch('/mtime', {cache: 'no-store'})).json();
+    const meta = await (await fetch('/v1/status', {cache: 'no-store'})).json();
     // **Captured before the ok check**, because a stale tab and an unreadable board
     // are independent failures and either can be true while the other is.
     if (meta.build) serverBuild = meta.build;
@@ -2901,7 +2998,7 @@ async function tick() {
     if (meta.ok === false) { renderLive(); return; }
     fileMs = meta.mtime * 1000;
     if (meta.mtime !== seen) {
-      data = await (await fetch('/data', {cache: 'no-store'})).json();
+      data = await (await fetch('/v1/board', {cache: 'no-store'})).json();
       // **The search cache MUST die with the data that filled it.** Card #0061. A card
       // that gains a comment keeps its id, so a cache keyed on the id alone would go on
       // answering from the text that card had a minute ago -- and a search for a
@@ -2960,7 +3057,7 @@ def payload() -> bytes:
     because a blank tab and a broken parser look identical and one of them is a lie.
     """
     try:
-        board = status.load(BOARD_PATH)
+        board = STORE.snapshot() if STORE is not None else status.load(BOARD_PATH)
     except (status.BoardError, OSError, json.JSONDecodeError) as exc:
         return json.dumps({"lanes": [], "edges": [], "counts": {},
                            "error": str(exc)}).encode("utf-8")
@@ -2992,6 +3089,7 @@ def payload() -> bytes:
                          if lane.state != "completed")
 
     return json.dumps({
+        "revision": board.revision,
         "project": board.project,
         "lanes": [{
             "state": lane.state,
@@ -3142,9 +3240,24 @@ class Handler(http.server.BaseHTTPRequestHandler):
             return None
         return body if isinstance(body, dict) else None
 
+    def _actor(self) -> status.Actor | None:
+        """Map a bearer credential to a configured actor; never trust body data."""
+        auth = self.headers.get("Authorization", "")
+        if auth == f"Bearer {BROWSER_TOKEN}":
+            return status.BROWSER_USER
+        if auth == f"Bearer {CLI_TOKEN}":
+            return status.CLI_USER
+        return None
+
+    def _expected_revision(self) -> int | None:
+        raw = self.headers.get("If-Match", "").strip().strip('"')
+        if raw.startswith("revision-"):
+            raw = raw.removeprefix("revision-")
+        return int(raw) if raw.isdigit() else None
+
     def do_GET(self) -> None:
         route = self.path.partition("?")[0]
-        if route == "/mtime":
+        if route in ("/mtime", "/v1/status"):
             # **THE GREEN CIRCLE MEANS "PYTHON READ THAT FILE JUST NOW", so this
             # route actually reads it.** Terry set the bar: *"green circle means
             # python has actively polled and read that file within last 5 seconds."*
@@ -3196,7 +3309,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
             # failures, and either can be true while the other is.
             self._json({"ok": True, "mtime": mtime, "stamp": stamp, "build": BUILD,
                         "codeStale": code_is_stale(), "push": push_status()})
-        elif route == "/data":
+        elif route in ("/data", "/v1/board"):
             self._send(payload(), "application/json")
         elif route == "/favicon.svg":
             # **Cached, unlike everything else here.** The no-store rule on `_send`
@@ -3235,6 +3348,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
             # comparison. Fetching it later would just re-read the server and always agree.
             page = (PAGE.replace("%POLL%", str(POLL_MS))
                     .replace("%BUILD%", html.escape(BUILD))
+                    .replace("%TOKEN%", BROWSER_TOKEN)
                     # **The bar's mark comes from the same `FAVICON` the tab icon
                     # uses.** Card #0095. One definition, so a recolor cannot land in
                     # one place and miss the other.
@@ -3247,17 +3361,25 @@ class Handler(http.server.BaseHTTPRequestHandler):
         else:
             self.send_error(404)
 
-    def do_POST(self) -> None:
-        """`/move`, `/comment`, `/create`, `/assign` and `/priority`. **All act as
-        `terry`, and that is a FACT here.**
-
-        The server binds to loopback, so the request came from his machine. That is
-        the property the Trello route could not offer at any price.
-        """
+    def do_POST(self) -> None:  # noqa: PLR0911, PLR0915 -- HTTP boundary
+        """Execute one authenticated, revision-checked domain command."""
         route = self.path.partition("?")[0]
-        if route not in ("/move", "/comment", "/create", "/assign", "/priority",
-                         "/subject", "/detail"):
+        parts = [urllib.parse.unquote(part) for part in route.strip("/").split("/")]
+        is_create = parts == ["v1", "cards"]
+        is_project = parts == ["v1", "board", "project"]
+        is_card_command = (len(parts) == CARD_COMMAND_PARTS
+                           and parts[:2] == ["v1", "cards"])
+        if not (is_create or is_project or is_card_command):
             self.send_error(404)
+            return
+
+        actor = self._actor()
+        if actor is None:
+            self._json({"error": "missing or invalid service credential"}, 401)
+            return
+        expected = self._expected_revision()
+        if expected is None:
+            self._json({"error": "If-Match must name the expected board revision"}, 428)
             return
         body = self._read_json()
         if body is None:
@@ -3265,78 +3387,66 @@ class Handler(http.server.BaseHTTPRequestHandler):
             return
 
         try:
-            # **`status.edit` holds an exclusive lock across load, mutate and save.**
-            # Both writers must use it or it protects nothing: Terry drags here while
-            # Claude runs `status.py --move`, and each rewrites the WHOLE file. The
-            # loser of that race does not get a corrupt board -- it gets a perfectly
-            # valid one that silently forgot a move.
-            #
-            # **This server is threaded**, so it also races itself: two quick drags
-            # land on two handler threads.
-            with status.edit(BOARD_PATH) as board:
-                if route == "/move":
-                    result = board.move(str(body["id"]), str(body["to"]), status.BROWSER_USER)
-                elif route == "/assign":
-                    # **No permission check, deliberately.** Ownership is a label, so
-                    # either actor may assign it either way -- card #0053.
-                    #
-                    # **`as_actor` narrows the BROWSER'S string at this boundary.** It
-                    # used to pass `str(...)` into a parameter annotated `Actor`, which
-                    # let any value the page cared to post reach the board and told
-                    # pyright the guard inside `assign()` could never fire. Both halves
-                    # were one bug, found 2026-08-19.
-                    result = board.assign(
-                        str(body["id"]), status.as_actor(str(body["owner"])), status.BROWSER_USER)
-                elif route == "/priority":
-                    # **No permission check, and `set_priority` has none either.** Terry
-                    # decides what matters; Claude files cards and guesses wrong
-                    # sometimes. A permission here would only make a correction need a
-                    # round trip -- card #0062, and the same reasoning as `/assign`.
-                    #
-                    # **`set_priority` validates the string against `PRIORITIES`**, so a
-                    # crafted POST gets a `BoardError` and a 409 rather than writing an
-                    # unknown priority that `lanes()` would then sort to the bottom
-                    # forever.
-                    result = board.set_priority(
-                        str(body["id"]), str(body["priority"]), status.BROWSER_USER)
-                elif route == "/subject":
-                    # **Cards #0081 and #0082.** Terry: *"Sometimes I want to change
-                    # ticket titles/descriptions, and I have no way to do that
-                    # currently."*
-                    #
-                    # **Both refuse empty text in the MODEL, not here**, so the CLI and
-                    # the page cannot disagree about what blanking a card means.
-                    result = board.set_subject(
-                        str(body["id"]), str(body["subject"]), status.BROWSER_USER)
-                elif route == "/detail":
-                    result = board.set_detail(
-                        str(body["id"]), str(body["detail"]), status.BROWSER_USER)
-                elif route == "/create":
+            if STORE is None:
+                raise status.BoardError("board store is not initialized")
+
+            def mutate(board: status.Board) -> str:  # noqa: PLR0911, PLR0912
+                if is_create:
                     state = str(body["state"])
                     subject = str(body["subject"]).strip()
                     if not subject:
                         raise status.BoardError("a card needs a title")
-                    result = board.create(
-                        slug_for(board, subject), subject, state, status.BROWSER_USER,
+                    item_id = str(body.get("id") or slug_for(board, subject))
+                    return board.create(
+                        item_id, subject, state, actor,
                         priority=str(body.get("priority") or status.DEFAULT_PRIORITY),
                         detail=str(body.get("detail") or ""),
-                        # **`as_actor` narrows the browser's string here too.** Card
-                        # #0069, and the same boundary lesson `/assign` paid for: a
-                        # parameter annotated `Actor` fed a raw `str` is an annotation
-                        # that lies at the call site.
                         owner=status.as_actor(str(body.get("owner") or status.DEFAULT_OWNER)),
                     )
-                else:
-                    result = board.comment(str(body["id"]), str(body["text"]), status.BROWSER_USER)
+                if is_project:
+                    was = board.project
+                    name = str(body["project"]).strip()
+                    if not name:
+                        raise status.BoardError("a project needs a name")
+                    board.project = name
+                    return f"project renamed: {was!r} -> {name!r}"
+
+                ref, action = parts[2], parts[3]
+                if action == "move":
+                    return board.move(ref, str(body["to"]), actor)
+                if action == "comment":
+                    return board.comment(ref, str(body["text"]), actor)
+                if action == "assign":
+                    return board.assign(ref, status.as_actor(str(body["owner"])), actor)
+                if action == "priority":
+                    return board.set_priority(ref, str(body["priority"]).upper(), actor)
+                if action == "subject":
+                    return board.set_subject(ref, str(body["subject"]), actor)
+                if action == "detail":
+                    return board.set_detail(ref, str(body["detail"]), actor)
+                if action == "parent":
+                    parent = body.get("parent")
+                    return board.set_parent(ref, str(parent) if parent else None, actor)
+                if action == "link":
+                    kind, other = str(body["kind"]).lower(), str(body["other"])
+                    if body.get("remove"):
+                        return board.unlink(ref, kind, other, actor)
+                    return board.link(ref, kind, other, actor)
+                raise status.BoardError(f"unknown card command {action!r}")
+
+            result, revision = STORE.execute(expected, mutate)
         except KeyError as exc:
             self._json({"error": f"missing field {exc}"}, 400)
+            return
+        except RevisionConflict as exc:
+            self._json({"error": str(exc)}, 412)
             return
         except (status.BoardError, OSError, json.JSONDecodeError) as exc:
             self._json({"error": str(exc)}, 409)
             return
 
         print(f"  {result}", flush=True)
-        self._json({"result": result})
+        self._json({"result": result, "revision": revision})
 
     def log_message(self, format: str, *args: object) -> None:  # noqa: A002, ARG002
         # **The parameter names are the base class's and MUST NOT be renamed.** A
@@ -3356,18 +3466,19 @@ class Handler(http.server.BaseHTTPRequestHandler):
 
 
 def main() -> None:
-    global BOARD_PATH  # noqa: PLW0603 -- one process serves one board, set at startup
+    global BOARD_PATH, STORE  # noqa: PLW0603 -- one process serves one board
     ap = argparse.ArgumentParser(description="Serve a claude-status board.")
     ap.add_argument("board", type=pathlib.Path, help="path to the board JSON")
     ap.add_argument("--port", type=int, default=None,
                     help="override the port in the board file")
     args = ap.parse_args()
-    BOARD_PATH = args.board
+    BOARD_PATH = args.board.resolve()
 
     port = args.port or status.DEFAULT_PORT
     print(f"Serving {BOARD_PATH}")
     try:
         board = status.load(BOARD_PATH)
+        STORE = BoardStore(BOARD_PATH)
         if args.port is None:
             port = board.port
         print(f"  project   : {board.project or '(unnamed)'}")
@@ -3417,8 +3528,14 @@ def main() -> None:
     threading.Thread(target=_push_loop, args=(BOARD_PATH,),
                      name="autopush", daemon=True).start()
 
+    server = http.server.ThreadingHTTPServer((HOST, port), Handler)
+    publish_service(BOARD_PATH, port)
     print(f"Listening on {HOST}:{port}. Press Ctrl+C to stop.", flush=True)
-    http.server.ThreadingHTTPServer((HOST, port), Handler).serve_forever()
+    try:
+        server.serve_forever()
+    finally:
+        remove_service(BOARD_PATH)
+        server.server_close()
 
 
 if __name__ == "__main__":

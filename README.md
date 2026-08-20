@@ -11,14 +11,48 @@ The port comes from the board file's own `port` field rather than a flag, so one
 bookmark per project cannot open the wrong board. `status.py` is the library and the
 command line; `rules.json` is the permission model and is re-read live.
 
+## Persistence and the REST API
+
+`serve.py` is the sole writer while a board is live. The browser and `status.py` CLI
+send domain commands to its loopback REST API; neither submits a replacement board.
+Each successful command validates the model, increments the board's monotonic
+`revision`, flushes a temporary JSON file and atomically replaces the prior snapshot.
+
+Mutation requests use `If-Match: "revision-N"`. A stale client receives HTTP 412 and
+must refresh rather than overwrite a newer command. Bearer credentials are published
+in a user-local temporary rendezvous file: the browser credential maps to the board's
+`browserUser`, and the CLI credential maps to `cliUser`. Request bodies cannot choose
+their actor.
+
+The primary routes are:
+
+```
+GET  /v1/status
+GET  /v1/board
+POST /v1/cards
+POST /v1/cards/<id>/{move,comment,assign,priority,subject,detail,link,parent}
+POST /v1/board/project
+```
+
+CLI reports remain available directly from the JSON snapshot. CLI mutations require
+the board service to be running and fail without changing anything when it is absent;
+there is deliberately no direct-write fallback.
+
 ## The gate
 
 ```
 python check.py
 ```
 
-Runs `ruff` and the US English / house-vocabulary check over every tracked `.py`, `.md`
-and `.json`. **Run it before committing.**
+Runs `ruff`, `pyright`, the `pytest` behavioral suite and the US English /
+house-vocabulary check over every tracked `.py`, `.md` and `.json`. **Run it before
+committing.**
+
+The runtime remains standard-library-only. Install the development tools once with:
+
+```
+python -m pip install ruff pyright pytest
+```
 
 ### Turn on the pre-commit hook. It is one command and a fresh clone skips it
 

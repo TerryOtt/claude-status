@@ -66,6 +66,11 @@ ignore = [
 allow-star-arg-any = false
 mypy-init-return = true
 
+[lint.per-file-ignores]
+# Exact expected counts and HTTP status codes are the assertions in tests, not
+# unexplained control-flow constants in production code.
+"tests/*.py" = ["PLR2004"]
+
 # **PTH IS SELECTED HERE, unlike in FlickrGroupAddr, and the difference is
 # deliberate rather than an inconsistency.** That repository refused it because
 # migrating 154 findings across live hooks bought no behavior change. **This code
