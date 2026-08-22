@@ -346,8 +346,8 @@ the documentation or JSON recipe by itself, is the enforcement boundary:
 - Local Codex uses Terry's credential and is covered by that same user bypass.
 - Codex cloud uses the installed `chatgpt-codex-connector` GitHub App and has its own
   direct-push bypass.
-- All separately authenticated actors must reach `main` through a pull request whose
-  source name matches `feature/<lower-case-kebab-description>`.
+- All other actors must reach `main` through a pull request whose source name matches
+  `feature/<lower-case-kebab-description>`.
 - The `contribution-policy` workflow performs that PR-source check without checking
   out or executing untrusted contributor code.
 
@@ -358,17 +358,19 @@ Codex a separately auditable GitHub identity and direct-push bypass. The branch 
 does not override the repository instruction that Codex commits and pushes only after
 an explicit user request.
 
-The main ruleset requires one approval of the current changes, and that approval RFC
-2119 MUST come from GitHub user `TerryOtt`. `.github/CODEOWNERS` makes Terry the sole
-owner of every path, while the ruleset requires code-owner review; another person's
-approval cannot satisfy the requirement. The rule also requires `contribution-policy`
-and the existing `gate`, and only squash merge is allowed. Repository settings disable
-merge commits and rebase merges, allow a maintainer to enable auto-merge on an
-individual PR, and delete merged same-repository head branches. Native GitHub
-auto-merge does not enroll every PR automatically: when selected for a PR, it performs
-the squash merge after Terry's approval and both checks pass. If policy expectations
-change, update CODEOWNERS, the GitHub rule, both JSON recipes, workflow,
-`CONTRIBUTING.md`, and this section together.
+For every non-bypass PR, the main ruleset requires one approval of the current changes,
+and that approval RFC 2119 MUST come from GitHub user `TerryOtt`.
+`.github/CODEOWNERS` makes Terry the sole owner of every path, while the ruleset
+requires code-owner review; another person's approval cannot satisfy the requirement.
+The two `always` bypass actors can deliberately bypass all PR rules because that is
+what permits their direct pushes. The rule also requires `contribution-policy` and the
+existing `gate`, and only squash merge is allowed. Repository settings disable merge
+commits and rebase merges, allow a maintainer to enable auto-merge on an individual PR,
+and delete merged same-repository head branches. Native GitHub auto-merge does not
+enroll every PR automatically: when selected for a PR, it performs the squash merge
+after Terry's approval and both checks pass. If policy expectations change, update
+CODEOWNERS, the GitHub rule, both JSON recipes, workflow, `CONTRIBUTING.md`, and this
+section together.
 
 ## Documentation ownership
 

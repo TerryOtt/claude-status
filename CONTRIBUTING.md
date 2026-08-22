@@ -37,8 +37,8 @@ The enforced branch-name grammar is:
 ```
 
 Keep the description short and focused even though the check does not impose an
-arbitrary word limit. Terry is exempt from this naming rule when choosing to use a
-pull request.
+arbitrary word limit. Terry and the Codex GitHub App are exempt from this naming rule
+when choosing to use a pull request.
 
 ## Where enforcement lives
 
@@ -49,13 +49,18 @@ pull request.
 - GitHub's active repository ruleset is the actual protection boundary. Committing
   either JSON recipe does not apply it automatically.
 
-The approval requirement is an RFC 2119 **MUST**: approval must come from GitHub user
-`TerryOtt`. Another review may be useful but does not satisfy the merge requirement.
-`.github/CODEOWNERS` makes Terry the sole owner of every path, and the ruleset requires
-a code-owner review plus one approving review of the current changes. It also requires
-the `contribution-policy` and `gate` status checks. Squash is the only permitted PR
-merge method. GitHub automatically deletes a same-repository head branch after its PR
-is merged; it cannot delete a contributor's branch in a separate fork.
+For every non-bypass PR, the approval requirement is an RFC 2119 **MUST**: approval
+must come from GitHub user `TerryOtt`. Another review may be useful but does not
+satisfy the merge requirement. `.github/CODEOWNERS` makes Terry the sole owner of every
+path, and the ruleset requires a code-owner review plus one approving review of the
+current changes. It also requires the `contribution-policy` and `gate` status checks.
+Squash is the only permitted PR merge method. GitHub automatically deletes a
+same-repository head branch after its PR is merged; it cannot delete a contributor's
+branch in a separate fork.
+
+The `TerryOtt` and Codex App bypasses are intentionally `always`: either actor can
+push directly or deliberately bypass PR requirements. That exception is necessary for
+their requested direct-main capability and does not extend to any other actor.
 
 Repository auto-merge is available but is not automatically selected for every PR.
 Someone with write permission must enable it on an individual PR; GitHub then performs
@@ -71,6 +76,7 @@ state:
 gh auth status -h github.com
 gh auth refresh -h github.com -s repo -s workflow
 gh api repos/TerryOtt/localswim/rulesets
+gh api repos/TerryOtt/localswim/rulesets/21189762
 gh api repos/TerryOtt/localswim/rules/branches/main
 gh api repos/TerryOtt/localswim --jq \
   '{allow_auto_merge,allow_merge_commit,allow_rebase_merge,allow_squash_merge,delete_branch_on_merge}'
@@ -93,9 +99,16 @@ gh api --method PATCH repos/TerryOtt/localswim --input .github/repository-settin
 ```
 
 Do not run that POST when the named ruleset already exists; it would create a second
-ruleset. Update the existing ruleset by ID with `PUT`, then retrieve it and compare its
-conditions, rules, and bypass actors with the recipe. GitHub intentionally returns
-bypass actors only to callers with write access to the ruleset.
+ruleset. The current live ID is `21189762`. After confirming that ID still belongs to
+the expected named rule, update it with:
+
+```console
+gh api --method PUT repos/TerryOtt/localswim/rulesets/21189762 --input .github/rulesets/main.json
+```
+
+Retrieve the rule afterward and compare its conditions, rules, and bypass actors with
+the recipe. GitHub intentionally returns bypass actors only to callers with write
+access to the ruleset.
 
 The persisted actor IDs are public GitHub identities, not credentials:
 

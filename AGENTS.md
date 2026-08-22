@@ -138,12 +138,16 @@ The active server-side rule must match `.github/rulesets/main.json`, and
 `.github/workflows/contribution-policy.yml` supplies its required branch-name check.
 The repository merge settings must match `.github/repository-settings.json`: only
 squash merges are permitted, both required checks gate a PR, per-PR auto-merge is
-available, and merged same-repository branches are deleted. The one current approval
-RFC 2119 MUST come from GitHub user `TerryOtt`; `.github/CODEOWNERS` and the ruleset's
-required code-owner review enforce that requirement. Approval by anyone else does not
-satisfy it.
+available, and merged same-repository branches are deleted. For every non-bypass PR,
+the one current approval RFC 2119 MUST come from GitHub user `TerryOtt`;
+`.github/CODEOWNERS` and the ruleset's required code-owner review enforce that
+requirement. Approval by anyone else does not satisfy it. The two `always` bypass
+actors can intentionally bypass all PR requirements as part of their direct-main
+capability; no other actor can.
+
 Do not create duplicate rulesets: inspect GitHub first and update the existing rule by
-ID. The GitHub CLI token needs both `repo` and `workflow` scopes to push changes under
-`.github/workflows/`; refresh it with
+ID. The current live rule ID and exact update command are recorded in
+`CONTRIBUTING.md`. The GitHub CLI token needs both `repo` and `workflow` scopes to push
+changes under `.github/workflows/`; refresh it with
 `gh auth refresh -h github.com -s repo -s workflow` when necessary. Never print, copy,
 or persist the `gh` authentication token.
