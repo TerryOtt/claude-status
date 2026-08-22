@@ -108,7 +108,11 @@ gh api --method PUT repos/TerryOtt/localswim/rulesets/21189762 --input .github/r
 
 Retrieve the rule afterward and compare its conditions, rules, and bypass actors with
 the recipe. GitHub intentionally returns bypass actors only to callers with write
-access to the ruleset.
+access to the ruleset. As of 2026-08-22, the REST response also materializes
+`require_extra_approval_for_unattributed_changes: true` inside the pull-request rule.
+That response-only field is not accepted by the documented request schema and is not
+present in the checked-in recipe; do not treat it as recipe drift or guess at a value
+for it unless GitHub documents request-side support.
 
 The persisted actor IDs are public GitHub identities, not credentials:
 
