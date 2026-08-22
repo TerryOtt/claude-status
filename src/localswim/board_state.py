@@ -1,4 +1,4 @@
-"""The data model for a Claude/Terry swimlane board, stored as ONE JSON file.
+"""The data model for a human/bot swimlane board, stored as ONE JSON file.
 
 **RFC 2119 keywords, and the capitals are load-bearing.** MUST and MUST NOT are
 absolute. SHOULD is a strong default a good argument may overrule. MAY is optional.
@@ -2880,7 +2880,7 @@ def main() -> None:
         "--assign",
         nargs=2,
         metavar=("ID", "OWNER"),
-        help="reassign one card's owner between terry and claude",
+        help="reassign one card's owner to a configured user",
     )
     # **Board METADATA gets a flag rather than a hand edit.** Card #0050. The standing
     # order is that Claude writes to the board THROUGH THE LIBRARY, and the usual

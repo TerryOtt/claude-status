@@ -20,7 +20,7 @@ def served_board(tmp_path: pathlib.Path) -> Iterator[pathlib.Path]:
     """Publish the production rendezvous file for an isolated service."""
     path = tmp_path / "board.json"
     board = board_state.Board(
-        project="CLI", users=USERS, browser_user="terry", cli_user="claude", default_owner="claude"
+        project="CLI", users=USERS, browser_user="terry", cli_user="bot", default_owner="bot"
     )
     board_state.save(board, path)
     api_endpoint.BOARD_PATH = path
@@ -81,7 +81,7 @@ def test_every_cli_mutation_uses_service(served_board: pathlib.Path) -> None:
     assert item.detail == "description"
     assert item.owner == "terry"
     assert item.priority == "P1"
-    assert item.comments[0].by == "claude"
+    assert item.comments[0].by == "bot"
     assert board.links == []
     assert board.find("b").parent is None
 
@@ -92,8 +92,8 @@ def test_offline_mutation_has_no_direct_write(tmp_path: pathlib.Path) -> None:
         project="Offline",
         users=USERS,
         browser_user="terry",
-        cli_user="claude",
-        default_owner="claude",
+        cli_user="bot",
+        default_owner="bot",
     )
     board_state.save(board, path)
     board_state.service_descriptor_path(path).unlink(missing_ok=True)
@@ -113,8 +113,8 @@ def test_read_only_report_works_offline(tmp_path: pathlib.Path) -> None:
         project="Offline report",
         users=USERS,
         browser_user="terry",
-        cli_user="claude",
-        default_owner="claude",
+        cli_user="bot",
+        default_owner="bot",
     )
     board_state.save(board, path)
     result = run_cli(path)

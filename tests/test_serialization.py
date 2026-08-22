@@ -19,11 +19,11 @@ def saved_board(path: pathlib.Path) -> board_state.Board:
         revision=7,
         users=USERS,
         browser_user="terry",
-        cli_user="claude",
-        default_owner="claude",
+        cli_user="bot",
+        default_owner="bot",
     )
-    board.create("alpha", "Alpha", "backlog", "claude", detail="Detail")
-    board.comment("alpha", "Comment", "claude")
+    board.create("alpha", "Alpha", "backlog", "bot", detail="Detail")
+    board.comment("alpha", "Comment", "bot")
     board_state.save(board, path)
     return board
 

@@ -304,7 +304,7 @@ The suite currently contains 108 tests across these boundaries:
 | `test_cli.py` | CLI-to-service mutations and offline read behavior. |
 | `test_docs.py` | Checked example board. |
 | `test_check.py` | Gate line-ending parser. |
-| `conftest.py` | Standard isolated Terry/Claude cast and empty board fixtures. |
+| `conftest.py` | Standard isolated Terry/Bot cast and empty board fixtures. |
 
 Use the exact Codex command from `AGENTS.md` so fixtures and pytest's cache live under
 the authorized external scratch root. The complete project gate is:

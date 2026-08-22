@@ -157,6 +157,12 @@ wait for an explicit user request before committing or pushing. When authorized 
 publish directly, use plain non-interactive Git commands from `main`; when preparing
 work for any other contributor, follow `CONTRIBUTING.md`.
 
+Terry gave Codex standing authorization on 2026-08-22 to commit and push in-scope
+localswim changes needed to keep the FGA localswim integration healthy and
+reproducible. That authorization includes building and reinstalling local wheels. It
+does not authorize publishing packages to a registry, creating GitHub releases, or
+including unrelated user changes.
+
 The active server-side rule must match `.github/rulesets/main.json`, and
 `.github/workflows/contribution-policy.yml` supplies its required branch-name check.
 The repository merge settings must match `.github/repository-settings.json`: only

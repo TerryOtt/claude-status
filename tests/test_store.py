@@ -16,8 +16,8 @@ def make_store(path: pathlib.Path) -> api_endpoint.BoardStore:
         project="Store",
         users=USERS,
         browser_user="terry",
-        cli_user="claude",
-        default_owner="claude",
+        cli_user="bot",
+        default_owner="bot",
     )
     board_state.save(board, path)
     return api_endpoint.BoardStore(path)
@@ -25,7 +25,7 @@ def make_store(path: pathlib.Path) -> api_endpoint.BoardStore:
 
 def create_alpha(board: board_state.Board) -> str:
     """Representative store command."""
-    return board.create("alpha", "Alpha", "backlog", "claude")
+    return board.create("alpha", "Alpha", "backlog", "bot")
 
 
 def test_success_increments_revision_after_save(tmp_path: pathlib.Path) -> None:
@@ -46,7 +46,7 @@ def test_stale_revision_changes_nothing(tmp_path: pathlib.Path) -> None:
     store.execute(0, create_alpha)
 
     with pytest.raises(api_endpoint.RevisionConflict, match="revision is 1"):
-        store.execute(0, lambda board: board.comment("alpha", "stale", "claude"))
+        store.execute(0, lambda board: board.comment("alpha", "stale", "bot"))
     saved = board_state.load(path)
     assert saved.revision == 1
     assert saved.find("alpha").comments == []
@@ -57,7 +57,7 @@ def test_domain_refusal_changes_nothing(tmp_path: pathlib.Path) -> None:
     store = make_store(path)
 
     with pytest.raises(board_state.BoardError, match="may not create"):
-        store.execute(0, lambda board: board.create("alpha", "Alpha", "completed", "claude"))
+        store.execute(0, lambda board: board.create("alpha", "Alpha", "completed", "bot"))
     saved = board_state.load(path)
     assert saved.revision == 0
     assert saved.items == []
@@ -86,7 +86,7 @@ def test_same_revision_concurrency_has_one_winner(tmp_path: pathlib.Path) -> Non
     store = make_store(path)
 
     def command(name: str) -> tuple[str, int]:
-        return store.execute(0, lambda board: board.create(name, name.title(), "backlog", "claude"))
+        return store.execute(0, lambda board: board.create(name, name.title(), "backlog", "bot"))
 
     with ThreadPoolExecutor(max_workers=2) as pool:
         futures = [pool.submit(command, name) for name in ("alpha", "beta")]

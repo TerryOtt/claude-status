@@ -14,14 +14,14 @@ if TYPE_CHECKING:
 @pytest.fixture(autouse=True)
 def configured_users() -> Iterator[None]:
     """Restore the module-level cast before and after every test."""
-    board_state.install_users(USERS, "terry", "claude", "claude", "pytest")
+    board_state.install_users(USERS, "terry", "bot", "bot", "pytest")
     yield
-    board_state.install_users(USERS, "terry", "claude", "claude", "pytest cleanup")
+    board_state.install_users(USERS, "terry", "bot", "bot", "pytest cleanup")
 
 
 @pytest.fixture
 def board() -> board_state.Board:
     """An empty, valid board using the standard two test actors."""
     return board_state.Board(
-        project="Test", users=USERS, browser_user="terry", cli_user="claude", default_owner="claude"
+        project="Test", users=USERS, browser_user="terry", cli_user="bot", default_owner="bot"
     )

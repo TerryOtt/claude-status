@@ -14,4 +14,4 @@ def test_example_board_is_valid_and_empty() -> None:
     assert board.port == 8792
     assert board.items == []
     assert board.browser_user == "terry"
-    assert board.cli_user == "claude"
+    assert board.cli_user == "bot"

@@ -38,7 +38,7 @@ repository or directory.
 ## Board configuration
 
 The checked [example board](examples/board.example.json) is valid, empty and ready to
-run with the repository's default terry and claude permission actors.
+run with the repository's default `terry` and `bot` permission actors.
 
 The important fields are:
 
@@ -97,7 +97,7 @@ are grouped under exactly two actor IDs:
       "description": "Why Terry may make this move."
     }
   ],
-  "claude": [
+  "bot": [
     {
       "from": "ready_for_claude",
       "to": "in_progress"

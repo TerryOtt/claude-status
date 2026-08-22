@@ -4,5 +4,5 @@ from localswim import board_state
 
 USERS = (
     board_state.User("terry", "Terry", board_state.HUMAN, "#2266aa"),
-    board_state.User("claude", "Claude", board_state.BOT, "#aa6622"),
+    board_state.User("bot", "Bot", board_state.BOT, "#aa6622"),
 )

@@ -33,7 +33,7 @@ def api(tmp_path: pathlib.Path) -> Iterator[RunningApi]:
     """Run the production handler against an isolated board."""
     path = tmp_path / "board.json"
     board = board_state.Board(
-        project="API", users=USERS, browser_user="terry", cli_user="claude", default_owner="claude"
+        project="API", users=USERS, browser_user="terry", cli_user="bot", default_owner="bot"
     )
     board_state.save(board, path)
     api_endpoint.BOARD_PATH = path

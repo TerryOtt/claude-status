@@ -11,15 +11,15 @@
       "color": "#2266AA"
     },
     {
-      "id": "claude",
-      "label": "Claude",
+      "id": "bot",
+      "label": "Bot",
       "class": "bot",
       "color": "#AA6622"
     }
   ],
   "browserUser": "terry",
-  "cliUser": "claude",
-  "defaultOwner": "claude",
+  "cliUser": "bot",
+  "defaultOwner": "bot",
   "nextTicket": 1,
   "items": []
 }

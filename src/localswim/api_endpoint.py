@@ -1804,13 +1804,11 @@ move any card whoever owns it. Click to hand it over."></button>
         <select id="mk-priority"></select>
       </div>
       <!-- **Card #0069.** Terry had no way to say who a new card belongs to, so every
-           one landed on Claude and had to be reassigned afterwards. He asked for a
-           dropdown and delegated the rest: "Suggest dropdown picker with Claude as
-           default, but implementation details delegated to Claude."
-           **Claude is the default because that is the existing behavior**, not because
-           it is the better guess -- `Item.owner` already defaults to "claude" and his
-           standing instruction is "if in doubt, assign to claude". Changing the default
-           in the same breath as exposing the control would hide which of the two moved. -->
+           one landed on the bot and had to be reassigned afterwards. He requested an
+           owner picker and delegated the implementation details.
+           **The bot is the default because that is the existing behavior**, not because
+           it is the better guess. Changing the default in the same breath as exposing
+           the control would hide which of the two behaviors moved. -->
       <div class="field">
         <label for="mk-owner">Owner</label>
         <select id="mk-owner"></select>
