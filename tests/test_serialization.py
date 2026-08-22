@@ -41,7 +41,7 @@ def test_save_load_round_trip(tmp_path: pathlib.Path) -> None:
 
 def test_invalid_board_json_reports_parser_location(tmp_path: pathlib.Path) -> None:
     path = tmp_path / "board.json"
-    path.write_text('{\n  "schema": 2,\n  "items": nope\n}\n', encoding="utf-8")
+    path.write_text('{\n  "schema": 3,\n  "items": nope\n}\n', encoding="utf-8")
 
     with pytest.raises(
         board_state.BoardError,
@@ -52,7 +52,7 @@ def test_invalid_board_json_reports_parser_location(tmp_path: pathlib.Path) -> N
 
 def test_duplicate_board_json_key_is_refused(tmp_path: pathlib.Path) -> None:
     path = tmp_path / "board.json"
-    path.write_text('{"schema": 2, "schema": 2, "items": []}\n', encoding="utf-8")
+    path.write_text('{"schema": 3, "schema": 3, "items": []}\n', encoding="utf-8")
 
     with pytest.raises(
         board_state.BoardError,

@@ -67,7 +67,7 @@ Three JSON shapes have separate version numbers because they change independentl
 
 | Data | Schema | Owner and lifetime |
 |---|---:|---|
-| Board snapshot | 2 | Per project, durable, selected on the command line. |
+| Board snapshot | 3 | Per project, durable, selected on the command line. |
 | Transition rules | 6 | Per tool checkout, durable, loaded from `rules.json`. |
 | Service descriptor | 1 | Per running process, temporary, stored outside the board. |
 
@@ -99,6 +99,14 @@ locations. Validation is deliberately strict about required types, references,
 identifiers, counters, and rule-edge fields. Do not assume every object rejects every
 unknown key: rule edges explicitly do; the board loader currently tolerates additional
 keys in several persisted objects.
+
+Schema 3 renamed the legacy agent-specific Ready For Work lane ID to
+`ready_for_work`. `localswim-board --migrate-lane <old-lane-id> ready_for_work` is the
+only supported schema-2 migration path. It runs offline under the board lock, rewrites
+only card-state and lane-history endpoint fields, validates and replays the complete
+schema-3 board, increments `revision`, and atomically replaces the old snapshot.
+The compatibility objection, owner rationale, and accepted history-rewrite cost are
+recorded in [ADR 0001](decisions/0001-agent-neutral-ready-work-id.md).
 
 ## Cards, identity, and audit
 
@@ -159,7 +167,7 @@ linking. Explicit CLI/API links remain available to either authenticated actor.
 | Lane | Meaning |
 |---|---|
 | `backlog` | Someday queue controlled by the human. |
-| `ready_for_claude` | Work selected for the automation agent. Display label: Ready For Work. |
+| `ready_for_work` | Work selected for the automation agent. Display label: Ready For Work. |
 | `in_progress` | Work actively being performed. |
 | `blocked` | Nobody can act, such as waiting for an external license key. |
 | `needs_terry_action` | The human must answer, decide, or personally act. |
@@ -168,10 +176,13 @@ linking. Explicit CLI/API links remain available to either authenticated actor.
 
 Two constraints matter beyond a simple `may_move()` lookup:
 
-1. The automation actor has a `backlog -> ready_for_claude` edge only so the human can
+1. The automation actor has a `backlog -> ready_for_work` edge only so the human can
    authorize that move for one named ticket. It must never use the edge unsolicited.
 2. Automation cannot sign off its own work. Only the browser/human actor has
    `ready_for_review -> completed`.
+3. The human actor may move `ready_for_work -> in_progress` when starting selected
+   work directly in the browser. Card ownership remains independent of movement
+   permission.
 
 Do not use owner as a second permission system. Either actor can move or reassign a
 card regardless of its owner; transition policy alone grants movement.

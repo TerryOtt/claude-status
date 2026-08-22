@@ -36,7 +36,7 @@ def remove_claude_backlog_promotion(path: pathlib.Path) -> None:
     doc["edges"]["bot"] = [
         edge
         for edge in doc["edges"]["bot"]
-        if not (edge["from"] == "backlog" and edge["to"] == "ready_for_claude")
+        if not (edge["from"] == "backlog" and edge["to"] == "ready_for_work")
     ]
     write_policy(path, doc, advance=True)
 
@@ -73,7 +73,7 @@ def test_edge_description_is_optional(tmp_path: pathlib.Path) -> None:
 
     policy = board_state.TransitionPolicy.load(path)
 
-    assert policy.may_move("terry", "backlog", "ready_for_claude")
+    assert policy.may_move("terry", "backlog", "ready_for_work")
 
 
 def test_edges_require_exactly_two_actors(tmp_path: pathlib.Path) -> None:
@@ -252,14 +252,14 @@ def test_edge_entry_must_be_an_object(tmp_path: pathlib.Path) -> None:
 @pytest.mark.parametrize(
     ("edge", "message"),
     [
-        ({"to": "ready_for_claude"}, "missing from"),
+        ({"to": "ready_for_work"}, "missing from"),
         ({"from": "backlog"}, "missing to"),
-        ({"from": "backlog", "to": "ready_for_claude", "note": "legacy"}, "unknown field.*note"),
-        ({"from": "", "to": "ready_for_claude"}, "from is not a nonempty string"),
-        ({"from": 1, "to": "ready_for_claude"}, "from is not a nonempty string"),
+        ({"from": "backlog", "to": "ready_for_work", "note": "legacy"}, "unknown field.*note"),
+        ({"from": "", "to": "ready_for_work"}, "from is not a nonempty string"),
+        ({"from": 1, "to": "ready_for_work"}, "from is not a nonempty string"),
         ({"from": "backlog", "to": 1}, "to is not a nonempty string"),
         (
-            {"from": "backlog", "to": "ready_for_claude", "description": []},
+            {"from": "backlog", "to": "ready_for_work", "description": []},
             "description is not a string",
         ),
     ],
@@ -290,9 +290,9 @@ def test_stores_enforce_their_own_transition_policies(
     allowed.execute(0, create_alpha)
     denied.execute(0, create_alpha)
 
-    allowed.execute(1, lambda board: board.move("alpha", "ready_for_claude", "bot"))
-    with pytest.raises(board_state.BoardError, match="not to ready_for_claude"):
-        denied.execute(1, lambda board: board.move("alpha", "ready_for_claude", "bot"))
+    allowed.execute(1, lambda board: board.move("alpha", "ready_for_work", "bot"))
+    with pytest.raises(board_state.BoardError, match="not to ready_for_work"):
+        denied.execute(1, lambda board: board.move("alpha", "ready_for_work", "bot"))
 
 
 def test_policy_reload_is_isolated_to_its_store(tmp_path: pathlib.Path) -> None:
@@ -305,8 +305,8 @@ def test_policy_reload_is_isolated_to_its_store(tmp_path: pathlib.Path) -> None:
     message = first.reload_policy_if_changed()
 
     assert message == "rules.json reloaded: 7 lanes"
-    assert not first.policy.may_move("bot", "backlog", "ready_for_claude")
-    assert second.policy.may_move("bot", "backlog", "ready_for_claude")
+    assert not first.policy.may_move("bot", "backlog", "ready_for_work")
+    assert second.policy.may_move("bot", "backlog", "ready_for_work")
     assert first.snapshot().policy == first.policy
 
 

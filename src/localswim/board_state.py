@@ -55,6 +55,7 @@ import json
 import os
 import pathlib
 import re
+import socket
 import tempfile
 import time
 import urllib.error
@@ -75,7 +76,8 @@ type JsonObject = dict[str, JsonValue]
 # instead of `from`, and it would write an empty `comments` list onto every card.
 # **The file is JSON so a person can read the diff**, and that is worth two dozen lines.
 
-SCHEMA = 2
+SCHEMA = 3
+PREVIOUS_BOARD_SCHEMA = 2
 API_PREFIX = "/api/v001"
 
 # **A SECOND, INDEPENDENT NUMBER, and splitting it was the first thing card #0064 had to
@@ -1005,8 +1007,8 @@ def may_move(actor: str, from_state: str, to_state: str) -> bool:
     them.
 
     **THIS FUNCTION IS NOT THE WHOLE RULE FOR ONE EDGE, AND THAT IS DELIBERATE.**
-    `backlog -> ready_for_claude` carries a `claude` actor, so this returns True for it.
-    **Claude MUST NOT use it without Terry's explicit per-ticket instruction.** Terry,
+    `backlog -> ready_for_work` carries the `bot` actor, so this returns True for it.
+    **Automation MUST NOT use it without Terry's explicit per-ticket instruction.** Terry,
     2026-08-19: *"claude MUST NOT move out of backlog until/unless Terry gives explicit
     guidance for one specific ticket."*
 
@@ -2732,6 +2734,89 @@ def _replace_with_retry(tmp: pathlib.Path, target: pathlib.Path) -> None:
             return
 
 
+def _require_board_port_stopped(target: pathlib.Path, raw: JsonObject) -> None:
+    """Refuse an offline migration while anything is listening on the board port."""
+    port = raw.get("port", DEFAULT_PORT)
+    if not isinstance(port, int) or not MIN_PORT <= port <= MAX_PORT:
+        raise BoardError(f"{target}: port {port!r} is not a TCP port number")
+    try:
+        connection = socket.create_connection(("127.0.0.1", port), timeout=0.25)
+    except OSError:
+        return
+    connection.close()
+    raise BoardError(f"board port {port} is listening; stop the service before migration")
+
+
+def _rewrite_lane_values(
+    target: pathlib.Path, raw: JsonObject, source: str, destination: str
+) -> int:
+    """Replace exact current-state and lane-history endpoint values in memory."""
+    items = raw.get("items")
+    if not isinstance(items, list):
+        raise BoardError(f"{target}: 'items' is missing or not a list")
+    replacements = 0
+    for item_index, item in enumerate(items):
+        if not isinstance(item, dict):
+            raise BoardError(f"{target}: items[{item_index}] is not an object")
+        if item.get("state") == source:
+            item["state"] = destination
+            replacements += 1
+        history = item.get("history", [])
+        if not isinstance(history, list):
+            raise BoardError(f"{target}: items[{item_index}].history is not a list")
+        for change_index, change in enumerate(history):
+            if not isinstance(change, dict):
+                raise BoardError(
+                    f"{target}: items[{item_index}].history[{change_index}] is not an object"
+                )
+            for key in ("from", "to"):
+                if change.get(key) == source:
+                    change[key] = destination
+                    replacements += 1
+    return replacements
+
+
+def migrate_lane(path: pathlib.Path, source: str, destination: str) -> str:
+    """Migrate one schema-2 lane ID and its audit endpoints while the service is off.
+
+    This is deliberately an offline, explicit CLI migration. Lane IDs occur in both
+    each card's current state and the append-only lane history, so changing only the
+    current state would make verification fail and changing only the policy would make
+    the board unreadable. The original file remains untouched unless the complete
+    schema-3 result validates and replays cleanly.
+    """
+    target = pathlib.Path(path)
+    if not source or not destination or source == destination:
+        raise BoardError("lane migration needs two different nonempty lane IDs")
+    if source in _POLICY.states:
+        raise BoardError(f"source lane {source!r} is still active; refusing ambiguous migration")
+    if destination not in _POLICY.states:
+        raise BoardError(f"destination lane {destination!r} is not in the active rules")
+
+    with locked(target):
+        raw = _read_json(target)
+        if not isinstance(raw, dict):
+            raise BoardError(f"{target}: top level is not an object")
+        if raw.get("schema") != PREVIOUS_BOARD_SCHEMA:
+            raise BoardError(
+                f"{target}: migration reads schema {PREVIOUS_BOARD_SCHEMA}, "
+                f"found {raw.get('schema')!r}"
+            )
+        _require_board_port_stopped(target, raw)
+        replacements = _rewrite_lane_values(target, raw, source, destination)
+        raw["schema"] = SCHEMA
+        migrated = Board.from_json(raw, str(target))
+        if problems := migrated.verify():
+            raise BoardError(f"{target}: migrated history does not replay: {'; '.join(problems)}")
+        migrated.revision += 1
+        save(migrated, target)
+
+    return (
+        f"migrated schema {PREVIOUS_BOARD_SCHEMA} -> {SCHEMA}; replaced "
+        f"{replacements} lane value(s); revision {migrated.revision}"
+    )
+
+
 def _service_descriptor(path: pathlib.Path) -> JsonObject:
     """Read and validate the local service rendezvous file."""
     service = service_descriptor_path(path)
@@ -2869,6 +2954,12 @@ def main() -> None:
         action="store_true",
         help="replay every history and refuse a state it disagrees with",
     )
+    ap.add_argument(
+        "--migrate-lane",
+        nargs=2,
+        metavar=("OLD", "NEW"),
+        help="offline schema-2 to schema-3 lane-ID migration; service must be stopped",
+    )
     ap.add_argument("--move", nargs=2, metavar=("ID", "STATE"), help="move one card")
     ap.add_argument(
         "--comment", nargs=2, metavar=("ID", "TEXT"), help="leave a comment on one card"
@@ -2966,6 +3057,17 @@ def main() -> None:
         "--detail-file", type=pathlib.Path, help="read the description from a file instead"
     )
     args = ap.parse_args()
+
+    if args.migrate_lane:
+        conflicts = args.json or args.verify or any(getattr(args, name) for name in MUTATIONS)
+        if conflicts:
+            ap.error("--migrate-lane cannot be combined with another operation")
+        try:
+            result = migrate_lane(args.board.resolve(), *args.migrate_lane)
+        except BoardError as exc:
+            raise SystemExit(f"  ERROR: {exc}") from None
+        print(f"  {result}")
+        return
 
     if args.create and not args.state:
         ap.error("--create needs --state")

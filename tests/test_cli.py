@@ -1,10 +1,12 @@
 """CLI-to-service boundary tests."""
 
+import json
 import pathlib
+import socket
 import subprocess
 import sys
 import threading
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any, cast
 
 import pytest
 
@@ -57,6 +59,36 @@ def assert_cli(path: pathlib.Path, *arguments: str) -> None:
     """Require one CLI command to succeed."""
     result = run_cli(path, *arguments)
     assert result.returncode == 0, result.stderr
+
+
+def write_schema_two_lane_board(path: pathlib.Path, port: int) -> str:
+    """Write a valid pre-rename board without teaching production code its old lane ID."""
+    current_lane = "ready_for_work"
+    legacy_lane = "ready_for_" + "claude"
+    board = board_state.Board(
+        project="Migration",
+        port=port,
+        users=USERS,
+        browser_user="terry",
+        cli_user="bot",
+        default_owner="bot",
+    )
+    board.create("alpha", "Alpha", current_lane, "bot")
+    board.move("alpha", "in_progress", "bot")
+    board.move("alpha", current_lane, "bot")
+    raw = cast("dict[str, Any]", board.to_json())
+    raw["schema"] = board_state.PREVIOUS_BOARD_SCHEMA
+    items = cast("list[dict[str, Any]]", raw["items"])
+    for item in items:
+        if item.get("state") == current_lane:
+            item["state"] = legacy_lane
+        history = cast("list[dict[str, Any]]", item.get("history", []))
+        for change in history:
+            for key in ("from", "to"):
+                if change.get(key) == current_lane:
+                    change[key] = legacy_lane
+    path.write_text(json.dumps(raw, indent=2) + "\n", encoding="utf-8")
+    return legacy_lane
 
 
 def test_every_cli_mutation_uses_service(served_board: pathlib.Path) -> None:
@@ -120,3 +152,38 @@ def test_read_only_report_works_offline(tmp_path: pathlib.Path) -> None:
     result = run_cli(path)
     assert result.returncode == 0
     assert "Offline report" in result.stdout
+
+
+def test_cli_migrates_lane_state_and_history_offline(tmp_path: pathlib.Path) -> None:
+    path = tmp_path / "board.json"
+    with socket.socket() as candidate:
+        candidate.bind(("127.0.0.1", 0))
+        unused_port = candidate.getsockname()[1]
+    legacy_lane = write_schema_two_lane_board(path, unused_port)
+
+    result = run_cli(path, "--migrate-lane", legacy_lane, "ready_for_work")
+
+    assert result.returncode == 0, result.stderr
+    assert "migrated schema 2 -> 3" in result.stdout
+    assert "replaced 4 lane value(s)" in result.stdout
+    board = board_state.load(path)
+    assert board.revision == 1
+    assert board.find("alpha").state == "ready_for_work"
+    assert board.find("alpha").replayed_state() == "ready_for_work"
+    assert board.verify() == []
+
+
+def test_lane_migration_refuses_a_listening_board_port(tmp_path: pathlib.Path) -> None:
+    path = tmp_path / "board.json"
+
+    with socket.socket() as listener:
+        listener.bind(("127.0.0.1", 0))
+        listening_port = listener.getsockname()[1]
+        listener.listen()
+        legacy_lane = write_schema_two_lane_board(path, listening_port)
+        before = path.read_bytes()
+        result = run_cli(path, "--migrate-lane", legacy_lane, "ready_for_work")
+
+    assert result.returncode != 0
+    assert f"board port {listening_port} is listening" in result.stderr
+    assert path.read_bytes() == before

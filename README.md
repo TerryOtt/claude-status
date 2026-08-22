@@ -44,7 +44,7 @@ The important fields are:
 
 | Field | Meaning |
 |---|---|
-| schema | Board format version; currently 2. |
+| schema | Board format version; currently 3. |
 | project | Name shown in the browser. |
 | port | Loopback TCP port; defaults to 8792 if omitted. |
 | users | Valid identities, labels, classes (human or bot), and UI colors. |
@@ -74,7 +74,7 @@ CLI mutations use the running REST service so browser and CLI writes share valid
 locking and revision checks:
 
 ~~~console
-uv run --frozen localswim-board boards/my-project.json --create docs "Write setup docs" --state ready_for_claude
+uv run --frozen localswim-board boards/my-project.json --create docs "Write setup docs" --state ready_for_work
 uv run --frozen localswim-board boards/my-project.json --comment docs "First draft is ready"
 uv run --frozen localswim-board boards/my-project.json --move docs in_progress
 ~~~
@@ -82,6 +82,17 @@ uv run --frozen localswim-board boards/my-project.json --move docs in_progress
 Run **uv run --frozen localswim-board --help** for the complete command list. CLI changes are
 attributed to cliUser; browser changes are attributed to browserUser. Request bodies
 cannot choose another identity.
+
+Schema 3 replaced the legacy agent-specific Ready For Work lane ID with
+`ready_for_work`. With the service stopped, migrate a schema-2 board atomically through
+the CLI rather than editing its current states and audit history by hand:
+
+~~~console
+uv run --frozen localswim-board boards/my-project.json --migrate-lane <old-lane-id> ready_for_work
+~~~
+
+The migration refuses a listening board port, validates and replays the complete
+schema-3 result before replacing the file, and increments the board revision.
 
 ## Transition permissions
 
@@ -93,13 +104,18 @@ are grouped under exactly two actor IDs:
   "terry": [
     {
       "from": "backlog",
-      "to": "ready_for_claude",
+      "to": "ready_for_work",
       "description": "Why Terry may make this move."
+    },
+    {
+      "from": "ready_for_work",
+      "to": "in_progress",
+      "description": "Terry may start selected work directly."
     }
   ],
   "bot": [
     {
-      "from": "ready_for_claude",
+      "from": "ready_for_work",
       "to": "in_progress"
     }
   ]

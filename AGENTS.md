@@ -13,7 +13,7 @@ serves a local swimlane board from one JSON snapshot.
   creation, and actor-specific transitions.
 - `pyproject.toml` is the single build, dependency, Ruff, formatter, and Pyright
   configuration source; `uv.lock` is committed for reproducible development and CI.
-- `examples/board.example.json` is the checked, empty schema-2 example board.
+- `examples/board.example.json` is the checked, empty schema-3 example board.
 - `docs/ORIENTATION.md` is the contributor map for architecture, data flow, schemas,
   invariants, test coverage, and Windows/Codex environment details.
 - `CONTRIBUTING.md` defines the enforced GitHub branch and pull-request policy.
@@ -35,7 +35,9 @@ serves a local swimlane board from one JSON snapshot.
   remotes, commit, or push unless the user explicitly asks.
 - Treat `rules.json` as the permission source, not as UI decoration. Keep user IDs and
   `browserUser`/`cliUser` aligned with its actor keys.
-- An automation agent must not promote a backlog card to `ready_for_claude` without
+- Keep durable product identifiers agent-neutral. Do not put a human assistant,
+  automation product, model, or vendor name into lane, field, or protocol IDs.
+- An automation agent must not promote a backlog card to `ready_for_work` without
   explicit permission for that specific card, even though the edge exists for that
   exceptional case. It must never move its own work to `completed`.
 

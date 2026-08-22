@@ -34,12 +34,12 @@ def test_create_refuses_forbidden_lane(board: board_state.Board) -> None:
 
 
 def test_move_records_legal_transition(board: board_state.Board) -> None:
-    board.create("alpha", "Alpha", "ready_for_claude", "bot")
+    board.create("alpha", "Alpha", "ready_for_work", "bot")
     board.move("alpha", "in_progress", "bot")
 
     item = board.find("alpha")
     assert item.state == "in_progress"
-    assert item.history[-1].frm == "ready_for_claude"
+    assert item.history[-1].frm == "ready_for_work"
     assert item.history[-1].to == "in_progress"
     assert board.verify() == []
 
@@ -47,9 +47,10 @@ def test_move_records_legal_transition(board: board_state.Board) -> None:
 @pytest.mark.parametrize(
     ("actor", "source", "destination"),
     [
-        ("bot", "ready_for_claude", "in_progress"),
+        ("bot", "ready_for_work", "in_progress"),
         ("bot", "in_progress", "ready_for_review"),
         ("bot", "blocked", "in_progress"),
+        ("terry", "ready_for_work", "in_progress"),
         ("terry", "ready_for_review", "completed"),
     ],
 )
