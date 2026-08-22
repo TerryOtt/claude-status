@@ -632,14 +632,16 @@ class BoardStore:
         policy: board_state.TransitionPolicy | None = None,
     ) -> None:
         self.path = path
-        self.policy = policy or board_state.TransitionPolicy.load()
+        self._external_policy = policy is not None
         self._mutex = threading.RLock()
-        self._board = board_state.load(path, self.policy)
+        self._board = board_state.load(path, policy)
+        self.policy = self._board.policy
 
     def snapshot(self) -> board_state.Board:
         """Return an isolated current snapshot, refreshing valid external edits."""
         with self._mutex:
-            board = board_state.load(self.path, self.policy)
+            board = board_state.load(self.path, self.policy if self._external_policy else None)
+            self.policy = board.policy
             self._board = board
             return copy.deepcopy(board)
 
@@ -648,7 +650,8 @@ class BoardStore:
     ) -> tuple[str, int]:
         """Apply one command under the file lock and commit one new revision."""
         with self._mutex:
-            with board_state.edit(self.path, self.policy) as candidate:
+            active = self.policy if self._external_policy else None
+            with board_state.edit(self.path, active) as candidate:
                 if candidate.revision != expected_revision:
                     raise RevisionConflict(
                         f"board revision is {candidate.revision}, not "
@@ -667,16 +670,20 @@ class BoardStore:
             return result, committed.revision
 
     def reload_policy_if_changed(self) -> str | None:
-        """Adopt a complete rules edit without changing other stores."""
+        """Adopt a complete embedded policy edit without changing other stores."""
         with self._mutex:
-            # Refresh users first: actor validation joins per-board users with the
-            # tool-level transition policy, and either file may have changed.
-            self._board = board_state.load(self.path, self.policy)
-            actors = {user.id for user in self._board.users}
-            configured_edge_actors = frozenset((self._board.browser_user, self._board.cli_user))
-            self.policy, message = self.policy.reload_if_changed(actors, configured_edge_actors)
-            self._board.policy = self.policy
-            return message
+            if self._external_policy:
+                self._board = board_state.load(self.path, self.policy)
+                actors = {user.id for user in self._board.users}
+                configured = frozenset((self._board.browser_user, self._board.cli_user))
+                self.policy, message = self.policy.reload_if_changed(actors, configured)
+                self._board.policy = self.policy
+                return message
+            fresh = board_state.load(self.path)
+            changed = fresh.policy.to_json() != self.policy.to_json()
+            self._board = fresh
+            self.policy = fresh.policy
+            return f"embedded policy reloaded: {len(self.policy.states)} lanes" if changed else None
 
 
 STORE: BoardStore | None = None
@@ -3354,7 +3361,7 @@ setInterval(renderLive, 500);
 """
 
 
-def _report_rule_gaps() -> None:
+def _report_rule_gaps(policy: board_state.TransitionPolicy) -> None:
     """Say how many permission rows still owe a description. Card #0064.
 
     **Terry wants the rules pedantic enough to pull a sentence out of a human**: *"Tell
@@ -3365,10 +3372,10 @@ def _report_rule_gaps() -> None:
     considered. **A number he sees at every start is the pressure**; a blocked server is
     just a blocked server.
     """
-    blank, shared = board_state.rules_gaps()
+    blank, shared = board_state.rules_gaps(document=policy.to_json())
     if not blank and not shared:
         return
-    print("  rules.json, edge descriptions still owed:")
+    print("  embedded policy, edge descriptions still owed:")
     if blank:
         print(f"      {len(blank)} edge(s) carry NO description")
     if shared:
@@ -3693,23 +3700,10 @@ class Handler(http.server.BaseHTTPRequestHandler):
             # **`ok` is the field the dot keys on.** Parsing 12 KB of JSON at 2.5 Hz
             # is nothing, and it is the difference between a signal that means
             # something and one that looks reassuring.
-            # **THE PERMISSION TABLE IS RE-READ HERE TOO, and this is the whole of
-            # card #0051.** Terry's standing order: a tool that can detect its own
-            # staleness MUST resolve it where it can, and alert only where it cannot.
-            #
-            # **`rules.json` is DATA, so it is resolvable.** The lane labels, the lane
-            # owners and the drag permissions all derive from it, and before this they
-            # froze at import -- so a rules edit was invisible until somebody restarted
-            # the process. **It bit twice in one afternoon, and Terry spotted the
-            # second one before any instrument did.**
-            #
-            # **A forced browser reload would NOT have fixed it**, which is why this
-            # is a server-side reload rather than the alert he offered as an
-            # alternative: the tab would have re-fetched the same page from the same
-            # process holding the same stale table.
-            #
-            # Cost is one `stat` on a local file per poll, beside the board `stat` and
-            # a 12 KB JSON parse that already happen here.
+            # **THE EMBEDDED POLICY IS RE-READ HERE TOO.** Terry's standing order is
+            # that a tool able to detect its own staleness resolves it. Schema 4 keeps
+            # lane labels, IDs, and permissions in the same snapshot as the state, so
+            # one validated board read refreshes them together.
             reloaded = (
                 STORE.reload_policy_if_changed()
                 if STORE is not None
@@ -3806,8 +3800,8 @@ class Handler(http.server.BaseHTTPRequestHandler):
                 # uses.** Card #0095. One definition, so a recolor cannot land in
                 # one place and miss the other.
                 .replace("%BRANDURI%", brand_data_uri())
-                # **Built per request, not once at import**, so `reload_rules`
-                # adding a user reaches the next page load without a restart.
+                # **Built per request, not once at import**, so a board cast change
+                # reaches the next page load without a restart.
                 .replace("%USERCSS%", user_css())
                 .replace("%TITLE%", html.escape(title))
             )
@@ -3903,6 +3897,7 @@ def main() -> None:
 
     port = args.port or board_state.DEFAULT_PORT
     print(f"Serving {BOARD_PATH}")
+    board: board_state.Board | None = None
     try:
         board = board_state.load(BOARD_PATH)
         STORE = BoardStore(BOARD_PATH)
@@ -3917,26 +3912,18 @@ def main() -> None:
             print(f"  DRIFT: {len(drift)} item(s) disagree with their own history:")
             for problem in drift:
                 print(f"      {problem}")
+        _report_rule_gaps(board.policy)
     except (board_state.BoardError, OSError, json.JSONDecodeError) as exc:
         # **Loud, and it still serves.** The page renders the same message, so the
         # failure is visible in both places rather than as an empty board.
         print(f"  WARNING: {exc}")
         print("  The page will say so rather than look empty.")
 
-    bad_edges = board_state.check_edges()
+    bad_edges = board.policy.check_edges() if board is not None else []
     if bad_edges:
         print(f"  PERMISSION TABLE INCONSISTENT, {len(bad_edges)} problem(s):")
         for problem in bad_edges:
             print(f"      {problem}")
-
-    # **Card #0064. Terry wants the rules pedantic enough to pull a description out of a
-    # human**: *"Tell me why actor X should be able to make this card movement."*
-    #
-    # **Printed here rather than enforced in the loader.** Refusing to start over an
-    # unwritten sentence would have Claude filling them in to unblock itself, and filler
-    # reads as considered. **A number he sees at every start is the pressure**; a
-    # blocked server is just a blocked server.
-    _report_rule_gaps()
 
     if not FONT_DIR.is_dir():
         # Inter is bundled. Without it the page silently falls back to Segoe UI and

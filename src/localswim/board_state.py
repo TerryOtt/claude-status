@@ -48,6 +48,7 @@ either. **It would have added a dependency and moved the rules, not enforced the
 
 import argparse
 import contextlib
+import copy
 import datetime
 import hashlib
 import itertools
@@ -58,6 +59,7 @@ import re
 import socket
 import tempfile
 import time
+import unicodedata
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -76,8 +78,11 @@ type JsonObject = dict[str, JsonValue]
 # instead of `from`, and it would write an empty `comments` list onto every card.
 # **The file is JSON so a person can read the diff**, and that is worth two dozen lines.
 
-SCHEMA = 3
+SCHEMA = 4
 PREVIOUS_BOARD_SCHEMA = 2
+EMBEDDED_POLICY_PREVIOUS_SCHEMA = 3
+DESCRIPTION_SCHEMA = 1
+PERMISSIONS_SCHEMA = 1
 API_PREFIX = "/api/v001"
 
 # **A SECOND, INDEPENDENT NUMBER, and splitting it was the first thing card #0064 had to
@@ -443,6 +448,7 @@ class Rules:
     priority_label: Mapping[str, str]
     default_priority: str
     edge_actors: frozenset[str]
+    document: JsonObject
     # **The cast is NOT here, card #0083.** It moved to the board file, which is
     # per-project; this object describes `rules.json`, which is per-tool.
 
@@ -531,6 +537,7 @@ def _parse_lanes(
 
     lanes: list[JsonObject] = []
     order: list[tuple[str, str]] = []
+    labels: set[str] = set()
     for index, lane in enumerate(lanes_raw):
         spot = f"lanes[{index}]"
         if not isinstance(lane, dict):
@@ -538,8 +545,14 @@ def _parse_lanes(
         lane_id, label, create = lane.get("id"), lane.get("label"), lane.get("create")
         if not isinstance(lane_id, str) or not lane_id:
             raise BoardError(f"{path}: {spot}.id is not a nonempty string")
+        if re.fullmatch(r"[a-z0-9]+(?:_[a-z0-9]+)*", lane_id) is None:
+            raise BoardError(f"{path}: {spot}.id {lane_id!r} is not a canonical lane slug")
         if not isinstance(label, str) or not label:
             raise BoardError(f"{path}: {spot}.label is not a nonempty string")
+        folded_label = label.casefold()
+        if folded_label in labels:
+            raise BoardError(f"{path}: lane labels are not unique: {label!r}")
+        labels.add(folded_label)
         if not isinstance(create, list) or not all(isinstance(actor, str) for actor in create):
             raise BoardError(f"{path}: {spot}.create is not a list of actor ids")
         lanes.append(lane)
@@ -572,8 +585,8 @@ def _parse_priorities(
     return tuple(priority_id for priority_id, _label in rows), dict(rows)
 
 
-def _load_rules(path: pathlib.Path) -> Rules:
-    """Read `rules.json` into the shapes the rest of this module already uses.
+def _parse_rules(doc: JsonObject, path: pathlib.Path) -> Rules:
+    """Validate one rules document into the shapes the rest of this module uses.
 
     **It REFUSES rather than repairs**, exactly like `Board.from_json`. A rules file
     naming an unknown actor or a lane that does not exist is a bug in whoever edited
@@ -583,11 +596,6 @@ def _load_rules(path: pathlib.Path) -> Rules:
     for the person reading the diff; only actor, source, and destination affect the
     transition index.
     """
-    raw_doc = _read_json(path)
-    if not isinstance(raw_doc, dict):
-        raise BoardError(f"{path}: rules document is not an object")
-    doc = raw_doc
-
     if doc.get("schema") != RULES_SCHEMA:
         raise BoardError(
             f"{path}: rules schema {doc.get('schema')!r}, want {RULES_SCHEMA}. "
@@ -633,7 +641,16 @@ def _load_rules(path: pathlib.Path) -> Rules:
         priority_label=labels,
         default_priority=default,
         edge_actors=edge_actors,
+        document=copy.deepcopy(doc),
     )
+
+
+def _load_rules(path: pathlib.Path) -> Rules:
+    """Read and validate one standalone rules JSON file."""
+    raw_doc = _read_json(path)
+    if not isinstance(raw_doc, dict):
+        raise BoardError(f"{path}: rules document is not an object")
+    return _parse_rules(raw_doc, path)
 
 
 @dataclass(frozen=True)
@@ -662,6 +679,7 @@ class TransitionPolicy:
             MappingProxyType(dict(self.rules.priority_label)),
             self.rules.default_priority,
             self.rules.edge_actors,
+            copy.deepcopy(self.rules.document),
         )
         object.__setattr__(self, "rules", frozen)
 
@@ -680,6 +698,19 @@ class TransitionPolicy:
         if problems := policy.check_edges():
             raise BoardError("; ".join(problems))
         return policy
+
+    @classmethod
+    def from_json(cls, document: JsonObject, where: str) -> Self:
+        """Build a policy from the resolved document embedded in a board snapshot."""
+        path = pathlib.Path(where)
+        policy = cls(_parse_rules(document, path), path, 0)
+        if problems := policy.check_edges():
+            raise BoardError("; ".join(problems))
+        return policy
+
+    def to_json(self) -> JsonObject:
+        """Return an isolated, serializer-ready copy of the resolved policy."""
+        return copy.deepcopy(self.rules.document)
 
     @property
     def lanes(self) -> tuple[tuple[str, str], ...]:
@@ -841,6 +872,19 @@ PRIORITIES = _RULES.priorities
 PRIORITY_LABEL = _RULES.priority_label
 DEFAULT_PRIORITY = _RULES.default_priority
 
+
+def _board_policy(
+    raw: JsonObject, where: str, supplied: TransitionPolicy | None
+) -> TransitionPolicy:
+    """Select an explicit test/migration policy or validate the embedded document."""
+    if supplied is not None:
+        return supplied
+    policy_raw = raw.get("policy")
+    if not isinstance(policy_raw, dict):
+        raise BoardError(f"{where}: 'policy' is missing or not an object")
+    return TransitionPolicy.from_json(policy_raw, f"{where}: policy")
+
+
 # **THE CONFIGURED CAST. Cards #0072 and #0083.**
 #
 # **EMPTY UNTIL A BOARD LOADS, and that is the whole change #0083 made.** The users
@@ -916,7 +960,19 @@ STATES: tuple[str, ...] = tuple(state for state, _ in LANES)
 LANE_LABEL: dict[str, str] = dict(LANES)
 
 
-def rules_gaps(path: pathlib.Path = RULES_PATH) -> tuple[list[str], list[str]]:
+def _rules_gap_document(path: pathlib.Path, document: JsonObject | None) -> JsonValue:
+    """Return an explicit embedded policy or best-effort standalone rules document."""
+    if document is not None:
+        return document
+    try:
+        return _read_json(path)
+    except BoardError, OSError:
+        return None
+
+
+def rules_gaps(
+    path: pathlib.Path = RULES_PATH, document: JsonObject | None = None
+) -> tuple[list[str], list[str]]:
     """`(edges with no description, edges sharing one across actors)`.
 
     **Terry: *"Want the rules to be VERY pedantic to ENCOURAGE humans to comment them.
@@ -934,10 +990,7 @@ def rules_gaps(path: pathlib.Path = RULES_PATH) -> tuple[list[str], list[str]]:
     states: nobody has explained this edge at all, against somebody explained the edge
     and not the two actors on it.
     """
-    try:
-        doc = _read_json(path)
-    except BoardError, OSError:
-        return [], []
+    doc = _rules_gap_document(path, document)
     if not isinstance(doc, dict):
         return [], []
     edges = doc.get("edges")
@@ -1830,8 +1883,8 @@ class Board:
     # **`port` and `project` were already here and are already per-project**, which is
     # the precedent this follows rather than inventing one.
     #
-    # **Lanes and edges stayed in `rules.json`** on purpose. They are the tool's
-    # behavior; the people are the deployment's.
+    # **Schema 4 brought lanes and edges into the board too.** Identity, permissions,
+    # users, and state now travel as one validated and atomically replaced snapshot.
     users: tuple[User, ...] = ()
     browser_user: str = ""
     cli_user: str = ""
@@ -1854,6 +1907,7 @@ class Board:
             "revision": self.revision,
             "project": self.project,
             "port": self.port,
+            "policy": self.policy.to_json(),
             "users": users,
             "browserUser": self.browser_user,
             "cliUser": self.cli_user,
@@ -1896,6 +1950,8 @@ class Board:
         if not isinstance(revision, int) or revision < 0:
             raise BoardError(f"{where}: revision {revision!r} is not a non-negative integer")
 
+        active_policy = _board_policy(raw, where, policy)
+
         # **Users are parsed and INSTALLED before the items**, because `Item.from_json`
         # validates each card's owner against the cast. Card #0083.
         users = _parse_users(raw, pathlib.Path(where))
@@ -1904,7 +1960,6 @@ class Board:
         default_owner = raw.get("defaultOwner") or cli_user
         if default_owner not in {u.id for u in users}:
             raise BoardError(f"{where}: defaultOwner names unknown user {default_owner!r}")
-        active_policy = policy or _POLICY
         install_users(users, browser_user, cli_user, str(default_owner), where, active_policy)
 
         items: list[Item] = []
@@ -2747,6 +2802,361 @@ def _require_board_port_stopped(target: pathlib.Path, raw: JsonObject) -> None:
     raise BoardError(f"board port {port} is listening; stop the service before migration")
 
 
+def lane_slug(label: str) -> str:
+    """Return the readable ASCII lane ID generated once during board initialization."""
+    normalized = unicodedata.normalize("NFKD", label).encode("ascii", "ignore").decode("ascii")
+    slug = re.sub(r"[^a-z0-9]+", "_", normalized.casefold()).strip("_")
+    if not slug:
+        raise BoardError(f"lane name {label!r} does not produce a nonempty ASCII slug")
+    return slug
+
+
+def _validate_lane_id(value: JsonValue, where: str) -> str:
+    """Accept only the same canonical slug form initialization generates."""
+    if not isinstance(value, str) or not value:
+        raise BoardError(f"{where} is not a nonempty string")
+    if lane_slug(value) != value:
+        raise BoardError(f"{where} {value!r} is not a canonical lower-case underscore slug")
+    return value
+
+
+def _description_lanes(
+    description: JsonObject, path: pathlib.Path
+) -> tuple[list[JsonObject], dict[str, str]]:
+    """Resolve lane display names to generated-once or explicitly imported IDs."""
+    raw = description.get("lanes")
+    if not isinstance(raw, list) or not raw:
+        raise BoardError(f"{path}: 'lanes' is missing or empty")
+    lanes: list[JsonObject] = []
+    name_to_id: dict[str, str] = {}
+    ids: set[str] = set()
+    folded_names: set[str] = set()
+    for index, row in enumerate(raw):
+        where = f"{path}: lanes[{index}]"
+        if not isinstance(row, dict):
+            raise BoardError(f"{where} is not an object")
+        unknown = set(row) - {"name", "id", "note"}
+        if unknown:
+            raise BoardError(f"{where} has unknown field(s): {', '.join(sorted(unknown))}")
+        name = row.get("name")
+        if not isinstance(name, str) or not name.strip():
+            raise BoardError(f"{where}.name is not a nonempty string")
+        name = name.strip()
+        folded = name.casefold()
+        if folded in folded_names:
+            raise BoardError(f"{path}: lane names are not unique: {name!r}")
+        folded_names.add(folded)
+        lane_id = (
+            _validate_lane_id(row.get("id"), f"{where}.id") if "id" in row else lane_slug(name)
+        )
+        if lane_id in ids:
+            raise BoardError(f"{path}: lane slug collision at {name!r}: {lane_id!r}")
+        ids.add(lane_id)
+        name_to_id[name] = lane_id
+        lane: JsonObject = {"id": lane_id, "label": name, "create": []}
+        if "note" in row:
+            note = row.get("note")
+            if not isinstance(note, str):
+                raise BoardError(f"{where}.note is not a string")
+            lane["note"] = note
+        lanes.append(lane)
+    return lanes, name_to_id
+
+
+def _permission_actor_map(
+    description: JsonObject, path: pathlib.Path
+) -> tuple[tuple[User, ...], dict[str, str], str, str, str]:
+    """Resolve permission-file display names to stable board user IDs."""
+    users = _parse_users(description, path)
+    labels: dict[str, str] = {}
+    folded: set[str] = set()
+    for user in users:
+        key = user.label.casefold()
+        if key in folded:
+            raise BoardError(f"{path}: user labels are not unique: {user.label!r}")
+        folded.add(key)
+        labels[user.label] = user.id
+    browser = _pick_role(description, "browserUser", users, HUMAN, path)
+    cli = _pick_role(description, "cliUser", users, BOT, path)
+    default_owner = description.get("defaultOwner") or cli
+    if not isinstance(default_owner, str) or default_owner not in {u.id for u in users}:
+        raise BoardError(f"{path}: defaultOwner names unknown user {default_owner!r}")
+    actor_ids = {browser, cli}
+    permission_labels = {u.label: u.id for u in users if u.id in actor_ids}
+    return users, permission_labels, browser, cli, default_owner
+
+
+def _resolve_create_permissions(
+    permissions: JsonObject,
+    lanes: list[JsonObject],
+    lane_ids: dict[str, str],
+    actor_ids: dict[str, str],
+    path: pathlib.Path,
+) -> None:
+    """Attach explicit name-based card-creation permissions to resolved lane rows."""
+    create_raw = permissions.get("create")
+    if not isinstance(create_raw, dict):
+        raise BoardError(f"{path}: 'create' is missing or not an object")
+    expected = set(lane_ids)
+    if set(create_raw) != expected:
+        details: list[str] = []
+        if missing := sorted(expected - set(create_raw)):
+            details.append("missing " + ", ".join(missing))
+        if extra := sorted(set(create_raw) - expected):
+            details.append("unknown " + ", ".join(extra))
+        raise BoardError(f"{path}: create lanes do not match description ({'; '.join(details)})")
+    lanes_by_name = {str(lane["label"]): lane for lane in lanes}
+    for lane_name, actors_raw in create_raw.items():
+        if not isinstance(actors_raw, list) or not all(
+            isinstance(actor, str) for actor in actors_raw
+        ):
+            raise BoardError(f"{path}: create.{lane_name} is not a list of user names")
+        actor_names = cast("list[str]", actors_raw)
+        if unknown := [actor for actor in actor_names if actor not in actor_ids]:
+            raise BoardError(
+                f"{path}: create.{lane_name} names unknown actor(s) " + ", ".join(unknown)
+            )
+        lanes_by_name[lane_name]["create"] = cast(
+            "list[JsonValue]", [actor_ids[actor] for actor in actor_names]
+        )
+
+
+def _resolve_move_permissions(
+    permissions: JsonObject,
+    lane_ids: dict[str, str],
+    actor_ids: dict[str, str],
+    path: pathlib.Path,
+) -> JsonObject:
+    """Map display-name permission endpoints to their persisted IDs once."""
+    moves_raw = permissions.get("moves")
+    if not isinstance(moves_raw, dict) or set(moves_raw) != set(actor_ids):
+        raise BoardError(f"{path}: moves must contain exactly: {', '.join(sorted(actor_ids))}")
+    edges: JsonObject = {}
+    for actor_name, entries_raw in moves_raw.items():
+        if not isinstance(entries_raw, list):
+            raise BoardError(f"{path}: moves.{actor_name} is not a list")
+        resolved: list[JsonValue] = []
+        for index, entry in enumerate(entries_raw):
+            where = f"{path}: moves.{actor_name}[{index}]"
+            if not isinstance(entry, dict):
+                raise BoardError(f"{where} is not an object")
+            unknown = set(entry) - {"from", "to", "description"}
+            if unknown:
+                raise BoardError(f"{where} has unknown field(s): {', '.join(sorted(unknown))}")
+            source, destination = entry.get("from"), entry.get("to")
+            if not isinstance(source, str) or not isinstance(destination, str):
+                raise BoardError(f"{where} must contain string from and to names")
+            if source not in lane_ids or destination not in lane_ids:
+                raise BoardError(f"{where} must name lanes from the description")
+            edge: JsonObject = {"from": lane_ids[source], "to": lane_ids[destination]}
+            if "description" in entry:
+                edge["description"] = entry["description"]
+            resolved.append(edge)
+        edges[actor_ids[actor_name]] = resolved
+    return edges
+
+
+def _resolved_policy(
+    description: JsonObject,
+    permissions: JsonObject,
+    description_path: pathlib.Path,
+    permissions_path: pathlib.Path,
+) -> tuple[JsonObject, tuple[User, ...], str, str, str]:
+    """Resolve human-readable initialization inputs into one persisted policy."""
+    if description.get("schema") != DESCRIPTION_SCHEMA:
+        raise BoardError(
+            f"{description_path}: description schema {description.get('schema')!r}, "
+            f"want {DESCRIPTION_SCHEMA}"
+        )
+    if permissions.get("schema") != PERMISSIONS_SCHEMA:
+        raise BoardError(
+            f"{permissions_path}: permissions schema {permissions.get('schema')!r}, "
+            f"want {PERMISSIONS_SCHEMA}"
+        )
+    lanes, lane_ids = _description_lanes(description, description_path)
+    users, actor_ids, browser, cli, default_owner = _permission_actor_map(
+        description, description_path
+    )
+    _resolve_create_permissions(permissions, lanes, lane_ids, actor_ids, permissions_path)
+    edges = _resolve_move_permissions(permissions, lane_ids, actor_ids, permissions_path)
+    priorities = description.get("priorities")
+    policy: JsonObject = {
+        "schema": RULES_SCHEMA,
+        "note": (
+            "Resolved once from board description and name-based permissions during initialization."
+        ),
+        "priorities": copy.deepcopy(priorities),
+        "lanes": cast("list[JsonValue]", lanes),
+        "edges": edges,
+    }
+    if "defaultPriority" in description:
+        policy["defaultPriority"] = description["defaultPriority"]
+    TransitionPolicy.from_json(policy, f"{description_path}: resolved policy")
+    return policy, users, browser, cli, default_owner
+
+
+def initialize_board(
+    target: pathlib.Path, description_path: pathlib.Path, permissions_path: pathlib.Path
+) -> str:
+    """Create one self-contained board without ever regenerating its lane IDs."""
+    target = target.resolve()
+    if target.exists():
+        raise BoardError(f"{target}: refusing to overwrite an existing board")
+    description_raw = _read_json(description_path)
+    permissions_raw = _read_json(permissions_path)
+    if not isinstance(description_raw, dict):
+        raise BoardError(f"{description_path}: description is not an object")
+    if not isinstance(permissions_raw, dict):
+        raise BoardError(f"{permissions_path}: permissions document is not an object")
+    policy, users, browser, cli, default_owner = _resolved_policy(
+        description_raw, permissions_raw, description_path, permissions_path
+    )
+    board_raw: JsonObject = {
+        "schema": SCHEMA,
+        "revision": 0,
+        "project": description_raw.get("project"),
+        "port": description_raw.get("port", DEFAULT_PORT),
+        "policy": policy,
+        "users": [
+            {
+                "id": user.id,
+                "label": user.label,
+                "class": user.user_class,
+                "color": user.color,
+            }
+            for user in users
+        ],
+        "browserUser": browser,
+        "cliUser": cli,
+        "defaultOwner": default_owner,
+        "nextTicket": 1,
+        "items": [],
+    }
+    board = Board.from_json(board_raw, str(target))
+    with locked(target):
+        if target.exists():
+            raise BoardError(f"{target}: another initializer created the board first")
+        save(board, target)
+    return f"initialized {target} with {len(board.policy.states)} stable lane IDs"
+
+
+def embed_policy(path: pathlib.Path, policy_path: pathlib.Path) -> str:
+    """Upgrade a schema-3 board by atomically embedding its resolved policy."""
+    target = path.resolve()
+    policy = TransitionPolicy.load(policy_path)
+    with locked(target):
+        raw = _read_json(target)
+        if not isinstance(raw, dict):
+            raise BoardError(f"{target}: top level is not an object")
+        if raw.get("schema") != EMBEDDED_POLICY_PREVIOUS_SCHEMA:
+            raise BoardError(
+                f"{target}: policy embedding reads schema {EMBEDDED_POLICY_PREVIOUS_SCHEMA}, "
+                f"found {raw.get('schema')!r}"
+            )
+        _require_board_port_stopped(target, raw)
+        raw["schema"] = SCHEMA
+        raw["policy"] = policy.to_json()
+        migrated = Board.from_json(raw, str(target))
+        if problems := migrated.verify():
+            raise BoardError(
+                f"{target}: embedded-policy board does not verify: {'; '.join(problems)}"
+            )
+        migrated.revision += 1
+        save(migrated, target)
+    return (
+        f"embedded {len(policy.states)} lanes; schema 3 -> {SCHEMA}; revision {migrated.revision}"
+    )
+
+
+def _policy_document(raw: JsonObject, target: pathlib.Path) -> JsonObject:
+    policy = raw.get("policy")
+    if not isinstance(policy, dict):
+        raise BoardError(f"{target}: 'policy' is missing or not an object")
+    return policy
+
+
+def rename_lane_label(path: pathlib.Path, lane_id: str, label: str) -> str:
+    """Rename only a lane's display label, preserving its identity and audit history."""
+    target = path.resolve()
+    label = label.strip()
+    if not label:
+        raise BoardError("lane label is empty")
+    with locked(target):
+        raw = _read_json(target)
+        if not isinstance(raw, dict) or raw.get("schema") != SCHEMA:
+            raise BoardError(f"{target}: label rename needs a schema-{SCHEMA} board")
+        _require_board_port_stopped(target, raw)
+        policy = _policy_document(raw, target)
+        lanes = policy.get("lanes")
+        if not isinstance(lanes, list):
+            raise BoardError(f"{target}: policy.lanes is not a list")
+        matches = [lane for lane in lanes if isinstance(lane, dict) and lane.get("id") == lane_id]
+        if len(matches) != 1:
+            raise BoardError(f"{target}: policy has no unique lane id {lane_id!r}")
+        previous = matches[0].get("label")
+        matches[0]["label"] = label
+        changed = Board.from_json(raw, str(target))
+        changed.revision += 1
+        save(changed, target)
+    return f"lane {lane_id}: label {previous!r} -> {label!r}; revision {changed.revision}"
+
+
+def _rewrite_policy_lane_id(
+    policy: JsonObject, target: pathlib.Path, source: str, destination: str
+) -> int:
+    """Rewrite one lane identity and all exact permission endpoints in memory."""
+    lanes = policy.get("lanes")
+    if not isinstance(lanes, list):
+        raise BoardError(f"{target}: policy.lanes is not a list")
+    lane_rows = [lane for lane in lanes if isinstance(lane, dict)]
+    if any(lane.get("id") == destination for lane in lane_rows):
+        raise BoardError(f"{target}: destination lane id {destination!r} already exists")
+    matches = [lane for lane in lane_rows if lane.get("id") == source]
+    if len(matches) != 1:
+        raise BoardError(f"{target}: policy has no unique lane id {source!r}")
+    matches[0]["id"] = destination
+    replacements = 1
+    edges = policy.get("edges")
+    if not isinstance(edges, dict):
+        raise BoardError(f"{target}: policy.edges is not an object")
+    for entries in edges.values():
+        if not isinstance(entries, list):
+            raise BoardError(f"{target}: policy edge actor value is not a list")
+        for edge in entries:
+            if not isinstance(edge, dict):
+                raise BoardError(f"{target}: policy edge is not an object")
+            for key in ("from", "to"):
+                if edge.get(key) == source:
+                    edge[key] = destination
+                    replacements += 1
+    return replacements
+
+
+def migrate_lane_id(path: pathlib.Path, source: str, destination: str) -> str:
+    """Atomically migrate one embedded lane ID across policy, state, and audit history."""
+    target = path.resolve()
+    destination = _validate_lane_id(destination, "destination lane id")
+    if source == destination:
+        raise BoardError("lane migration needs two different IDs")
+    with locked(target):
+        raw = _read_json(target)
+        if not isinstance(raw, dict) or raw.get("schema") != SCHEMA:
+            raise BoardError(f"{target}: lane-ID migration needs a schema-{SCHEMA} board")
+        _require_board_port_stopped(target, raw)
+        policy = _policy_document(raw, target)
+        policy_replacements = _rewrite_policy_lane_id(policy, target, source, destination)
+        board_replacements = _rewrite_lane_values(target, raw, source, destination)
+        migrated = Board.from_json(raw, str(target))
+        if problems := migrated.verify():
+            raise BoardError(f"{target}: migrated history does not replay: {'; '.join(problems)}")
+        migrated.revision += 1
+        save(migrated, target)
+    return (
+        f"lane id {source} -> {destination}; replaced {policy_replacements} policy and "
+        f"{board_replacements} board value(s); revision {migrated.revision}"
+    )
+
+
 def _rewrite_lane_values(
     target: pathlib.Path, raw: JsonObject, source: str, destination: str
 ) -> int:
@@ -2783,7 +3193,7 @@ def migrate_lane(path: pathlib.Path, source: str, destination: str) -> str:
     each card's current state and the append-only lane history, so changing only the
     current state would make verification fail and changing only the policy would make
     the board unreadable. The original file remains untouched unless the complete
-    schema-3 result validates and replays cleanly.
+    schema-4 result with its embedded policy validates and replays cleanly.
     """
     target = pathlib.Path(path)
     if not source or not destination or source == destination:
@@ -2805,6 +3215,7 @@ def migrate_lane(path: pathlib.Path, source: str, destination: str) -> str:
         _require_board_port_stopped(target, raw)
         replacements = _rewrite_lane_values(target, raw, source, destination)
         raw["schema"] = SCHEMA
+        raw["policy"] = _POLICY.to_json()
         migrated = Board.from_json(raw, str(target))
         if problems := migrated.verify():
             raise BoardError(f"{target}: migrated history does not replay: {'; '.join(problems)}")
@@ -2944,6 +3355,76 @@ def _remote_apply(path: pathlib.Path, args: argparse.Namespace) -> str:  # noqa:
     return result
 
 
+def _add_offline_arguments(parser: argparse.ArgumentParser) -> None:
+    """Keep setup and structural-migration flags out of the daily-use parser body."""
+    parser.add_argument(
+        "--init",
+        nargs=2,
+        type=pathlib.Path,
+        metavar=("DESCRIPTION", "PERMISSIONS"),
+        help="initialize a new self-contained board from name-based JSON inputs",
+    )
+    parser.add_argument(
+        "--embed-policy",
+        type=pathlib.Path,
+        metavar="RULES",
+        help="offline schema-3 upgrade that embeds one resolved rules file",
+    )
+    parser.add_argument(
+        "--migrate-lane",
+        nargs=2,
+        metavar=("OLD", "NEW"),
+        help="offline schema-2 lane-ID and embedded-policy migration",
+    )
+    parser.add_argument(
+        "--rename-lane-label",
+        nargs=2,
+        metavar=("ID", "LABEL"),
+        help="offline display-label rename that preserves the lane ID",
+    )
+    parser.add_argument(
+        "--migrate-lane-id",
+        nargs=2,
+        metavar=("OLD", "NEW"),
+        help="offline atomic lane-ID migration across policy, cards, and history",
+    )
+
+
+def _run_offline_operation(args: argparse.Namespace) -> str | None:
+    """Validate and execute exactly one requested offline operation."""
+    operations = (
+        args.init,
+        args.embed_policy,
+        args.migrate_lane,
+        args.rename_lane_label,
+        args.migrate_lane_id,
+    )
+    if not any(operations):
+        return None
+    conflict = (
+        sum(bool(operation) for operation in operations) != 1
+        or args.json
+        or args.verify
+        or any(getattr(args, name) for name in MUTATIONS)
+        or args.state
+        or args.priority
+        or args.owner
+        or args.detail
+        or args.detail_file
+    )
+    if conflict:
+        raise BoardError("offline board setup and migration flags cannot be combined")
+    if args.init:
+        return initialize_board(args.board, *args.init)
+    if args.embed_policy:
+        return embed_policy(args.board, args.embed_policy)
+    if args.migrate_lane:
+        return migrate_lane(args.board, *args.migrate_lane)
+    if args.rename_lane_label:
+        return rename_lane_label(args.board, *args.rename_lane_label)
+    return migrate_lane_id(args.board, *args.migrate_lane_id)
+
+
 def main() -> None:
     """A small CLI, so a board can be inspected and moved without the browser."""
     ap = argparse.ArgumentParser(description="Inspect or update a localswim board.")
@@ -2954,12 +3435,7 @@ def main() -> None:
         action="store_true",
         help="replay every history and refuse a state it disagrees with",
     )
-    ap.add_argument(
-        "--migrate-lane",
-        nargs=2,
-        metavar=("OLD", "NEW"),
-        help="offline schema-2 to schema-3 lane-ID migration; service must be stopped",
-    )
+    _add_offline_arguments(ap)
     ap.add_argument("--move", nargs=2, metavar=("ID", "STATE"), help="move one card")
     ap.add_argument(
         "--comment", nargs=2, metavar=("ID", "TEXT"), help="leave a comment on one card"
@@ -3040,16 +3516,13 @@ def main() -> None:
     ap.add_argument(
         "--create", nargs=2, metavar=("ID", "SUBJECT"), help="add one card; needs --state"
     )
-    # **`choices` is the lanes Claude may CREATE in, not every lane.** argparse then
-    # refuses an illegal lane by name before the board is opened, which is a better
-    # error than `BoardError` raised under the lock -- and it makes `--help` state
-    # the permission rather than hide it behind a failed run.
-    ap.add_argument("--state", choices=list(STATES), help="the lane to --create in")
+    # Lane and priority values are board-specific under schema 4. The running service
+    # validates them against the board's embedded policy; argparse cannot know them.
+    ap.add_argument("--state", help="the lane ID for --create")
     ap.add_argument(
         "--priority",
-        choices=list(PRIORITIES),
-        default=DEFAULT_PRIORITY,
-        help="priority for --create",
+        default=None,
+        help="priority for --create; defaults to the board policy",
     )
     detail = ap.add_mutually_exclusive_group()
     detail.add_argument("--detail", default="", help="description for --create")
@@ -3058,15 +3531,12 @@ def main() -> None:
     )
     args = ap.parse_args()
 
-    if args.migrate_lane:
-        conflicts = args.json or args.verify or any(getattr(args, name) for name in MUTATIONS)
-        if conflicts:
-            ap.error("--migrate-lane cannot be combined with another operation")
-        try:
-            result = migrate_lane(args.board.resolve(), *args.migrate_lane)
-        except BoardError as exc:
-            raise SystemExit(f"  ERROR: {exc}") from None
-        print(f"  {result}")
+    try:
+        offline_result = _run_offline_operation(args)
+    except BoardError as exc:
+        ap.error(str(exc))
+    if offline_result is not None:
+        print(f"  {offline_result}")
         return
 
     if args.create and not args.state:

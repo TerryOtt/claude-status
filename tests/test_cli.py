@@ -78,6 +78,7 @@ def write_schema_two_lane_board(path: pathlib.Path, port: int) -> str:
     board.move("alpha", current_lane, "bot")
     raw = cast("dict[str, Any]", board.to_json())
     raw["schema"] = board_state.PREVIOUS_BOARD_SCHEMA
+    del raw["policy"]
     items = cast("list[dict[str, Any]]", raw["items"])
     for item in items:
         if item.get("state") == current_lane:
@@ -89,6 +90,25 @@ def write_schema_two_lane_board(path: pathlib.Path, port: int) -> str:
                     change[key] = legacy_lane
     path.write_text(json.dumps(raw, indent=2) + "\n", encoding="utf-8")
     return legacy_lane
+
+
+def initialization_inputs(tmp_path: pathlib.Path) -> tuple[pathlib.Path, pathlib.Path]:
+    """Copy the checked initialization inputs with an isolated unused port."""
+    examples = pathlib.Path(__file__).resolve().parents[1] / "examples"
+    description = cast(
+        "dict[str, Any]",
+        json.loads((examples / "board-description.example.json").read_text(encoding="utf-8")),
+    )
+    with socket.socket() as candidate:
+        candidate.bind(("127.0.0.1", 0))
+        description["port"] = candidate.getsockname()[1]
+    description_path = tmp_path / "description.json"
+    permissions_path = tmp_path / "permissions.json"
+    description_path.write_text(json.dumps(description, indent=2) + "\n", encoding="utf-8")
+    permissions_path.write_text(
+        (examples / "permissions.example.json").read_text(encoding="utf-8"), encoding="utf-8"
+    )
+    return description_path, permissions_path
 
 
 def test_every_cli_mutation_uses_service(served_board: pathlib.Path) -> None:
@@ -164,7 +184,7 @@ def test_cli_migrates_lane_state_and_history_offline(tmp_path: pathlib.Path) -> 
     result = run_cli(path, "--migrate-lane", legacy_lane, "ready_for_work")
 
     assert result.returncode == 0, result.stderr
-    assert "migrated schema 2 -> 3" in result.stdout
+    assert "migrated schema 2 -> 4" in result.stdout
     assert "replaced 4 lane value(s)" in result.stdout
     board = board_state.load(path)
     assert board.revision == 1
@@ -187,3 +207,117 @@ def test_lane_migration_refuses_a_listening_board_port(tmp_path: pathlib.Path) -
     assert result.returncode != 0
     assert f"board port {listening_port} is listening" in result.stderr
     assert path.read_bytes() == before
+
+
+def test_cli_initializes_stable_slugs_and_resolves_name_permissions(
+    tmp_path: pathlib.Path,
+) -> None:
+    path = tmp_path / "board.json"
+    description, permissions = initialization_inputs(tmp_path)
+
+    result = run_cli(path, "--init", str(description), str(permissions))
+
+    assert result.returncode == 0, result.stderr
+    board = board_state.load(path)
+    assert board.policy.states == (
+        "backlog",
+        "ready_for_work",
+        "in_progress",
+        "ready_for_review",
+        "completed",
+    )
+    assert board.policy.may_move("terry", "backlog", "in_progress")
+    assert board.policy.may_move("terry", "ready_for_work", "in_progress")
+    assert board.policy.may_move("bot", "ready_for_work", "in_progress")
+    assert board.revision == 0
+    assert board.items == []
+
+
+def test_cli_initializer_rejects_slug_collisions(tmp_path: pathlib.Path) -> None:
+    path = tmp_path / "board.json"
+    description_path, permissions = initialization_inputs(tmp_path)
+    description = cast("dict[str, Any]", json.loads(description_path.read_text(encoding="utf-8")))
+    description["lanes"] = [{"name": "Ready For Work"}, {"name": "ready-for-work"}]
+    description_path.write_text(json.dumps(description), encoding="utf-8")
+
+    result = run_cli(path, "--init", str(description_path), str(permissions))
+
+    assert result.returncode != 0
+    assert "slug collision" in result.stderr
+    assert not path.exists()
+
+
+def test_cli_initializer_accepts_an_explicit_import_id(tmp_path: pathlib.Path) -> None:
+    path = tmp_path / "board.json"
+    description_path, permissions = initialization_inputs(tmp_path)
+    description = cast("dict[str, Any]", json.loads(description_path.read_text(encoding="utf-8")))
+    lanes = cast("list[dict[str, Any]]", description["lanes"])
+    lanes[0]["id"] = "someday"
+    description_path.write_text(json.dumps(description), encoding="utf-8")
+
+    result = run_cli(path, "--init", str(description_path), str(permissions))
+
+    assert result.returncode == 0, result.stderr
+    board = board_state.load(path)
+    assert board.policy.states[0] == "someday"
+    assert board.policy.may_move("terry", "someday", "in_progress")
+
+
+def test_cli_renames_label_without_changing_lane_identity(tmp_path: pathlib.Path) -> None:
+    path = tmp_path / "board.json"
+    description, permissions = initialization_inputs(tmp_path)
+    assert run_cli(path, "--init", str(description), str(permissions)).returncode == 0
+
+    result = run_cli(path, "--rename-lane-label", "ready_for_work", "Selected Work")
+
+    assert result.returncode == 0, result.stderr
+    board = board_state.load(path)
+    assert board.policy.lane_label["ready_for_work"] == "Selected Work"
+    assert "selected_work" not in board.policy.states
+    assert board.revision == 1
+
+
+def test_cli_migrates_embedded_lane_id_atomically(tmp_path: pathlib.Path) -> None:
+    path = tmp_path / "board.json"
+    description, permissions = initialization_inputs(tmp_path)
+    assert run_cli(path, "--init", str(description), str(permissions)).returncode == 0
+    board = board_state.load(path)
+    board.create("alpha", "Alpha", "ready_for_work", "bot")
+    board_state.save(board, path)
+
+    result = run_cli(path, "--migrate-lane-id", "ready_for_work", "selected_work")
+
+    assert result.returncode == 0, result.stderr
+    migrated = board_state.load(path)
+    assert "ready_for_work" not in json.dumps(migrated.to_json())
+    assert migrated.find("alpha").state == "selected_work"
+    assert migrated.find("alpha").replayed_state() == "selected_work"
+    assert migrated.policy.may_move("terry", "selected_work", "in_progress")
+    assert migrated.verify() == []
+    assert migrated.revision == 1
+
+
+def test_cli_embeds_policy_into_a_schema_three_board(tmp_path: pathlib.Path) -> None:
+    path = tmp_path / "board.json"
+    with socket.socket() as candidate:
+        candidate.bind(("127.0.0.1", 0))
+        port = candidate.getsockname()[1]
+    board = board_state.Board(
+        project="Migration",
+        port=port,
+        users=USERS,
+        browser_user="terry",
+        cli_user="bot",
+        default_owner="bot",
+    )
+    raw = cast("dict[str, Any]", board.to_json())
+    raw["schema"] = board_state.EMBEDDED_POLICY_PREVIOUS_SCHEMA
+    del raw["policy"]
+    path.write_text(json.dumps(raw), encoding="utf-8")
+
+    result = run_cli(path, "--embed-policy", str(board_state.RULES_PATH))
+
+    assert result.returncode == 0, result.stderr
+    migrated = board_state.load(path)
+    assert migrated.revision == 1
+    assert migrated.policy.states == board_state.TransitionPolicy.load().states

@@ -9,11 +9,13 @@ serves a local swimlane board from one JSON snapshot.
   policy checks, storage helpers, and command-line client.
 - `src/localswim/api_endpoint.py` owns the loopback HTTP service and its embedded
   browser UI. It is the sole writer while a board is live.
-- `src/localswim/rules.json` is the schema-validated allow-list for lanes, priorities,
-  creation, and actor-specific transitions.
+- `src/localswim/rules.json` is the checked legacy/default policy used for controlled
+  schema migrations. New boards persist their resolved policy inside the board.
 - `pyproject.toml` is the single build, dependency, Ruff, formatter, and Pyright
   configuration source; `uv.lock` is committed for reproducible development and CI.
-- `examples/board.example.json` is the checked, empty schema-3 example board.
+- `examples/board-description.example.json` and `examples/permissions.example.json`
+  are the human-readable initialization inputs. `examples/board.example.json` is their
+  checked, empty schema-4 output.
 - `docs/ORIENTATION.md` is the contributor map for architecture, data flow, schemas,
   invariants, test coverage, and Windows/Codex environment details.
 - `CONTRIBUTING.md` defines the enforced GitHub branch and pull-request policy.
@@ -33,8 +35,12 @@ serves a local swimlane board from one JSON snapshot.
   real board data, credentials, or service descriptors to source control.
 - Automatic commits and pushes are opt-in. Do not enable `--autopush`, configure
   remotes, commit, or push unless the user explicitly asks.
-- Treat `rules.json` as the permission source, not as UI decoration. Keep user IDs and
-  `browserUser`/`cliUser` aligned with its actor keys.
+- Treat each schema-4 board's embedded policy as executable permission data, not UI
+  decoration. Initialization resolves lane and actor display names once into stable
+  IDs; runtime authorization uses only those persisted IDs.
+- Generate a lane ID once from its initial display name, reject collisions, and never
+  regenerate it after a label rename. Use the distinct offline label-rename and lane-ID
+  migration operations for those different intents.
 - Keep durable product identifiers agent-neutral. Do not put a human assistant,
   automation product, model, or vendor name into lane, field, or protocol IDs.
 - An automation agent must not promote a backlog card to `ready_for_work` without

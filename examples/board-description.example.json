@@ -1,0 +1,59 @@
+{
+  "schema": 1,
+  "project": "Example project",
+  "port": 8792,
+  "users": [
+    {
+      "id": "terry",
+      "label": "Terry",
+      "class": "human",
+      "color": "#2266AA"
+    },
+    {
+      "id": "bot",
+      "label": "Bot",
+      "class": "bot",
+      "color": "#AA6622"
+    }
+  ],
+  "browserUser": "terry",
+  "cliUser": "bot",
+  "defaultOwner": "bot",
+  "priorities": [
+    {
+      "id": "P1",
+      "label": "Urgent"
+    },
+    {
+      "id": "P2",
+      "label": "Normal"
+    },
+    {
+      "id": "P3",
+      "label": "Low"
+    }
+  ],
+  "defaultPriority": "P2",
+  "lanes": [
+    {
+      "name": "Backlog",
+      "note": "Someday work selected by the human."
+    },
+    {
+      "name": "Ready For Work",
+      "note": "Selected work, ordered by priority."
+    },
+    {
+      "name": "In Progress",
+      "note": "Work being performed now."
+    },
+    {
+      "name": "Ready For Review",
+      "note": "Completed work awaiting human signoff."
+    },
+    {
+      "name": "Completed",
+      "note": "Signed-off terminal work."
+    }
+  ]
+}

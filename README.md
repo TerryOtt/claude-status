@@ -12,11 +12,11 @@ Requirements:
 - A modern browser
 - Git only if you want build identifiers or opt-in automatic pushes
 
-Clone the repository, create a private board directory, and copy the example:
+Clone the repository and create a private board from the checked description and
+name-based permission examples:
 
 ~~~text
-boards/
-└── my-project.json    <- copy of examples/board.example.json
+uv run --frozen localswim-board boards/my-project.json --init examples/board-description.example.json examples/permissions.example.json
 ~~~
 
 Then start the service:
@@ -37,16 +37,21 @@ repository or directory.
 
 ## Board configuration
 
-The checked [example board](examples/board.example.json) is valid, empty and ready to
-run with the repository's default `terry` and `bot` permission actors.
+The checked [board description](examples/board-description.example.json) lists users,
+priorities, and lane display names. The separate
+[permission input](examples/permissions.example.json) names people and lanes as a human
+would. Initialization resolves those names, generates readable lane slugs once, rejects
+collisions, and persists the resolved policy inside the new board. The checked
+[example board](examples/board.example.json) is the resulting valid, empty snapshot.
 
 The important fields are:
 
 | Field | Meaning |
 |---|---|
-| schema | Board format version; currently 3. |
+| schema | Board format version; currently 4. |
 | project | Name shown in the browser. |
 | port | Loopback TCP port; defaults to 8792 if omitted. |
+| policy | Resolved lanes, priorities, creation rights, and transition edges. |
 | users | Valid identities, labels, classes (human or bot), and UI colors. |
 | browserUser | Identity used for browser changes. |
 | cliUser | Identity used for CLI changes. |
@@ -55,9 +60,9 @@ The important fields are:
 | nextTicket | Next display number; start an empty board at 1. |
 | items | Cards; start an empty board with an empty list. |
 
-User IDs are case-sensitive. The two transition actors in rules.json MUST exactly match
-browserUser and cliUser. To rename the actors, update both files together. Malformed
-JSON and invalid fields fail with a path, line or field-specific explanation.
+User IDs are case-sensitive. The embedded policy's two transition actors MUST exactly
+match browserUser and cliUser. Malformed JSON, ambiguous names, slug collisions, and
+invalid fields fail with a path, line, or field-specific explanation.
 
 ## Daily use
 
@@ -83,21 +88,38 @@ Run **uv run --frozen localswim-board --help** for the complete command list. CL
 attributed to cliUser; browser changes are attributed to browserUser. Request bodies
 cannot choose another identity.
 
-Schema 3 replaced the legacy agent-specific Ready For Work lane ID with
-`ready_for_work`. With the service stopped, migrate a schema-2 board atomically through
-the CLI rather than editing its current states and audit history by hand:
+Schema 4 embeds the complete resolved policy so a board's lane identities and
+permissions travel atomically with its state. With the service stopped, upgrade a
+schema-3 board with the policy it already uses:
+
+~~~console
+uv run --frozen localswim-board boards/my-project.json --embed-policy path/to/rules.json
+~~~
+
+The earlier schema-2 Ready For Work migration also produces a schema-4 board:
 
 ~~~console
 uv run --frozen localswim-board boards/my-project.json --migrate-lane <old-lane-id> ready_for_work
 ~~~
 
-The migration refuses a listening board port, validates and replays the complete
-schema-3 result before replacing the file, and increments the board revision.
+Every structural migration refuses a listening board port, validates and replays the
+complete result before replacing the file, and increments the board revision.
+
+Display renames and identity migrations are deliberately different operations:
+
+~~~console
+uv run --frozen localswim-board boards/my-project.json --rename-lane-label ready_for_work "Selected Work"
+uv run --frozen localswim-board boards/my-project.json --migrate-lane-id ready_for_work selected_work
+~~~
+
+The first changes only presentation. The second atomically rewrites the embedded
+policy, current card states, and lane-history endpoints. Neither operation derives an
+existing ID from the current label.
 
 ## Transition permissions
 
-rules.json is the allow-list for lanes, priorities, card creation and movement. Edges
-are grouped under exactly two actor IDs:
+The embedded policy is the allow-list for lanes, priorities, card creation, and
+movement. Its generated edges are grouped under exactly two actor IDs:
 
 ~~~json
 "edges": {
@@ -124,7 +146,8 @@ are grouped under exactly two actor IDs:
 
 Each edge MUST contain string from and to lane IDs, MAY contain a string description,
 and MUST contain no other fields. Unknown lanes, self-loops, duplicate actor edges and
-duplicate JSON keys are rejected. Valid rules.json edits reload live.
+duplicate JSON keys are rejected. Initialization inputs may use display names, but the
+persisted policy and every runtime request use stable IDs.
 
 ## Data safety and Git
 

@@ -1,0 +1,75 @@
+{
+  "schema": 1,
+  "create": {
+    "Backlog": [
+      "Bot",
+      "Terry"
+    ],
+    "Ready For Work": [
+      "Bot",
+      "Terry"
+    ],
+    "In Progress": [],
+    "Ready For Review": [],
+    "Completed": []
+  },
+  "moves": {
+    "Terry": [
+      {
+        "from": "Backlog",
+        "to": "Ready For Work"
+      },
+      {
+        "from": "Backlog",
+        "to": "In Progress"
+      },
+      {
+        "from": "Ready For Work",
+        "to": "Backlog"
+      },
+      {
+        "from": "Ready For Work",
+        "to": "In Progress"
+      },
+      {
+        "from": "In Progress",
+        "to": "Ready For Work"
+      },
+      {
+        "from": "In Progress",
+        "to": "Ready For Review"
+      },
+      {
+        "from": "Ready For Review",
+        "to": "In Progress"
+      },
+      {
+        "from": "Ready For Review",
+        "to": "Completed"
+      }
+    ],
+    "Bot": [
+      {
+        "from": "Backlog",
+        "to": "Ready For Work",
+        "description": "Use only after the human explicitly selects the card."
+      },
+      {
+        "from": "Ready For Work",
+        "to": "Backlog"
+      },
+      {
+        "from": "Ready For Work",
+        "to": "In Progress"
+      },
+      {
+        "from": "In Progress",
+        "to": "Ready For Work"
+      },
+      {
+        "from": "In Progress",
+        "to": "Ready For Review"
+      }
+    ]
+  }
+}

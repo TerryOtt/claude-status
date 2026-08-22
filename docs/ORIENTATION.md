@@ -27,8 +27,9 @@ CLI mutation ── service descriptor ────┘          │
                                                   v
                                              board.json
 
+description.json + permissions.json ── init ──> board.json
+                                               state + resolved policy
 CLI report ───────────────────────────────> validated read of board.json
-rules.json ───────────────────────────────> immutable TransitionPolicy
 ```
 
 The important boundary is `BoardStore.execute()`: every live mutation is serialized,
@@ -41,10 +42,12 @@ saved, and only then published as the current in-memory snapshot.
 |---|---|
 | `src/localswim/board_state.py` | Domain model, policy loading, validation, history replay, relationships, JSON storage, file locking, and CLI. |
 | `src/localswim/api_endpoint.py` | Loopback HTTP server, transactional store, REST boundary, embedded HTML/CSS/JavaScript, live reload, and optional Git publishing. |
-| `src/localswim/rules.json` | Tool-level lanes, priorities, creation rights, and actor-grouped transition edges. |
+| `src/localswim/rules.json` | Checked legacy/default policy used by controlled migrations. |
 | `pyproject.toml` | uv build metadata, Python contract, dependencies, Ruff/formatter policy, and strict Pyright policy. |
 | `.python-version` / `uv.lock` | Exact development interpreter and cross-platform dependency lock. |
-| `examples/board.example.json` | Empty, valid per-project board configuration. |
+| `examples/board-description.example.json` | Human-readable users, priorities, and lane names for initialization. |
+| `examples/permissions.example.json` | Name-based creation and movement permissions for initialization. |
+| `examples/board.example.json` | Empty schema-4 board generated from those inputs. |
 | `check.py` | Complete local/CI gate: line endings, Ruff, formatting, strict Pyright, pytest, workflow/shell linting, and US English vocabulary. |
 | `tests/` | Domain, policy, serialization, store, API, CLI, docs, and gate behavior. |
 | `src/localswim/vendor/typefaces/inter/` | Unmodified Inter WOFF2 subsets and their SIL OFL license. |
@@ -67,21 +70,20 @@ Three JSON shapes have separate version numbers because they change independentl
 
 | Data | Schema | Owner and lifetime |
 |---|---:|---|
-| Board snapshot | 3 | Per project, durable, selected on the command line. |
-| Transition rules | 6 | Per tool checkout, durable, loaded from `rules.json`. |
+| Board snapshot | 4 | Per project, durable, selected on the command line. |
+| Embedded transition policy | 6 | Per board, durable, resolved during initialization. |
+| Initialization description | 1 | Human-readable input; lane IDs are optional. |
+| Initialization permissions | 1 | Human-readable input using user and lane names. |
 | Service descriptor | 1 | Per running process, temporary, stored outside the board. |
 
-The board owns deployment-specific data:
+The board owns all deployment-specific state and resolved behavior:
 
 - project name and loopback port;
 - users, labels, human/bot classes, and UI colors;
 - `browserUser`, `cliUser`, and `defaultOwner`;
 - monotonic `revision` and `nextTicket` values;
 - cards, links, comments, and history.
-
-The rules own tool behavior:
-
-- lane order, IDs, labels, and lane creation rights;
+- lane order, stable IDs, mutable labels, and lane creation rights;
 - priority order, IDs, labels, and default;
 - directed transition edges grouped under actor IDs.
 
@@ -101,12 +103,14 @@ unknown key: rule edges explicitly do; the board loader currently tolerates addi
 keys in several persisted objects.
 
 Schema 3 renamed the legacy agent-specific Ready For Work lane ID to
-`ready_for_work`. `localswim-board --migrate-lane <old-lane-id> ready_for_work` is the
-only supported schema-2 migration path. It runs offline under the board lock, rewrites
-only card-state and lane-history endpoint fields, validates and replays the complete
-schema-3 board, increments `revision`, and atomically replaces the old snapshot.
-The compatibility objection, owner rationale, and accepted history-rewrite cost are
-recorded in [ADR 0001](decisions/0001-agent-neutral-ready-work-id.md).
+`ready_for_work`; [ADR 0001](decisions/0001-agent-neutral-ready-work-id.md) records that
+compatibility decision. Schema 4 embeds the resolved transition policy. A new board is
+initialized from a description plus name-based permissions: lane names generate unique
+readable slugs once, and all names are resolved to IDs before persistence. An optional
+explicit lane ID exists for controlled imports. Label renames never regenerate IDs;
+the separate lane-ID migration rewrites policy endpoints, current states, and audit
+history atomically. [ADR 0002](decisions/0002-stable-generated-lane-slugs.md) records the
+approved identity model and rejected alternatives.
 
 ## Cards, identity, and audit
 
@@ -162,7 +166,7 @@ linking. Explicit CLI/API links remain available to either authenticated actor.
 
 ## Lane policy and the non-table rule
 
-`rules.json` is the executable allow-list. The current lane meanings are:
+The FGA/default embedded policy is the executable allow-list. Its lane meanings are:
 
 | Lane | Meaning |
 |---|---|
@@ -278,8 +282,8 @@ Important UI mechanics:
   the server build.
 - Preflight changed Python in a child process; valid source triggers graceful server
   re-exec, while invalid source leaves the healthy process running and reports why.
-- Reload `rules.json` live. A bad edit retains the last valid immutable policy and is
-  reported once for that file version.
+- Reload a complete externally replaced board snapshot, including its embedded policy;
+  invalid state or policy is reported rather than partially applied.
 - Search titles, descriptions, comments, and tickets entirely in the browser.
 - Hide completed cards after 24 hours only when the lane-entry time is known.
 - Derive draggable edges, creatable lanes, labels, priorities, actors, and colors from
@@ -303,7 +307,7 @@ data, not for autopush.
 
 ## Tests and development gate
 
-The suite currently contains 108 tests across these boundaries:
+The suite spans these boundaries:
 
 | Module | Coverage focus |
 |---|---|
@@ -312,8 +316,8 @@ The suite currently contains 108 tests across these boundaries:
 | `test_policy.py` | Policy immutability, strict edge parsing, actor matching, isolation, and reload. |
 | `test_store.py` | Transactionality, revision races, board placement, and autopush startup. |
 | `test_api.py` | Real threaded loopback routes, auth, revisions, redirects, and code restart. |
-| `test_cli.py` | CLI-to-service mutations and offline read behavior. |
-| `test_docs.py` | Checked example board. |
+| `test_cli.py` | CLI-to-service mutations, initialization, and offline migrations. |
+| `test_docs.py` | Checked initialization inputs and generated example board. |
 | `test_check.py` | Gate line-ending parser. |
 | `conftest.py` | Standard isolated Terry/Bot cast and empty board fixtures. |
 
@@ -398,7 +402,7 @@ Keep each fact in the narrowest durable place:
 - `docs/ORIENTATION.md`: contributor-level component map, data flow, invariants, and
   known sharp edges.
 - `AGENTS.md`: concise rules an automation agent must follow while changing the repo.
-- `rules.json` notes/descriptions: why a specific lane or actor edge exists.
+- Embedded policy notes/descriptions: why a specific lane or actor edge exists.
 - module/class/function docstrings: detailed implementation decisions and measured
   failure history closest to the code they constrain.
 - tests: executable contracts.
