@@ -5,16 +5,19 @@ Read [the contributor orientation](docs/ORIENTATION.md) and the applicable
 
 ## Branch and pull-request policy
 
-Only these GitHub actors may push directly to `main`:
+Only this GitHub identity may push directly to `main`:
 
 - Terry, authenticated as GitHub user [`TerryOtt`](https://github.com/TerryOtt).
-- Codex cloud, authenticated as the
-  [`chatgpt-codex-connector`](https://github.com/apps/chatgpt-codex-connector)
-  GitHub App.
 
-A local Codex session using Terry's Git credential is not a distinct GitHub actor;
-GitHub records that push as `TerryOtt`. Repository instructions still require Codex
-to commit or push only when Terry explicitly asks.
+A local Codex session using Terry's Git credential is covered by that exception:
+GitHub records its push as `TerryOtt`, not as a distinct actor. Repository instructions
+still require Codex to commit or push only when Terry explicitly asks.
+
+OpenAI's `chatgpt-codex-connector` GitHub App is not currently installed or authorized
+for this repository. GitHub will not accept an uninstalled App as a ruleset bypass
+actor. A future cloud Codex task therefore follows the feature-branch and PR policy
+unless Terry installs that App for this repository and deliberately adds its App ID
+`1144995` to the bypass list and recipe.
 
 Every other contributor must:
 
@@ -32,8 +35,8 @@ The enforced branch-name grammar is:
 ```
 
 Keep the description short and focused even though the check does not impose an
-arbitrary word limit. Terry and the Codex GitHub App are exempt from this naming rule
-when they choose to use a pull request.
+arbitrary word limit. Terry is exempt from this naming rule when choosing to use a
+pull request.
 
 ## Where enforcement lives
 
@@ -80,7 +83,7 @@ The persisted actor IDs are public GitHub identities, not credentials:
 | Actor | Type | ID |
 |---|---|---:|
 | `TerryOtt` | User | `17037862` |
-| `chatgpt-codex-connector` | Integration | `1144995` |
+| `chatgpt-codex-connector` | Integration, not currently active | `1144995` |
 
 Never store a GitHub token, service credential, board data, or service descriptor in
 this repository.

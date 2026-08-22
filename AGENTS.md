@@ -122,11 +122,12 @@ merely to suppress a sandbox-only warning.
 
 ## Branch and publishing policy
 
-GitHub permits direct `main` pushes only from `TerryOtt` and the
-`chatgpt-codex-connector` GitHub App. Local Codex sessions use Terry's Git credential
-and therefore appear to GitHub as `TerryOtt`; GitHub cannot audit them as a separate
-actor. Every other contributor must work on a lower-case kebab-case
-`feature/<terse-description>` branch and submit a pull request to `main`.
+GitHub permits direct `main` pushes only from `TerryOtt`. Local Codex sessions use
+Terry's Git credential and therefore appear to GitHub as `TerryOtt`; GitHub cannot
+audit them as a separate actor. The `chatgpt-codex-connector` GitHub App is not
+installed for this repository and has no bypass. Every other independently
+authenticated actor must work on a lower-case kebab-case `feature/<terse-description>`
+branch and submit a pull request to `main`.
 
 The direct-push exception is capability, not standing authorization. Codex must still
 wait for an explicit user request before committing or pushing. When authorized to

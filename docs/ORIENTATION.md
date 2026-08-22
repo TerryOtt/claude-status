@@ -341,17 +341,20 @@ the documentation or JSON recipe by itself, is the enforcement boundary:
 
 - `TerryOtt` (GitHub user ID `17037862`) may bypass the `main` ruleset and push
   directly.
-- OpenAI's `chatgpt-codex-connector` (GitHub App ID `1144995`) has the same bypass.
-- All other actors must reach `main` through a pull request whose source name matches
-  `feature/<lower-case-kebab-description>`.
+- Local Codex uses Terry's credential and is covered by that same user bypass.
+- All separately authenticated actors must reach `main` through a pull request whose
+  source name matches `feature/<lower-case-kebab-description>`.
 - The `contribution-policy` workflow performs that PR-source check without checking
   out or executing untrusted contributor code.
 
 A local Codex session uses the Git credential supplied by its environment. In this
-checkout that is Terry's credential, so GitHub sees local Codex pushes as `TerryOtt`;
-only Codex cloud using the connector App is independently identifiable. The branch
-bypass does not override the repository instruction that Codex commits and pushes only
-after an explicit user request.
+checkout that is Terry's credential, so GitHub sees local Codex pushes as `TerryOtt`.
+OpenAI's `chatgpt-codex-connector` (GitHub App ID `1144995`) is not currently installed
+or authorized for this repository; GitHub rejected it as a bypass actor for that
+reason. Cloud Codex must therefore follow the feature-branch policy unless Terry later
+installs the App and adds it to both the live rule and recipe. The branch bypass does
+not override the repository instruction that Codex commits and pushes only after an
+explicit user request.
 
 The main ruleset intentionally requires zero fixed review approvals: the requested
 boundary is “submit a PR,” with Terry retaining the merge decision. It requires the

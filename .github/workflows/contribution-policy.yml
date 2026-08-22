@@ -18,8 +18,7 @@ jobs:
           PR_AUTHOR: ${{ github.event.pull_request.user.login }}
         shell: bash
         run: |
-          if [[ "$PR_AUTHOR" == "TerryOtt" || \
-                "$PR_AUTHOR" == "chatgpt-codex-connector[bot]" ]]; then
+          if [[ "$PR_AUTHOR" == "TerryOtt" ]]; then
             echo "$PR_AUTHOR is an approved direct-main actor."
             exit 0
           fi

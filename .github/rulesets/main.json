@@ -1,16 +1,11 @@
 {
-  "name": "Main: Terry/Codex direct, others via feature PR",
+  "name": "Main: Terry/local Codex direct, others via feature PR",
   "target": "branch",
   "enforcement": "active",
   "bypass_actors": [
     {
       "actor_id": 17037862,
       "actor_type": "User",
-      "bypass_mode": "always"
-    },
-    {
-      "actor_id": 1144995,
-      "actor_type": "Integration",
       "bypass_mode": "always"
     }
   ],
