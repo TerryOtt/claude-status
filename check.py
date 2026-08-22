@@ -61,6 +61,7 @@ ROOT = pathlib.Path(__file__).resolve().parent
 RULE = "=" * 70
 ACTIONLINT_VERSION = "1.7.12"
 SHELLCHECK_VERSION = "0.11.0"
+PYTHON_TARGETS = ("src", "check.py", "tests")
 
 # **A line that MUST produce hits.** If it ever comes back clean the import silently
 # broke and every other result in this run is worthless.
@@ -154,7 +155,9 @@ def run_line_endings() -> bool:
 def run_ruff() -> bool:
     """Lint, and say plainly whether it passed."""
     print("  ruff")
-    done = subprocess.run([sys.executable, "-m", "ruff", "check", "."], cwd=ROOT, check=False)
+    done = subprocess.run(  # noqa: S603 -- fixed project targets under this interpreter
+        [sys.executable, "-m", "ruff", "check", *PYTHON_TARGETS], cwd=ROOT, check=False
+    )
     ok = done.returncode == 0
     print(f"    {'ok' if ok else 'FAIL'}\n")
     return ok
@@ -163,8 +166,10 @@ def run_ruff() -> bool:
 def run_format() -> bool:
     """Require Ruff's canonical formatting without modifying the working tree."""
     print("  ruff-format")
-    done = subprocess.run(
-        [sys.executable, "-m", "ruff", "format", "--check", "."], cwd=ROOT, check=False
+    done = subprocess.run(  # noqa: S603 -- fixed project targets under this interpreter
+        [sys.executable, "-m", "ruff", "format", "--check", *PYTHON_TARGETS],
+        cwd=ROOT,
+        check=False,
     )
     ok = done.returncode == 0
     print(f"    {'ok' if ok else 'FAIL'}\n")
@@ -188,7 +193,7 @@ def run_pyright() -> bool:
     and make a clean result meaningless.
     """
     print("  pyright")
-    done = subprocess.run([sys.executable, "-m", "pyright", "."], cwd=ROOT, check=False)
+    done = subprocess.run([sys.executable, "-m", "pyright"], cwd=ROOT, check=False)
     ok = done.returncode == 0
     print(f"    {'ok' if ok else 'FAIL'}\n")
     return ok
