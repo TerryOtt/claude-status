@@ -1,7 +1,7 @@
 """The gate. Run it before committing; the pre-commit hook runs it for you.
 
-    python check.py
-    python check.py --word-table <path to claude-dirty-words.py>
+    uv run --frozen python check.py
+    uv run --frozen python check.py --word-table <path to claude-dirty-words.py>
 
 **This repository had NO gate at all until 2026-08-19**, and it was found the way
 these things always are: a `Stop` hook caught Claude writing the British spelling of
@@ -49,12 +49,18 @@ import argparse
 import importlib.util
 import os
 import pathlib
+import shutil
 import subprocess
 import sys
-from types import ModuleType
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from types import ModuleType
 
 ROOT = pathlib.Path(__file__).resolve().parent
 RULE = "=" * 70
+ACTIONLINT_VERSION = "1.7.12"
+SHELLCHECK_VERSION = "0.11.0"
 
 # **A line that MUST produce hits.** If it ever comes back clean the import silently
 # broke and every other result in this run is worthless.
@@ -99,12 +105,17 @@ def tracked(suffixes: tuple[str, ...]) -> list[pathlib.Path]:
     **`git ls-files` rather than a glob**, so an untracked scratch file cannot fail the
     gate and a tracked file cannot hide from it.
     """
-    out = subprocess.run(["git", "ls-files"], cwd=ROOT, capture_output=True,
-                         text=True, check=False)
+    out = subprocess.run(
+        ["git", "ls-files"],  # noqa: S607 -- Git is the required repository tool.
+        cwd=ROOT,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
     if out.returncode != 0:
         return []
-    return [ROOT / line for line in out.stdout.splitlines()
-            if line.endswith(suffixes)]
+    paths = (ROOT / line for line in out.stdout.splitlines() if line.endswith(suffixes))
+    return [path for path in paths if path.is_file()]
 
 
 def non_lf_tracked(lines: str) -> list[str]:
@@ -114,8 +125,7 @@ def non_lf_tracked(lines: str) -> list[str]:
         metadata, separator, path = line.partition("\t")
         if not separator:
             continue
-        working = next(
-            (field for field in metadata.split() if field.startswith("w/")), "")
+        working = next((field for field in metadata.split() if field.startswith("w/")), "")
         if working in {"w/crlf", "w/mixed"}:
             bad.append(path)
     return bad
@@ -125,8 +135,11 @@ def run_line_endings() -> bool:
     """Reject non-Unix endings in tracked text while leaving binary files alone."""
     print("  line-endings")
     done = subprocess.run(
-        ["git", "ls-files", "--eol"], cwd=ROOT, capture_output=True,
-        text=True, check=False,
+        ["git", "ls-files", "--eol"],  # noqa: S607 -- fixed developer-tool command
+        cwd=ROOT,
+        capture_output=True,
+        text=True,
+        check=False,
     )
     if done.returncode != 0:
         print("    FAIL -- git ls-files --eol did not run\n")
@@ -141,8 +154,18 @@ def run_line_endings() -> bool:
 def run_ruff() -> bool:
     """Lint, and say plainly whether it passed."""
     print("  ruff")
-    done = subprocess.run([sys.executable, "-m", "ruff", "check", "."],
-                          cwd=ROOT, check=False)
+    done = subprocess.run([sys.executable, "-m", "ruff", "check", "."], cwd=ROOT, check=False)
+    ok = done.returncode == 0
+    print(f"    {'ok' if ok else 'FAIL'}\n")
+    return ok
+
+
+def run_format() -> bool:
+    """Require Ruff's canonical formatting without modifying the working tree."""
+    print("  ruff-format")
+    done = subprocess.run(
+        [sys.executable, "-m", "ruff", "format", "--check", "."], cwd=ROOT, check=False
+    )
     ok = done.returncode == 0
     print(f"    {'ok' if ok else 'FAIL'}\n")
     return ok
@@ -159,15 +182,13 @@ def run_pyright() -> bool:
     `Actor`. Ruff had been clean on that line every day. **`board_state.as_actor` now narrows
     it at the boundary.**
 
-    **It MUST run with `cwd=ROOT`.** `api_endpoint.py` imports `board_state` as a sibling
-    module, so pyright invoked from anywhere else reports
-    `Import "board_state" could not be resolved`
-    and stops before it reaches a single real finding. **That false error hid the true
-    one for a full run**, which is the failure this docstring exists to prevent.
+    **It MUST run with `cwd=ROOT`.** The strict configuration, `src` package root, test
+    imports, and project execution environment are all resolved from `pyproject.toml`.
+    Running against an arbitrary current directory can type-check a different file set
+    and make a clean result meaningless.
     """
     print("  pyright")
-    done = subprocess.run([sys.executable, "-m", "pyright", "."],
-                          cwd=ROOT, check=False)
+    done = subprocess.run([sys.executable, "-m", "pyright", "."], cwd=ROOT, check=False)
     ok = done.returncode == 0
     print(f"    {'ok' if ok else 'FAIL'}\n")
     return ok
@@ -176,8 +197,48 @@ def run_pyright() -> bool:
 def run_tests() -> bool:
     """Run the behavioral suite after static checks establish it can import."""
     print("  pytest")
-    done = subprocess.run([sys.executable, "-m", "pytest", "-q"],
-                          cwd=ROOT, check=False)
+    done = subprocess.run([sys.executable, "-m", "pytest", "-q"], cwd=ROOT, check=False)
+    ok = done.returncode == 0
+    print(f"    {'ok' if ok else 'FAIL'}\n")
+    return ok
+
+
+def run_workflows() -> bool:
+    """Lint GitHub Actions YAML and every embedded shell fragment."""
+    print("  actionlint + shellcheck")
+    actionlint = shutil.which("actionlint")
+    shellcheck = shutil.which("shellcheck")
+    if actionlint is None or shellcheck is None:
+        missing = [
+            name
+            for name, executable in (("actionlint", actionlint), ("shellcheck", shellcheck))
+            if executable is None
+        ]
+        print(f"    FAIL -- missing required tool(s): {', '.join(missing)}\n")
+        return False
+
+    action_version = subprocess.run(  # noqa: S603 -- resolved, pinned developer tool
+        [actionlint, "-version"], capture_output=True, text=True, check=False
+    )
+    shell_version = subprocess.run(  # noqa: S603 -- resolved, pinned developer tool
+        [shellcheck, "--version"], capture_output=True, text=True, check=False
+    )
+    versions_ok = (
+        action_version.returncode == 0
+        and action_version.stdout.splitlines()[:1] == [ACTIONLINT_VERSION]
+        and shell_version.returncode == 0
+        and f"version: {SHELLCHECK_VERSION}" in shell_version.stdout
+    )
+    if not versions_ok:
+        print(
+            "    FAIL -- want actionlint "
+            f"{ACTIONLINT_VERSION} and ShellCheck {SHELLCHECK_VERSION}\n"
+        )
+        return False
+
+    done = subprocess.run(  # noqa: S603 -- resolved, pinned developer tools
+        [actionlint, "-no-color", "-shellcheck", shellcheck], cwd=ROOT, check=False
+    )
     ok = done.returncode == 0
     print(f"    {'ok' if ok else 'FAIL'}\n")
     return ok
@@ -225,9 +286,11 @@ def run_words(table: pathlib.Path, files: list[pathlib.Path]) -> bool:
 
 def main() -> int:
     parser = argparse.ArgumentParser(
-        description="Behavior, static-analysis and prose gate. Run before committing.")
-    parser.add_argument("--word-table", default=None,
-                        help="path to FlickrGroupAddr's scripts/claude-dirty-words.py")
+        description="Behavior, static-analysis and prose gate. Run before committing."
+    )
+    parser.add_argument(
+        "--word-table", default=None, help="path to FlickrGroupAddr's scripts/claude-dirty-words.py"
+    )
     args = parser.parse_args()
 
     print(f"\n{RULE}\n  localswim gate\n{RULE}\n")
@@ -239,14 +302,20 @@ def main() -> int:
     if not run_ruff():
         failures.append("ruff")
 
+    if not run_format():
+        failures.append("ruff-format")
+
     if not run_pyright():
         failures.append("pyright")
 
     if not run_tests():
         failures.append("pytest")
 
+    if not run_workflows():
+        failures.append("actionlint/shellcheck")
+
     table = find_table(args.word_table)
-    files = tracked((".py", ".md", ".json"))
+    files = tracked((".py", ".md", ".json", ".toml", ".yaml", ".yml"))
     if table is None:
         missing_table_banner(args.word_table)
         failures.append("dirty-words (no word table)")

@@ -4,26 +4,30 @@ import pathlib
 import subprocess
 import sys
 import threading
-from collections.abc import Iterator
+from typing import TYPE_CHECKING
 
 import pytest
-from conftest import USERS
 
-import api_endpoint
-import board_state
+from localswim import api_endpoint, board_state
+from tests.support import USERS
+
+if TYPE_CHECKING:
+    from collections.abc import Iterator
 
 
 @pytest.fixture
 def served_board(tmp_path: pathlib.Path) -> Iterator[pathlib.Path]:
     """Publish the production rendezvous file for an isolated service."""
     path = tmp_path / "board.json"
-    board = board_state.Board(project="CLI", users=USERS, browser_user="terry",
-                         cli_user="claude", default_owner="claude")
+    board = board_state.Board(
+        project="CLI", users=USERS, browser_user="terry", cli_user="claude", default_owner="claude"
+    )
     board_state.save(board, path)
     api_endpoint.BOARD_PATH = path
     api_endpoint.STORE = api_endpoint.BoardStore(path)
     server = api_endpoint.http.server.ThreadingHTTPServer(
-        (api_endpoint.HOST, 0), api_endpoint.Handler)
+        (api_endpoint.HOST, 0), api_endpoint.Handler
+    )
     api_endpoint.publish_service(path, server.server_address[1])
     thread = threading.Thread(target=server.serve_forever, daemon=True)
     thread.start()
@@ -40,9 +44,13 @@ def served_board(tmp_path: pathlib.Path) -> Iterator[pathlib.Path]:
 def run_cli(path: pathlib.Path, *arguments: str) -> subprocess.CompletedProcess[str]:
     """Invoke the real command-line entry point."""
     return subprocess.run(
-        [sys.executable, "board_state.py", str(path), *arguments],
-        cwd=pathlib.Path(__file__).resolve().parents[1], capture_output=True,
-        text=True, timeout=10, check=False)
+        [sys.executable, "-m", "localswim.board_state", str(path), *arguments],
+        cwd=pathlib.Path(__file__).resolve().parents[1],
+        capture_output=True,
+        text=True,
+        timeout=10,
+        check=False,
+    )
 
 
 def assert_cli(path: pathlib.Path, *arguments: str) -> None:
@@ -69,16 +77,24 @@ def test_every_cli_mutation_uses_service(served_board: pathlib.Path) -> None:
     item = board.find("a")
     assert board.revision == 12
     assert board.project == "Updated"
-    assert item.subject == "Renamed" and item.detail == "description"
-    assert item.owner == "terry" and item.priority == "P1"
+    assert item.subject == "Renamed"
+    assert item.detail == "description"
+    assert item.owner == "terry"
+    assert item.priority == "P1"
     assert item.comments[0].by == "claude"
-    assert board.links == [] and board.find("b").parent is None
+    assert board.links == []
+    assert board.find("b").parent is None
 
 
 def test_offline_mutation_has_no_direct_write(tmp_path: pathlib.Path) -> None:
     path = tmp_path / "board.json"
-    board = board_state.Board(project="Offline", users=USERS, browser_user="terry",
-                         cli_user="claude", default_owner="claude")
+    board = board_state.Board(
+        project="Offline",
+        users=USERS,
+        browser_user="terry",
+        cli_user="claude",
+        default_owner="claude",
+    )
     board_state.save(board, path)
     board_state.service_descriptor_path(path).unlink(missing_ok=True)
 
@@ -87,14 +103,19 @@ def test_offline_mutation_has_no_direct_write(tmp_path: pathlib.Path) -> None:
     assert result.returncode != 0
     assert "service is not running" in result.stderr
     assert "Traceback" not in result.stderr
-    assert saved.revision == 0 and saved.items == []
+    assert saved.revision == 0
+    assert saved.items == []
 
 
 def test_read_only_report_works_offline(tmp_path: pathlib.Path) -> None:
     path = tmp_path / "board.json"
-    board = board_state.Board(project="Offline report", users=USERS,
-                         browser_user="terry", cli_user="claude",
-                         default_owner="claude")
+    board = board_state.Board(
+        project="Offline report",
+        users=USERS,
+        browser_user="terry",
+        cli_user="claude",
+        default_owner="claude",
+    )
     board_state.save(board, path)
     result = run_cli(path)
     assert result.returncode == 0

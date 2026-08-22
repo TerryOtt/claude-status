@@ -1,23 +1,36 @@
 """JSON validation and atomic snapshot tests."""
 
 import json
-import pathlib
+from typing import TYPE_CHECKING, Any, cast
 
 import pytest
-from conftest import USERS
 
-import board_state
+from localswim import board_state
+from tests.support import USERS
+
+if TYPE_CHECKING:
+    import pathlib
 
 
 def saved_board(path: pathlib.Path) -> board_state.Board:
     """Write one representative board and return it."""
-    board = board_state.Board(project="Round trip", revision=7, users=USERS,
-                         browser_user="terry", cli_user="claude",
-                         default_owner="claude")
+    board = board_state.Board(
+        project="Round trip",
+        revision=7,
+        users=USERS,
+        browser_user="terry",
+        cli_user="claude",
+        default_owner="claude",
+    )
     board.create("alpha", "Alpha", "backlog", "claude", detail="Detail")
     board.comment("alpha", "Comment", "claude")
     board_state.save(board, path)
     return board
+
+
+def editable_json(board: board_state.Board) -> dict[str, Any]:
+    """Expose serialization as a deliberately mutable shape for corruption tests."""
+    return cast("dict[str, Any]", board.to_json())
 
 
 def test_save_load_round_trip(tmp_path: pathlib.Path) -> None:
@@ -39,8 +52,7 @@ def test_invalid_board_json_reports_parser_location(tmp_path: pathlib.Path) -> N
 
 def test_duplicate_board_json_key_is_refused(tmp_path: pathlib.Path) -> None:
     path = tmp_path / "board.json"
-    path.write_text(
-        '{"schema": 2, "schema": 2, "items": []}\n', encoding="utf-8")
+    path.write_text('{"schema": 2, "schema": 2, "items": []}\n', encoding="utf-8")
 
     with pytest.raises(
         board_state.BoardError,
@@ -52,7 +64,7 @@ def test_duplicate_board_json_key_is_refused(tmp_path: pathlib.Path) -> None:
 def test_legacy_board_without_revision_loads_at_zero(tmp_path: pathlib.Path) -> None:
     path = tmp_path / "board.json"
     board = saved_board(path)
-    raw = board.to_json()
+    raw = editable_json(board)
     del raw["revision"]
     path.write_text(json.dumps(raw), encoding="utf-8")
     assert board_state.load(path).revision == 0
@@ -62,7 +74,7 @@ def test_legacy_board_without_revision_loads_at_zero(tmp_path: pathlib.Path) -> 
 def test_invalid_revision_is_refused(tmp_path: pathlib.Path, revision: object) -> None:
     path = tmp_path / "board.json"
     board = saved_board(path)
-    raw = board.to_json()
+    raw = editable_json(board)
     raw["revision"] = revision
     path.write_text(json.dumps(raw), encoding="utf-8")
     with pytest.raises(board_state.BoardError, match="revision"):
@@ -72,7 +84,7 @@ def test_invalid_revision_is_refused(tmp_path: pathlib.Path, revision: object) -
 def test_duplicate_id_is_refused(tmp_path: pathlib.Path) -> None:
     path = tmp_path / "board.json"
     board = saved_board(path)
-    raw = board.to_json()
+    raw = editable_json(board)
     raw["items"].append(dict(raw["items"][0]))
     path.write_text(json.dumps(raw), encoding="utf-8")
     with pytest.raises(board_state.BoardError, match="duplicate id"):
@@ -82,7 +94,7 @@ def test_duplicate_id_is_refused(tmp_path: pathlib.Path) -> None:
 def test_duplicate_ticket_is_refused(tmp_path: pathlib.Path) -> None:
     path = tmp_path / "board.json"
     board = saved_board(path)
-    raw = board.to_json()
+    raw = editable_json(board)
     duplicate = dict(raw["items"][0])
     duplicate["id"] = "beta"
     raw["items"].append(duplicate)
@@ -94,7 +106,7 @@ def test_duplicate_ticket_is_refused(tmp_path: pathlib.Path) -> None:
 def test_rewound_ticket_counter_is_refused(tmp_path: pathlib.Path) -> None:
     path = tmp_path / "board.json"
     board = saved_board(path)
-    raw = board.to_json()
+    raw = editable_json(board)
     raw["nextTicket"] = 1
     path.write_text(json.dumps(raw), encoding="utf-8")
     with pytest.raises(board_state.BoardError, match="counter went backwards"):
@@ -104,7 +116,7 @@ def test_rewound_ticket_counter_is_refused(tmp_path: pathlib.Path) -> None:
 def test_unknown_parent_is_refused(tmp_path: pathlib.Path) -> None:
     path = tmp_path / "board.json"
     board = saved_board(path)
-    raw = board.to_json()
+    raw = editable_json(board)
     raw["items"][0]["parent"] = "missing"
     path.write_text(json.dumps(raw), encoding="utf-8")
     with pytest.raises(board_state.BoardError, match="unknown parent"):
@@ -112,7 +124,8 @@ def test_unknown_parent_is_refused(tmp_path: pathlib.Path) -> None:
 
 
 def test_failed_replace_leaves_previous_snapshot(
-        tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     path = tmp_path / "board.json"
     original = saved_board(path).to_json()
     changed = board_state.load(path)

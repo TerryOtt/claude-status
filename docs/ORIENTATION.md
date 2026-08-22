@@ -39,23 +39,27 @@ saved, and only then published as the current in-memory snapshot.
 
 | Path | Responsibility |
 |---|---|
-| `board_state.py` | Domain model, policy loading, validation, history replay, relationships, JSON storage, file locking, and CLI. |
-| `api_endpoint.py` | Loopback HTTP server, transactional store, REST boundary, embedded HTML/CSS/JavaScript, live reload, and optional Git publishing. |
-| `rules.json` | Tool-level lanes, priorities, creation rights, and actor-grouped transition edges. |
+| `src/localswim/board_state.py` | Domain model, policy loading, validation, history replay, relationships, JSON storage, file locking, and CLI. |
+| `src/localswim/api_endpoint.py` | Loopback HTTP server, transactional store, REST boundary, embedded HTML/CSS/JavaScript, live reload, and optional Git publishing. |
+| `src/localswim/rules.json` | Tool-level lanes, priorities, creation rights, and actor-grouped transition edges. |
+| `pyproject.toml` | uv build metadata, Python contract, dependencies, Ruff/formatter policy, and strict Pyright policy. |
+| `.python-version` / `uv.lock` | Exact development interpreter and cross-platform dependency lock. |
 | `examples/board.example.json` | Empty, valid per-project board configuration. |
-| `check.py` | Complete local/CI gate: line endings, Ruff, Pyright, pytest, and US English vocabulary. |
+| `check.py` | Complete local/CI gate: line endings, Ruff, formatting, strict Pyright, pytest, workflow/shell linting, and US English vocabulary. |
 | `tests/` | Domain, policy, serialization, store, API, CLI, docs, and gate behavior. |
-| `vendor/typefaces/inter/` | Unmodified Inter WOFF2 subsets and their SIL OFL license. |
+| `src/localswim/vendor/typefaces/inter/` | Unmodified Inter WOFF2 subsets and their SIL OFL license. |
+| `docs/TOOLING.md` | Development-tool choices, exact pins, exclusions, and Codex uv usage. |
 | `.github/workflows/gate.yml` | Runs the same gate in CI and obtains the public canonical vocabulary table. |
 | `.github/workflows/contribution-policy.yml` | Checks non-exempt pull-request source branch names without executing PR code. |
 | `.github/CODEOWNERS` | Makes `TerryOtt` the sole code owner for every repository path. |
 | `.github/rulesets/main.json` | Reproducible recipe for the server-side `main` branch ruleset. |
 | `.github/repository-settings.json` | Reproducible recipe for merge methods, auto-merge availability, and branch cleanup. |
-| `.githooks/pre-commit` | Opt-in local hook that executes `python check.py`. |
+| `.githooks/pre-commit` | Opt-in local hook that executes the frozen gate through uv. |
 
-There is no package metadata, JavaScript build, template engine, database service, or
-dependency lock file. Run both Python entry points from the checkout so sibling imports
-and development tools resolve consistently.
+There is no JavaScript build, template engine, database service, or runtime dependency
+outside the standard library. Python packaging uses uv's native build backend and a
+`src` layout; run the console entry points and development tools through `uv run
+--frozen` so the checked lock and interpreter pin are honored.
 
 ## Configuration and schema ownership
 
@@ -306,14 +310,16 @@ Use the exact Codex command from `AGENTS.md` so fixtures and pytest's cache live
 the authorized external scratch root. The complete project gate is:
 
 ```console
-python check.py --word-table path/to/claude-dirty-words.py
+uv run --frozen python check.py --word-table path/to/claude-dirty-words.py
 ```
 
-The gate runs LF validation, Ruff, Pyright, pytest, and the external US English/house
-vocabulary checker. Ruff verifies that annotations exist; Pyright verifies their
-types. The vocabulary detector first runs a known-bad control sentence and fails if the
-canonical table is missing. The checker scans Git-tracked `.py`, `.md`, and `.json`
-files, so a newly created untracked document is not covered until it becomes tracked.
+The gate runs LF validation, Ruff `ALL`, Ruff's formatter check, strict Pyright, pytest,
+actionlint with ShellCheck, and the external US English/house vocabulary checker. Ruff
+verifies that annotations exist; Pyright verifies their types. The vocabulary detector
+first runs a known-bad control sentence and fails if the canonical table is missing.
+The checker scans prose-bearing Git-tracked Python, Markdown, JSON, TOML, and YAML files,
+so a newly created untracked document is not covered until it becomes tracked. Tool
+pins and the rationale for not stacking redundant linters are in `docs/TOOLING.md`.
 
 CI obtains the canonical word table from the public `FlickrGroupAddr/backend-api`
 repository instead of copying it here. The local hook is inactive until a developer
@@ -385,7 +391,8 @@ Keep each fact in the narrowest durable place:
 - module/class/function docstrings: detailed implementation decisions and measured
   failure history closest to the code they constrain.
 - tests: executable contracts.
-- `vendor/typefaces/inter/README.md` and `LICENSE.txt`: font provenance and license.
+- `src/localswim/vendor/typefaces/inter/README.md` and `LICENSE.txt`: font provenance
+  and license.
 
 When a schema, route, invariant, or workflow changes, update every affected layer in
 the same change. Do not copy the full transition table or vocabulary list into another

@@ -2,7 +2,7 @@
 
 import pytest
 
-import board_state
+from localswim import board_state
 
 
 def test_create_assigns_ticket_history_and_owner(board: board_state.Board) -> None:
@@ -44,14 +44,18 @@ def test_move_records_legal_transition(board: board_state.Board) -> None:
     assert board.verify() == []
 
 
-@pytest.mark.parametrize(("actor", "source", "destination"), [
-    ("claude", "ready_for_claude", "in_progress"),
-    ("claude", "in_progress", "ready_for_review"),
-    ("claude", "blocked", "in_progress"),
-    ("terry", "ready_for_review", "completed"),
-])
+@pytest.mark.parametrize(
+    ("actor", "source", "destination"),
+    [
+        ("claude", "ready_for_claude", "in_progress"),
+        ("claude", "in_progress", "ready_for_review"),
+        ("claude", "blocked", "in_progress"),
+        ("terry", "ready_for_review", "completed"),
+    ],
+)
 def test_representative_allowed_edges(
-        board: board_state.Board, actor: str, source: str, destination: str) -> None:
+    board: board_state.Board, actor: str, source: str, destination: str
+) -> None:
     item = board_state.Item("alpha", "Alpha", source, ticket=1, owner="claude")
     board.items.append(item)
     board.move("alpha", destination, actor)
@@ -59,18 +63,23 @@ def test_representative_allowed_edges(
     assert board.verify() == []
 
 
-@pytest.mark.parametrize(("actor", "source", "destination"), [
-    ("claude", "ready_for_review", "completed"),
-    ("terry", "completed", "in_progress"),
-    ("claude", "backlog", "completed"),
-])
+@pytest.mark.parametrize(
+    ("actor", "source", "destination"),
+    [
+        ("claude", "ready_for_review", "completed"),
+        ("terry", "completed", "in_progress"),
+        ("claude", "backlog", "completed"),
+    ],
+)
 def test_representative_forbidden_edges(
-        board: board_state.Board, actor: str, source: str, destination: str) -> None:
+    board: board_state.Board, actor: str, source: str, destination: str
+) -> None:
     item = board_state.Item("alpha", "Alpha", source, ticket=1, owner="claude")
     board.items.append(item)
     with pytest.raises(board_state.BoardError):
         board.move("alpha", destination, actor)
-    assert item.state == source and item.history == []
+    assert item.state == source
+    assert item.history == []
 
 
 def test_move_refuses_claude_signoff(board: board_state.Board) -> None:
@@ -99,8 +108,7 @@ def test_comment_refuses_blank_text(board: board_state.Board) -> None:
         board.comment("alpha", "  ", "terry")
 
 
-def test_human_comment_creates_reference_but_bot_comment_does_not(
-        board: board_state.Board) -> None:
+def test_human_comment_creates_reference_but_bot_comment_does_not(board: board_state.Board) -> None:
     board.create("alpha", "Alpha", "backlog", "claude")
     board.create("beta", "Beta", "backlog", "claude")
 
@@ -136,14 +144,32 @@ def test_parent_cycle_is_refused_and_rolled_back(board: board_state.Board) -> No
 
 def test_lanes_sort_by_priority_then_creation_then_ticket(board: board_state.Board) -> None:
     newer = board_state.Item(
-        "newer", "Newer", "backlog", ticket=2, priority="P2", owner="claude",
-        history=[board_state.Change("2026-01-02T00:00:00+00:00", "backlog", "claude")])
+        "newer",
+        "Newer",
+        "backlog",
+        ticket=2,
+        priority="P2",
+        owner="claude",
+        history=[board_state.Change("2026-01-02T00:00:00+00:00", "backlog", "claude")],
+    )
     older = board_state.Item(
-        "older", "Older", "backlog", ticket=1, priority="P2", owner="claude",
-        history=[board_state.Change("2026-01-01T00:00:00+00:00", "backlog", "claude")])
+        "older",
+        "Older",
+        "backlog",
+        ticket=1,
+        priority="P2",
+        owner="claude",
+        history=[board_state.Change("2026-01-01T00:00:00+00:00", "backlog", "claude")],
+    )
     urgent = board_state.Item(
-        "urgent", "Urgent", "backlog", ticket=3, priority="P1", owner="claude",
-        history=[board_state.Change("2026-01-03T00:00:00+00:00", "backlog", "claude")])
+        "urgent",
+        "Urgent",
+        "backlog",
+        ticket=3,
+        priority="P1",
+        owner="claude",
+        history=[board_state.Change("2026-01-03T00:00:00+00:00", "backlog", "claude")],
+    )
     board.items = [newer, older, urgent]
 
     backlog = next(lane for lane in board.lanes() if lane.state == "backlog")
@@ -158,12 +184,18 @@ def test_verify_detects_direct_state_write(board: board_state.Board) -> None:
 
 def test_verify_detects_broken_history(board: board_state.Board) -> None:
     item = board_state.Item(
-        "alpha", "Alpha", "completed", ticket=1, owner="claude",
+        "alpha",
+        "Alpha",
+        "completed",
+        ticket=1,
+        owner="claude",
         history=[
             board_state.Change("2026-01-01T00:00:00+00:00", "backlog", "claude"),
-            board_state.Change("2026-01-02T00:00:00+00:00", "completed", "claude",
-                          frm="ready_for_review"),
-        ])
+            board_state.Change(
+                "2026-01-02T00:00:00+00:00", "completed", "claude", frm="ready_for_review"
+            ),
+        ],
+    )
     board.items.append(item)
     problems = board.verify()
     assert any("chain is broken" in problem for problem in problems)
@@ -171,11 +203,15 @@ def test_verify_detects_broken_history(board: board_state.Board) -> None:
 
 def test_verify_detects_illegal_recorded_transition(board: board_state.Board) -> None:
     item = board_state.Item(
-        "alpha", "Alpha", "completed", ticket=1, owner="claude",
+        "alpha",
+        "Alpha",
+        "completed",
+        ticket=1,
+        owner="claude",
         history=[
             board_state.Change("2026-01-01T00:00:00+00:00", "backlog", "claude"),
-            board_state.Change("2026-01-02T00:00:00+00:00", "completed", "claude",
-                          frm="backlog"),
-        ])
+            board_state.Change("2026-01-02T00:00:00+00:00", "completed", "claude", frm="backlog"),
+        ],
+    )
     board.items.append(item)
     assert any("permission table forbids" in problem for problem in board.verify())

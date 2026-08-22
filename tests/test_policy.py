@@ -2,14 +2,15 @@
 
 import json
 import os
-import pathlib
-from typing import Any, cast
+from typing import TYPE_CHECKING, Any, cast
 
 import pytest
-from conftest import USERS
 
-import api_endpoint
-import board_state
+from localswim import api_endpoint, board_state
+from tests.support import USERS
+
+if TYPE_CHECKING:
+    import pathlib
 
 
 def policy_file(tmp_path: pathlib.Path, name: str) -> pathlib.Path:
@@ -20,7 +21,7 @@ def policy_file(tmp_path: pathlib.Path, name: str) -> pathlib.Path:
 
 
 def policy_doc(path: pathlib.Path) -> dict[str, Any]:
-    return cast(dict[str, Any], json.loads(path.read_text(encoding="utf-8")))
+    return cast("dict[str, Any]", json.loads(path.read_text(encoding="utf-8")))
 
 
 def write_policy(path: pathlib.Path, doc: dict[str, Any], *, advance: bool = False) -> None:
@@ -33,19 +34,22 @@ def write_policy(path: pathlib.Path, doc: dict[str, Any], *, advance: bool = Fal
 def remove_claude_backlog_promotion(path: pathlib.Path) -> None:
     doc = policy_doc(path)
     doc["edges"]["claude"] = [
-        edge for edge in doc["edges"]["claude"]
-        if not (edge["from"] == "backlog"
-                and edge["to"] == "ready_for_claude")
+        edge
+        for edge in doc["edges"]["claude"]
+        if not (edge["from"] == "backlog" and edge["to"] == "ready_for_claude")
     ]
     write_policy(path, doc, advance=True)
 
 
 def make_store(
-    tmp_path: pathlib.Path, name: str, policy: board_state.TransitionPolicy,
+    tmp_path: pathlib.Path,
+    name: str,
+    policy: board_state.TransitionPolicy,
 ) -> api_endpoint.BoardStore:
     path = tmp_path / f"{name}.json"
-    board = board_state.Board(project=name, users=USERS, browser_user="terry",
-                         cli_user="claude", default_owner="claude")
+    board = board_state.Board(
+        project=name, users=USERS, browser_user="terry", cli_user="claude", default_owner="claude"
+    )
     board_state.save(board, path)
     return api_endpoint.BoardStore(path, policy)
 
@@ -58,8 +62,7 @@ def test_transition_policy_cannot_be_mutated(tmp_path: pathlib.Path) -> None:
     policy = board_state.TransitionPolicy.load(policy_file(tmp_path, "rules.json"))
 
     with pytest.raises(TypeError):
-        cast(Any, policy.table["backlog"].outbound)["completed"] = frozenset(
-            {"claude"})
+        cast("Any", policy.table["backlog"].outbound)["completed"] = frozenset({"claude"})
 
 
 def test_edge_description_is_optional(tmp_path: pathlib.Path) -> None:
@@ -131,7 +134,8 @@ def test_each_actor_value_must_be_an_edge_list(tmp_path: pathlib.Path) -> None:
 
 @pytest.mark.parametrize("actor", ["", " terry", "terry "])
 def test_edge_actor_ids_must_be_nonempty_and_unpadded(
-    tmp_path: pathlib.Path, actor: str,
+    tmp_path: pathlib.Path,
+    actor: str,
 ) -> None:
     path = policy_file(tmp_path, "rules.json")
     doc = policy_doc(path)
@@ -164,11 +168,14 @@ def test_edge_actors_must_be_the_configured_browser_and_cli_users(
     doc["edges"]["scott"] = doc["edges"].pop("claude")
     write_policy(path, doc)
     policy = board_state.TransitionPolicy.load(path)
-    users = (*USERS, board_state.User(
-        "scott", "Scott", board_state.BOT, "#884422"))
+    users = (*USERS, board_state.User("scott", "Scott", board_state.BOT, "#884422"))
     board = board_state.Board(
-        project="configured-actors", users=users, browser_user="terry",
-        cli_user="claude", default_owner="claude")
+        project="configured-actors",
+        users=users,
+        browser_user="terry",
+        cli_user="claude",
+        default_owner="claude",
+    )
     board_state.save(board, tmp_path / "configured-actors.json")
 
     with pytest.raises(board_state.BoardError, match=r"exactly match.*claude, terry"):
@@ -177,16 +184,20 @@ def test_edge_actors_must_be_the_configured_browser_and_cli_users(
 
 def test_configured_browser_and_cli_users_must_be_different() -> None:
     with pytest.raises(board_state.BoardError, match="MUST be two different actor ids"):
-        board_state.install_users(
-            USERS, "terry", "terry", "terry", "same configured actor")
+        board_state.install_users(USERS, "terry", "terry", "terry", "same configured actor")
 
 
-@pytest.mark.parametrize(("field", "value"), [
-    ("from", "not_a_lane"),
-    ("to", "not_a_lane"),
-])
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("from", "not_a_lane"),
+        ("to", "not_a_lane"),
+    ],
+)
 def test_edge_endpoints_must_name_declared_lanes(
-    tmp_path: pathlib.Path, field: str, value: str,
+    tmp_path: pathlib.Path,
+    field: str,
+    value: str,
 ) -> None:
     path = policy_file(tmp_path, "rules.json")
     doc = policy_doc(path)
@@ -238,19 +249,25 @@ def test_edge_entry_must_be_an_object(tmp_path: pathlib.Path) -> None:
         board_state.TransitionPolicy.load(path)
 
 
-@pytest.mark.parametrize(("edge", "message"), [
-    ({"to": "ready_for_claude"}, "missing from"),
-    ({"from": "backlog"}, "missing to"),
-    ({"from": "backlog", "to": "ready_for_claude", "note": "legacy"},
-     "unknown field.*note"),
-    ({"from": "", "to": "ready_for_claude"}, "from is not a nonempty string"),
-    ({"from": 1, "to": "ready_for_claude"}, "from is not a nonempty string"),
-    ({"from": "backlog", "to": 1}, "to is not a nonempty string"),
-    ({"from": "backlog", "to": "ready_for_claude", "description": []},
-     "description is not a string"),
-])
+@pytest.mark.parametrize(
+    ("edge", "message"),
+    [
+        ({"to": "ready_for_claude"}, "missing from"),
+        ({"from": "backlog"}, "missing to"),
+        ({"from": "backlog", "to": "ready_for_claude", "note": "legacy"}, "unknown field.*note"),
+        ({"from": "", "to": "ready_for_claude"}, "from is not a nonempty string"),
+        ({"from": 1, "to": "ready_for_claude"}, "from is not a nonempty string"),
+        ({"from": "backlog", "to": 1}, "to is not a nonempty string"),
+        (
+            {"from": "backlog", "to": "ready_for_claude", "description": []},
+            "description is not a string",
+        ),
+    ],
+)
 def test_edge_fields_are_strictly_validated(
-    tmp_path: pathlib.Path, edge: dict[str, Any], message: str,
+    tmp_path: pathlib.Path,
+    edge: dict[str, Any],
+    message: str,
 ) -> None:
     path = policy_file(tmp_path, "rules.json")
     doc = policy_doc(path)
@@ -273,11 +290,9 @@ def test_stores_enforce_their_own_transition_policies(
     allowed.execute(0, create_alpha)
     denied.execute(0, create_alpha)
 
-    allowed.execute(1, lambda board: board.move(
-        "alpha", "ready_for_claude", "claude"))
+    allowed.execute(1, lambda board: board.move("alpha", "ready_for_claude", "claude"))
     with pytest.raises(board_state.BoardError, match="not to ready_for_claude"):
-        denied.execute(1, lambda board: board.move(
-            "alpha", "ready_for_claude", "claude"))
+        denied.execute(1, lambda board: board.move("alpha", "ready_for_claude", "claude"))
 
 
 def test_policy_reload_is_isolated_to_its_store(tmp_path: pathlib.Path) -> None:
@@ -303,12 +318,12 @@ def test_bad_policy_reload_keeps_last_valid_policy_and_is_reported_once(
     accepted = store.policy.rules
     old_stamp = rules_path.stat().st_mtime_ns
     rules_path.write_text('{"schema": -1}\n', encoding="utf-8")
-    os.utime(rules_path,
-             ns=(old_stamp + 1_000_000_000, old_stamp + 1_000_000_000))
+    os.utime(rules_path, ns=(old_stamp + 1_000_000_000, old_stamp + 1_000_000_000))
 
     message = store.reload_policy_if_changed()
 
-    assert message is not None and "changed and was REFUSED" in message
+    assert message is not None
+    assert "changed and was REFUSED" in message
     assert store.policy.rules == accepted
     assert store.reload_policy_if_changed() is None
 
@@ -320,10 +335,8 @@ def test_invalid_json_reload_reports_location_and_keeps_valid_policy(
     store = make_store(tmp_path, "board", board_state.TransitionPolicy.load(rules_path))
     accepted = store.policy.rules
     old_stamp = rules_path.stat().st_mtime_ns
-    rules_path.write_text(
-        '{\n  "schema": 6,\n  "edges": nope\n}\n', encoding="utf-8")
-    os.utime(rules_path,
-             ns=(old_stamp + 1_000_000_000, old_stamp + 1_000_000_000))
+    rules_path.write_text('{\n  "schema": 6,\n  "edges": nope\n}\n', encoding="utf-8")
+    os.utime(rules_path, ns=(old_stamp + 1_000_000_000, old_stamp + 1_000_000_000))
 
     message = store.reload_policy_if_changed()
 

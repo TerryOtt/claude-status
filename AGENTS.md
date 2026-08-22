@@ -2,22 +2,24 @@
 
 ## Purpose and layout
 
-localswim is a dependency-free Python 3.13 application that serves a local swimlane
-board from one JSON snapshot.
+localswim is a dependency-free Python 3.14 application, built and run with uv, that
+serves a local swimlane board from one JSON snapshot.
 
-- `board_state.py` owns the board model, validation, serialization, policy checks,
-  storage helpers, and command-line client.
-- `api_endpoint.py` owns the loopback HTTP service and its embedded browser UI. It is
-  the sole writer while a board is live.
-- `rules.json` is the schema-validated allow-list for lanes, priorities, creation, and
-  actor-specific transitions.
+- `src/localswim/board_state.py` owns the board model, validation, serialization,
+  policy checks, storage helpers, and command-line client.
+- `src/localswim/api_endpoint.py` owns the loopback HTTP service and its embedded
+  browser UI. It is the sole writer while a board is live.
+- `src/localswim/rules.json` is the schema-validated allow-list for lanes, priorities,
+  creation, and actor-specific transitions.
+- `pyproject.toml` is the single build, dependency, Ruff, formatter, and Pyright
+  configuration source; `uv.lock` is committed for reproducible development and CI.
 - `examples/board.example.json` is the checked, empty schema-2 example board.
 - `docs/ORIENTATION.md` is the contributor map for architecture, data flow, schemas,
   invariants, test coverage, and Windows/Codex environment details.
 - `CONTRIBUTING.md` defines the enforced GitHub branch and pull-request policy.
 - `tests/` is the behavioral suite; `check.py` is the complete development gate.
-- `vendor/typefaces/inter/` contains unmodified, licensed font binaries. Do not edit,
-  re-subset, or rename them casually.
+- `src/localswim/vendor/typefaces/inter/` contains unmodified, licensed font binaries.
+  Do not edit, re-subset, or rename them casually.
 
 ## Safety and product invariants
 
@@ -39,12 +41,20 @@ board from one JSON snapshot.
 
 ## Code conventions
 
-- Target Python 3.13 and the standard library. A new runtime dependency requires clear
+- Target exactly the Python version in `.python-version` for development and CI
+  (currently the latest 3.14 patch, 3.14.7). Keep the package contract at
+  `>=3.14,<3.15`; update the pin when a later 3.14 patch is GA, and move the range to
+  3.15 only after 3.15 is GA and verified. A new runtime dependency requires clear
   justification and an explicit decision.
+- Use uv for Python installation, locking, synchronization, execution, and builds.
+  Do not introduce pip/venv/requirements-file instructions. Change dependencies in
+  `pyproject.toml`, refresh `uv.lock`, and commit both.
 - Fully annotate every function and method signature. Ruff checks annotation presence;
   Pyright checks correctness.
-- Follow `ruff.toml`: 100-column lines, modern syntax, sorted imports, `pathlib` for
-  paths, and the enabled lint families. Do not weaken checks to make a change pass.
+- Follow `pyproject.toml`: Ruff `ALL`, Ruff formatting, 100-column lines, modern
+  syntax, sorted imports, `pathlib` for paths, and Pyright strict mode. The documented
+  ignores remove formatter conflicts or known low-value policy checks; do not weaken
+  checks to make a change pass.
 - Preserve UTF-8, LF endings, and the repository's US English/house vocabulary.
 - Maintain the existing JSON boundary behavior: duplicate keys, invalid types, bad
   references, illegal transitions, and malformed input should fail with useful,
@@ -65,15 +75,17 @@ Run focused tests while iterating, then run the complete gate before handing off
 substantial change:
 
 ```console
-python -m pytest -q
-python check.py --word-table path/to/claude-dirty-words.py
+uv run --frozen pytest -q
+uv run --frozen python check.py --word-table path/to/claude-dirty-words.py
+uv build --no-sources --clear
 ```
 
-`check.py` validates tracked-file line endings, Ruff, Pyright, pytest, and the borrowed
-US English vocabulary table. The word table is intentionally not copied here; its
-absence is a gate failure, not a skipped check. If it is available through the
-`CLAUDE_WORD_TABLE` environment variable or a documented neighboring checkout,
-`python check.py` is sufficient.
+`check.py` validates tracked-file line endings, Ruff `ALL`, Ruff formatting, strict
+Pyright, pytest, actionlint with ShellCheck, and the borrowed US English vocabulary
+table. The word table is intentionally not copied here; its absence is a gate failure,
+not a skipped check. If it is available through the `CLAUDE_WORD_TABLE` environment
+variable or a documented neighboring checkout, `uv run --frozen python check.py` is
+sufficient. See `docs/TOOLING.md` for tool choices, pins, installation, and rationale.
 
 For a narrow change, run the relevant test module first, but do not describe Ruff alone
 as type-checking or pytest alone as the complete gate.
@@ -83,13 +95,24 @@ inherited user temp directory is not readable by the sandbox account, so run pyt
 with an external project-specific base temp:
 
 ```console
-python -m pytest -q --basetemp C:/Temp/localswim-codex-pytest -o cache_dir=C:/Temp/localswim-codex-pytest-cache
+$env:UV_CACHE_DIR='C:\Temp\localswim-uv-cache'
+uv run --frozen pytest -q --basetemp C:/Temp/localswim-codex-pytest -o cache_dir=C:/Temp/localswim-codex-pytest-cache
 ```
 
 Do not put `--basetemp` inside this checkout: the suite intentionally verifies that
 boards outside the source checkout remain supported, so an in-repository temp root
 changes that test's premise. Writing to `C:\Temp` may still require the normal Codex
 sandbox approval even though the project author has authorized its use.
+
+The interactive user's uv cache is also outside the Codex sandbox. For every Codex uv
+command, set `UV_CACHE_DIR=C:\Temp\localswim-uv-cache` as shown above; do not call tools
+directly from `.venv/Scripts`. If the pinned interpreter is absent, install it with:
+
+```console
+$env:UV_CACHE_DIR='C:\Temp\localswim-uv-cache'
+uv python install 3.14.7
+uv sync --locked
+```
 
 ## Git in the Codex sandbox
 

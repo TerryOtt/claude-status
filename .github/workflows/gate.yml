@@ -21,29 +21,67 @@ on:
   push:
   pull_request:
 
+permissions:
+  contents: read
+
+concurrency:
+  group: gate-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   gate:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
     steps:
       - name: Check out localswim
-        uses: actions/checkout@v7
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
 
       # **The canonical word table, borrowed rather than copied.** A second copy of
       # that list would drift, and the list is the whole tool.
       - name: Check out the word table
-        uses: actions/checkout@v7
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           repository: FlickrGroupAddr/backend-api
           path: .word-table-src
+          persist-credentials: false
 
-      - uses: actions/setup-python@v7
+      - name: Install pinned uv
+        uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9 # v9.0.0
         with:
-          python-version: '3.x'
+          version: "0.12.5"
+          enable-cache: true
+          cache-dependency-glob: uv.lock
 
-      # **All three answer different questions.** Ruff checks that an annotation
-      # EXISTS, Pyright checks that it is TRUE, and pytest checks behavior at runtime.
-      - name: Install ruff, pyright and pytest
-        run: python -m pip install --upgrade ruff pyright pytest
+      - name: Install Python from .python-version
+        run: uv python install
+
+      - name: Install pinned workflow linters
+        shell: bash
+        run: |
+          set -euo pipefail
+          tool_dir="$(mktemp -d)"
+
+          curl --fail --location --silent --show-error \
+            --output "$tool_dir/actionlint.tar.gz" \
+            https://github.com/rhysd/actionlint/releases/download/v1.7.12/actionlint_1.7.12_linux_amd64.tar.gz
+          echo "8aca8db96f1b94770f1b0d72b6dddcb1ebb8123cb3712530b08cc387b349a3d8  $tool_dir/actionlint.tar.gz" \
+            | sha256sum --check --strict
+          tar --extract --gzip --file "$tool_dir/actionlint.tar.gz" --directory "$tool_dir"
+          sudo install --mode 0755 "$tool_dir/actionlint" /usr/local/bin/actionlint
+
+          curl --fail --location --silent --show-error \
+            --output "$tool_dir/shellcheck.tar.xz" \
+            https://github.com/koalaman/shellcheck/releases/download/v0.11.0/shellcheck-v0.11.0.linux.x86_64.tar.xz
+          echo "8c3be12b05d5c177a04c29e3c78ce89ac86f1595681cab149b65b97c4e227198  $tool_dir/shellcheck.tar.xz" \
+            | sha256sum --check --strict
+          tar --extract --xz --file "$tool_dir/shellcheck.tar.xz" --directory "$tool_dir"
+          sudo install --mode 0755 \
+            "$tool_dir/shellcheck-v0.11.0/shellcheck" /usr/local/bin/shellcheck
+
+      - name: Synchronize locked project environment
+        run: uv sync --locked
 
       # **The path is passed explicitly rather than guessed.** `check.py`'s fallback
       # guesses are Terry's machine; CI knows exactly where it put things, and saying
@@ -51,5 +89,16 @@ jobs:
       # a guess that happens to be wrong.
       - name: Run the gate
         run: >
-          python check.py
+          uv run --frozen python check.py
           --word-table .word-table-src/scripts/claude-dirty-words.py
+
+      - name: Build source and wheel distributions
+        run: uv build --no-sources --clear
+
+      - name: Smoke-test the built wheel
+        run: >
+          uv run --isolated --no-project --python 3.14.7
+          --with ./dist/localswim-*.whl
+          python -c
+          "import importlib.resources, localswim;
+          assert importlib.resources.files(localswim).joinpath('rules.json').is_file()"

@@ -1,0 +1,128 @@
+[build-system]
+requires = ["uv_build>=0.12.5,<0.13"]
+build-backend = "uv_build"
+
+[project]
+name = "localswim"
+version = "0.1.0"
+description = "A local swimlane board for one human and one automation agent."
+readme = "README.md"
+requires-python = ">=3.14,<3.15"
+license = "MIT"
+license-files = ["LICENSE"]
+authors = [{ name = "Terry Ott" }]
+keywords = ["kanban", "local-first", "swimlane", "task-board"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Environment :: Console",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.14",
+    "Typing :: Typed",
+]
+dependencies = []
+
+[project.urls]
+Homepage = "https://github.com/TerryOtt/localswim"
+Issues = "https://github.com/TerryOtt/localswim/issues"
+Repository = "https://github.com/TerryOtt/localswim"
+
+[project.scripts]
+localswim = "localswim.api_endpoint:main"
+localswim-board = "localswim.board_state:main"
+
+[dependency-groups]
+dev = [
+    "pyright==1.1.411",
+    "pytest==9.1.1",
+    "ruff==0.16.3",
+]
+
+[tool.uv]
+required-version = "==0.12.5"
+
+[tool.uv.build-backend]
+source-include = [
+    "AGENTS.md",
+    "CONTRIBUTING.md",
+    "check.py",
+    "docs/**",
+    "examples/**",
+    "tests/**",
+]
+
+[tool.pyright]
+include = ["src", "check.py", "tests"]
+pythonPlatform = "All"
+pythonVersion = "3.14"
+typeCheckingMode = "strict"
+# Uppercase module state is intentionally reloaded from board/rules files at runtime.
+reportConstantRedefinition = false
+
+[[tool.pyright.executionEnvironments]]
+root = "tests"
+extraPaths = [".", "src"]
+# Tests deliberately exercise module-private restart and preflight seams.
+reportPrivateUsage = false
+
+[tool.pytest.ini_options]
+minversion = "9.1"
+testpaths = ["tests"]
+pythonpath = ["."]
+addopts = ["--import-mode=importlib", "--strict-config", "--strict-markers"]
+xfail_strict = true
+filterwarnings = ["error"]
+
+[tool.ruff]
+target-version = "py314"
+line-length = 100
+
+[tool.ruff.lint]
+select = ["ALL"]
+ignore = [
+    # The formatter owns these; Ruff documents them as formatter conflicts.
+    "COM812",
+    "ISC001",
+    # Decision-record docstrings matter; mandatory PEP 257 summaries do not.
+    "D",
+    # Throwaway exception-message locals obscure straightforward raises.
+    "EM",
+    "TRY003",
+    # `print` is the deliberate interface of both command-line entry points.
+    "T20",
+    # This personal repository does not require per-file copyright headers.
+    "CPY",
+    # Curly punctuation and em dashes are intentional house style.
+    "RUF001",
+    "RUF002",
+    "RUF003",
+]
+
+[tool.ruff.lint.flake8-annotations]
+allow-star-arg-any = false
+mypy-init-return = true
+
+[tool.ruff.lint.mccabe]
+max-complexity = 15
+
+[tool.ruff.lint.per-file-ignores]
+"tests/*.py" = [
+    # Exact counts and HTTP statuses are meaningful assertions in tests.
+    "PLR2004",
+    # Pytest assertions are not runtime validation and must survive optimization rules.
+    "S101",
+    # Tests intentionally use loopback URLs and trusted local subprocess commands.
+    "S310",
+    "S603",
+    "S607",
+]
+
+[tool.ruff.lint.pydocstyle]
+convention = "google"
+
+[tool.ruff.format]
+quote-style = "double"
+indent-style = "space"
+line-ending = "lf"
+docstring-code-format = true
+docstring-code-line-length = "dynamic"

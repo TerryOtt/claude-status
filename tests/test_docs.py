@@ -2,7 +2,7 @@
 
 import pathlib
 
-import board_state
+from localswim import board_state
 
 
 def test_example_board_is_valid_and_empty() -> None:

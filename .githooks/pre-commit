@@ -12,4 +12,4 @@
 #
 # **`git commit --no-verify` bypasses this**, deliberately. The gate is a helper, not
 # a guard against the person typing.
-exec python check.py
+exec uv run --frozen python check.py

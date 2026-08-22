@@ -1,6 +1,6 @@
 """A live, draggable swimlane board over one board JSON, served on loopback.
 
-    python api_endpoint.py path/to/board.json
+    uv run --frozen localswim path/to/board.json
     then open the URL it prints
 
 **RFC 2119 keywords, and the capitals are load-bearing.**
@@ -69,15 +69,18 @@ import os
 import pathlib
 import re
 import secrets
-import socketserver
 import subprocess
 import sys
 import threading
 import time
 import urllib.parse
-from collections.abc import Callable
+from typing import TYPE_CHECKING, cast
 
-import board_state
+from . import board_state
+
+if TYPE_CHECKING:
+    import socketserver
+    from collections.abc import Callable
 
 HOST = "127.0.0.1"
 API_PREFIX = board_state.API_PREFIX
@@ -105,16 +108,26 @@ def build_id() -> str:
     """
     here = pathlib.Path(__file__).resolve().parent
     try:
-        head = subprocess.run(["git", "-C", str(here), "rev-parse", "--short", "HEAD"],
-                              capture_output=True, encoding="utf-8", errors="replace",
-                              timeout=5, check=False)
+        head = subprocess.run(  # noqa: S603 -- fixed argv, no shell or untrusted executable
+            ["git", "-C", str(here), "rev-parse", "--short", "HEAD"],  # noqa: S607
+            capture_output=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=5,
+            check=False,
+        )
         if head.returncode != 0 or not (head.stdout or "").strip():
             return "unknown"
         ident = head.stdout.strip()
-        dirty = subprocess.run(["git", "-C", str(here), "status", "--porcelain"],
-                               capture_output=True, encoding="utf-8", errors="replace",
-                               timeout=5, check=False)
-    except (OSError, subprocess.SubprocessError):
+        dirty = subprocess.run(  # noqa: S603 -- fixed argv, no shell or untrusted executable
+            ["git", "-C", str(here), "status", "--porcelain"],  # noqa: S607
+            capture_output=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=5,
+            check=False,
+        )
+    except OSError, subprocess.SubprocessError:
         return "unknown"
     if dirty.returncode == 0 and (dirty.stdout or "").strip():
         # A bare "-dirty" is one bit, not an identity: every uncommitted edit would
@@ -174,8 +187,10 @@ BUILD = build_id()
 # `module.__file__` is `str | None` to a type checker -- None for a namespace package,
 # which `board_state` is not. Falling back to this file keeps the annotation honest without
 # pretending the impossible case cannot be typed.
-CODE_FILES = (pathlib.Path(__file__).resolve(),
-              pathlib.Path(board_state.__file__ or __file__).resolve())
+CODE_FILES = (
+    pathlib.Path(__file__).resolve(),
+    pathlib.Path(board_state.__file__ or __file__).resolve(),
+)
 
 
 def _code_stamp() -> tuple[tuple[float, str], ...]:
@@ -183,8 +198,7 @@ def _code_stamp() -> tuple[tuple[float, str], ...]:
     out: list[tuple[float, str]] = []
     for path in CODE_FILES:
         try:
-            out.append((path.stat().st_mtime,
-                        hashlib.sha256(path.read_bytes()).hexdigest()))
+            out.append((path.stat().st_mtime, hashlib.sha256(path.read_bytes()).hexdigest()))
         except OSError:
             out.append((0.0, ""))
     return tuple(out)
@@ -257,16 +271,19 @@ def _source_startup_problem() -> str | None:
     here = pathlib.Path(__file__).resolve().parent
     try:
         checked = subprocess.run(
-            [sys.executable, "-c", "import board_state; import api_endpoint"],
-            cwd=here, capture_output=True, encoding="utf-8", errors="replace",
-            timeout=15, check=False,
+            [sys.executable, "-c", "from localswim import api_endpoint, board_state"],
+            cwd=here,
+            capture_output=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=15,
+            check=False,
         )
     except (OSError, subprocess.SubprocessError) as exc:
         return f"startup check could not run: {exc}"
     if checked.returncode == 0:
         return None
-    lines = [line.strip() for line in (checked.stderr or "").splitlines()
-             if line.strip()]
+    lines = [line.strip() for line in (checked.stderr or "").splitlines() if line.strip()]
     detail = lines[-1] if lines else f"child Python exited {checked.returncode}"
     return f"startup check failed: {detail}"
 
@@ -316,7 +333,9 @@ def request_code_restart(
         server.shutdown()
 
     threading.Thread(
-        target=restart_when_stable, name="code-restart", daemon=True,
+        target=restart_when_stable,
+        name="code-restart",
+        daemon=True,
     ).start()
     return True, None
 
@@ -333,7 +352,10 @@ def _reexec_if_requested() -> None:
     if not _restart_requested.is_set():
         return
     print("Re-executing with changed Python source.", flush=True)
-    os.execv(sys.executable, [sys.executable, *sys.argv])
+    os.execv(  # noqa: S606 -- deliberately replace this process with the same interpreter
+        sys.executable, [sys.executable, *sys.argv]
+    )
+
 
 # ---------------------------------------------------------------------------
 # OPT-IN AUTOPUSH: THE BOARD MAY REACH ITS OWN GIT REMOTE AFTER IT GOES QUIET
@@ -382,9 +404,14 @@ def push_status() -> dict[str, object]:
 def _git(args: list[str], cwd: pathlib.Path) -> subprocess.CompletedProcess[str]:
     """Run one git command. Never raises; a timeout comes back as a failed result."""
     try:
-        return subprocess.run(
-            ["git", *args], cwd=cwd, capture_output=True, text=True,
-            timeout=_PUSH_TIMEOUT_S, check=False)
+        return subprocess.run(  # noqa: S603 -- argv remains separated and shell-free
+            ["git", *args],  # noqa: S607 -- PATH lookup is the supported Git discovery
+            cwd=cwd,
+            capture_output=True,
+            text=True,
+            timeout=_PUSH_TIMEOUT_S,
+            check=False,
+        )
     except (OSError, subprocess.SubprocessError) as exc:
         return subprocess.CompletedProcess(args, 1, "", str(exc))
 
@@ -426,7 +453,8 @@ def push_board(board_path: pathlib.Path) -> tuple[bool, str]:
         f"Board: automatic snapshot {stamp}\n\n"
         "Written by api_endpoint.py's autopush thread, not by a person. The card's own\n"
         "history array carries the per-move audit, so this commit exists for\n"
-        "durability rather than for granularity.\n")
+        "durability rather than for granularity.\n"
+    )
     add = _git(["add", "--", str(board_path)], cwd)
     if add.returncode != 0:
         return False, f"git add failed: {add.stderr.strip()[:200]}"
@@ -488,15 +516,16 @@ def _push_loop(board_path: pathlib.Path) -> None:
 
 
 def start_autopush(
-    board_path: pathlib.Path, *, enabled: bool,
+    board_path: pathlib.Path,
+    *,
+    enabled: bool,
 ) -> threading.Thread | None:
     """Start the optional publisher, or publish an explicit disabled status."""
     if not enabled:
         _set_push("off", "disabled; start the server with --autopush to enable")
         print("  autopush  : OFF -- enable with --autopush", flush=True)
         return None
-    worker = threading.Thread(
-        target=_push_loop, args=(board_path,), name="autopush", daemon=True)
+    worker = threading.Thread(target=_push_loop, args=(board_path,), name="autopush", daemon=True)
     worker.start()
     return worker
 
@@ -580,8 +609,10 @@ def source_checkout_board_problem(path: pathlib.Path) -> str:
         return ""
     safe = root / LOCAL_BOARD_DIR
     if not relative.parts or relative.parts[0] != LOCAL_BOARD_DIR:
-        return (f"refusing board data outside the dedicated local-data directory; "
-                f"put this board under {safe}")
+        return (
+            f"refusing board data outside the dedicated local-data directory; "
+            f"put this board under {safe}"
+        )
     ignored = _git(["check-ignore", "--quiet", "--", str(path)], root)
     if ignored.returncode == 0:
         return ""
@@ -596,7 +627,8 @@ class BoardStore:
     """Serialize board commands and publish only snapshots that reached disk."""
 
     def __init__(
-        self, path: pathlib.Path,
+        self,
+        path: pathlib.Path,
         policy: board_state.TransitionPolicy | None = None,
     ) -> None:
         self.path = path
@@ -611,20 +643,23 @@ class BoardStore:
             self._board = board
             return copy.deepcopy(board)
 
-    def execute(self, expected_revision: int,
-                command: Callable[[board_state.Board], str]) -> tuple[str, int]:
+    def execute(
+        self, expected_revision: int, command: Callable[[board_state.Board], str]
+    ) -> tuple[str, int]:
         """Apply one command under the file lock and commit one new revision."""
         with self._mutex:
             with board_state.edit(self.path, self.policy) as candidate:
                 if candidate.revision != expected_revision:
                     raise RevisionConflict(
                         f"board revision is {candidate.revision}, not "
-                        f"{expected_revision}; refresh and try again")
+                        f"{expected_revision}; refresh and try again"
+                    )
                 result = command(candidate)
                 problems = candidate.verify()
                 if problems:
                     raise board_state.BoardError(
-                        "command would leave an invalid board: " + "; ".join(problems))
+                        "command would leave an invalid board: " + "; ".join(problems)
+                    )
                 candidate.revision += 1
                 committed = candidate
             # `board_state.edit` saves on exit. Publish in memory only after that succeeds.
@@ -638,10 +673,8 @@ class BoardStore:
             # tool-level transition policy, and either file may have changed.
             self._board = board_state.load(self.path, self.policy)
             actors = {user.id for user in self._board.users}
-            configured_edge_actors = frozenset(
-                (self._board.browser_user, self._board.cli_user))
-            self.policy, message = self.policy.reload_if_changed(
-                actors, configured_edge_actors)
+            configured_edge_actors = frozenset((self._board.browser_user, self._board.cli_user))
+            self.policy, message = self.policy.reload_if_changed(actors, configured_edge_actors)
             self._board.policy = self.policy
             return message
 
@@ -661,8 +694,14 @@ def publish_service(path: pathlib.Path, port: int) -> None:
     target = service_file(path)
     target.parent.mkdir(parents=True, exist_ok=True)
     tmp = target.with_name(target.name + f".tmp{os.getpid()}")
-    doc = {"schema": 1, "pid": os.getpid(), "host": HOST, "port": port,
-           "token": CLI_TOKEN, "board": str(path.resolve())}
+    doc = {
+        "schema": 1,
+        "pid": os.getpid(),
+        "host": HOST,
+        "port": port,
+        "token": CLI_TOKEN,
+        "board": str(path.resolve()),
+    }
     try:
         with tmp.open("w", encoding="utf-8", newline="\n") as fh:
             json.dump(doc, fh, indent=2)
@@ -681,14 +720,15 @@ def remove_service(path: pathlib.Path) -> None:
     """Remove only the rendezvous file published by this process."""
     target = service_file(path)
     try:
-        raw = json.loads(target.read_text(encoding="utf-8"))
-    except (OSError, ValueError):
+        raw = cast("board_state.JsonValue", json.loads(target.read_text(encoding="utf-8")))
+    except OSError, ValueError:
         return
     if isinstance(raw, dict) and raw.get("token") == CLI_TOKEN:
         target.unlink(missing_ok=True)
 
+
 # **Inter, bundled rather than linked, under the SIL Open Font License 1.1.**
-# `vendor/typefaces/inter/README.md` carries the copyright, the license text and the
+# `src/localswim/vendor/typefaces/inter/README.md` carries the copyright, license, and
 # three conditions that make redistributing it here compliant. Terry raised the
 # question himself and proposed this exact layout.
 #
@@ -782,7 +822,7 @@ def inline(text: str) -> str:
 OLD_AFTER = datetime.timedelta(hours=24)
 
 
-def is_old(item: "board_state.Item") -> bool:
+def is_old(item: board_state.Item) -> bool:
     """Whether a COMPLETED card has sat there long enough to hide. **Card #0063.**
 
     **Measured from when it ENTERED `completed`, not from when it was created.** A card
@@ -815,9 +855,9 @@ SRGB_KNEE = 0.04045
 def _relative_luminance(color: str) -> float:
     """WCAG relative luminance of `#RRGGBB`."""
     text = color.lstrip("#")
-    channels = []
+    channels: list[float] = []
     for index in (0, 2, 4):
-        c = int(text[index:index + 2], 16) / 255.0
+        c = int(text[index : index + 2], 16) / 255.0
         channels.append(c / 12.92 if c <= SRGB_KNEE else ((c + 0.055) / 1.055) ** 2.4)
     return 0.2126 * channels[0] + 0.7152 * channels[1] + 0.0722 * channels[2]
 
@@ -852,7 +892,7 @@ def readable_on_white(color: str) -> str:
         return color
 
     text = color.lstrip("#")
-    r, g, b = (int(text[i:i + 2], 16) for i in (0, 2, 4))
+    r, g, b = (int(text[i : i + 2], 16) for i in (0, 2, 4))
     # **Descending, so the FIRST hit is the lightest shade that clears the bar.**
     # Going darker than necessary would throw away the hue this exists to keep.
     for step in range(99, 0, -1):
@@ -878,7 +918,7 @@ def user_css() -> str:
     **Generated rather than templated, because the count is unknown.** Two users is
     today; the whole point of the card is that it stops being a fixed number.
     """
-    lines = []
+    lines: list[str] = []
     for u in board_state.USERS:
         lines.append(f"  --user-{u.id}: {u.color};")
         # **A second variable per user, card #0089.** The accent paints borders and
@@ -886,7 +926,7 @@ def user_css() -> str:
         # is not. See `readable_on_white`.
         lines.append(f"  --user-{u.id}-ink: {readable_on_white(u.color)};")
     lines.append(f"  --accent: var(--user-{board_state.BROWSER_USER});")
-    out = [":root {", *lines, "}"]
+    out: list[str] = [":root {", *lines, "}"]
 
     for u in board_state.USERS:
         var = f"var(--user-{u.id})"
@@ -3347,8 +3387,9 @@ def payload() -> bytes:
     try:
         board = STORE.snapshot() if STORE is not None else board_state.load(BOARD_PATH)
     except (board_state.BoardError, OSError, json.JSONDecodeError) as exc:
-        return json.dumps({"lanes": [], "edges": [], "counts": {},
-                           "error": str(exc)}).encode("utf-8")
+        return json.dumps({"lanes": [], "edges": [], "counts": {}, "error": str(exc)}).encode(
+            "utf-8"
+        )
 
     # **Drift is reported to the page, not swallowed.** `verify()` replays each item's
     # history; a mismatch means something changed a state without going through
@@ -3365,118 +3406,145 @@ def payload() -> bytes:
 
     def related(item_id: str) -> list[dict[str, str]]:
         """Every relationship this card has, including the derived direction."""
-        return [{"kind": kind, "ticket": by_id[other].label,
-                 "subject": by_id[other].subject}
-                for kind, other in board.links_for(item_id) if other in by_id]
+        return [
+            {"kind": kind, "ticket": by_id[other].label, "subject": by_id[other].subject}
+            for kind, other in board.links_for(item_id)
+            if other in by_id
+        ]
 
     kids: dict[str, list[dict[str, str]]] = {}
     for child in board.items:
         if child.parent:
             kids.setdefault(child.parent, []).append(
-                {"ticket": child.label, "subject": child.subject})
+                {"ticket": child.label, "subject": child.subject}
+            )
     counts: dict[str, int] = {lane.state: len(lane.items) for lane in lanes}
-    counts["open"] = sum(len(lane.items) for lane in lanes
-                         if lane.state != "completed")
+    counts["open"] = sum(len(lane.items) for lane in lanes if lane.state != "completed")
 
-    return json.dumps({
-        "revision": board.revision,
-        "project": board.project,
-        "lanes": [{
-            "state": lane.state,
-            "label": lane.label,
-            "css": lane.css,
-            "ownerLabel": lane.owner_label,
-            # **Where the `+` appears, decided by the same predicate the write path
-            # enforces.** `may_create` is what `/create` calls, so the button cannot
-            # offer a lane the POST would refuse. Adding a lane to `create` in
-            # `rules.json` grows a `+` with no code change here or in the page.
-            "creatable": policy.may_create(board.browser_user, lane.state),
-            # **Card #0063. Counted on the server, beside the flag it counts**, so the
-            # checkbox label and the hiding can never disagree about how many.
-            "oldCount": sum(1 for i in lane.items if is_old(i)),
-            "items": [{
-                "id": item.id,
-                "ticket": item.label,
-                "state": item.state,
-                "laneLabel": lane.label,
-                "subject": item.subject,
-                "priority": item.priority,
-                "priorityLabel": policy.priority_label.get(item.priority, ""),
-                # **Card #0063.** Computed on the SERVER so one clock decides it, and
-                # so the 24-hour rule lives in exactly one place. The page re-fetches
-                # twice a second, so a card ages out on its own without a reload.
-                **({"old": True} if is_old(item) else {}),
-                "detail": inline(item.detail),
-                # **The RAW text as well as the rendered form, card #0082.** `detail`
-                # has already been through `inline()` -- escaped, with the markdown-ish
-                # bits turned into tags -- and putting THAT into an editor would hand
-                # Terry HTML to edit and then store it, one round trip from unreadable.
-                "detailRaw": item.detail,
-                # Card #0028. Omitted when empty so a board of unrelated cards stays
-                # the same size on the wire as it was before relationships existed.
-                **({"links": related(item.id)} if board.links_for(item.id) else {}),
-                **({"parent": {"ticket": by_id[item.parent].label,
-                               "subject": by_id[item.parent].subject}}
-                   if item.parent and item.parent in by_id else {}),
-                **({"children": kids[item.id]} if item.id in kids else {}),
-                # **A LABEL, never a permission.** Card #0053, Terry: *"It's just a
-                # label, not permissions model."* Nothing in the page may branch on
-                # this to allow or refuse a move -- `draggable` below and `allowed()`
-                # in the script both read the permission table and MUST keep doing so.
-                "owner": item.owner,
-                # **Computed on the SERVER from the same table the server enforces**,
-                # so the cursor and the answer cannot disagree.
-                "draggable": any(a == item.state for a, _ in browser_edges),
-                "comments": [{"by": c.by, "when": when(c.at),
-                              "text": inline(c.text)} for c in item.comments],
-                # **Newest first.** Terry: "needs to be newest at top (most
-                # relevant) to oldest at bottom." The Completed lane already
-                # reverses for the same reason -- the interesting end of a
-                # permanent record is the recent end, and a long trail otherwise
-                # buries the entry you opened the card to read.
-                #
-                # **Reversed HERE rather than in `board_state.py`.** The stored order is
-                # chronological and `verify()` replays it forwards; flipping the
-                # model to suit a drawer would break the audit.
-                # **Ownership entries ride the SAME list**, because the trail is one
-                # chronological thing to read. `ownerTo` is the discriminant and is
-                # absent on a lane move. Card #0053.
-                "history": [{"by": h.by, "when": when(h.at),
-                             "from": h.frm,
-                             "fromLabel": policy.lane_label.get(h.frm or "", ""),
-                             "toLabel": policy.lane_label.get(h.to, h.to),
-                             "ownerFrom": h.owner_frm,
-                             "ownerTo": h.owner_to,
-                             # Card #0070, the third entry shape.
-                             "priorityFrom": h.priority_frm,
-                             "priorityTo": h.priority_to}
-                            for h in reversed(item.history)],
-            } for item in lane.items],
-        } for lane in lanes],
-        "edges": sorted(browser_edges),
-        # **The priority list ships from `rules.json`, never typed into the page.**
-        # A range written in HTML is a second copy that goes stale silently -- and it
-        # already nearly did: card #0047 was specified as "P1-P5" while `P0` exists.
-        "priorities": [{"id": p, "label": policy.priority_label.get(p, "")}
-                       for p in policy.priorities],
-        "defaultPriority": policy.default_priority,
-        # **The actor list ships from the server, never typed into the page.** Card
-        # #0069, and the same rule the priorities already follow. **Card #0072 made it
-        # configurable**, so a page naming Terry and Claude in markup would go stale the
-        # day somebody else deploys this.
-        #
-        # **The LABEL now comes from config rather than from `a.capitalize()`.** That
-        # call worked for two lowercase ids and would have rendered `mcallister` as
-        # `Mcallister`, which is a name spelled wrong on every card that person touches.
-        "actors": [{"id": u.id, "label": u.label, "class": u.user_class,
-                    "color": u.color} for u in board.users],
-        # **Who the PAGE writes as.** It labels the comment button and the new-card
-        # note, both of which said "Terry" in markup until this card.
-        "browserUser": board.browser_user,
-        "defaultOwner": board.default_owner,
-        "counts": counts,
-        "error": "; ".join(drift) if drift else None,
-    }).encode("utf-8")
+    return json.dumps(
+        {
+            "revision": board.revision,
+            "project": board.project,
+            "lanes": [
+                {
+                    "state": lane.state,
+                    "label": lane.label,
+                    "css": lane.css,
+                    "ownerLabel": lane.owner_label,
+                    # **Where the `+` appears, decided by the same predicate the write path
+                    # enforces.** `may_create` is what `/create` calls, so the button cannot
+                    # offer a lane the POST would refuse. Adding a lane to `create` in
+                    # `rules.json` grows a `+` with no code change here or in the page.
+                    "creatable": policy.may_create(board.browser_user, lane.state),
+                    # **Card #0063. Counted on the server, beside the flag it counts**, so the
+                    # checkbox label and the hiding can never disagree about how many.
+                    "oldCount": sum(1 for i in lane.items if is_old(i)),
+                    "items": [
+                        {
+                            "id": item.id,
+                            "ticket": item.label,
+                            "state": item.state,
+                            "laneLabel": lane.label,
+                            "subject": item.subject,
+                            "priority": item.priority,
+                            "priorityLabel": policy.priority_label.get(item.priority, ""),
+                            # **Card #0063.** Computed on the SERVER so one clock decides it, and
+                            # so the 24-hour rule lives in exactly one place. The page re-fetches
+                            # twice a second, so a card ages out on its own without a reload.
+                            **({"old": True} if is_old(item) else {}),
+                            "detail": inline(item.detail),
+                            # **The RAW text as well as the rendered form, card #0082.** `detail`
+                            # has already been through `inline()` -- escaped, with the markdown-ish
+                            # bits turned into tags -- and putting THAT into an editor would hand
+                            # Terry HTML to edit and then store it, one round trip from unreadable.
+                            "detailRaw": item.detail,
+                            # Card #0028. Omitted when empty so a board of unrelated cards stays
+                            # the same size on the wire as it was before relationships existed.
+                            **({"links": related(item.id)} if board.links_for(item.id) else {}),
+                            **(
+                                {
+                                    "parent": {
+                                        "ticket": by_id[item.parent].label,
+                                        "subject": by_id[item.parent].subject,
+                                    }
+                                }
+                                if item.parent and item.parent in by_id
+                                else {}
+                            ),
+                            **({"children": kids[item.id]} if item.id in kids else {}),
+                            # **A LABEL, never a permission.** Card #0053, Terry: *"It's just a
+                            # label, not permissions model."* Nothing in the page may branch on
+                            # this to allow or refuse a move -- `draggable` below and `allowed()`
+                            # in the script both read the permission table and MUST keep doing so.
+                            "owner": item.owner,
+                            # **Computed on the SERVER from the same table the server enforces**,
+                            # so the cursor and the answer cannot disagree.
+                            "draggable": any(a == item.state for a, _ in browser_edges),
+                            "comments": [
+                                {"by": c.by, "when": when(c.at), "text": inline(c.text)}
+                                for c in item.comments
+                            ],
+                            # **Newest first.** Terry: "needs to be newest at top (most
+                            # relevant) to oldest at bottom." The Completed lane already
+                            # reverses for the same reason -- the interesting end of a
+                            # permanent record is the recent end, and a long trail otherwise
+                            # buries the entry you opened the card to read.
+                            #
+                            # **Reversed HERE rather than in `board_state.py`.** The stored order is
+                            # chronological and `verify()` replays it forwards; flipping the
+                            # model to suit a drawer would break the audit.
+                            # **Ownership entries ride the SAME list**, because the trail is one
+                            # chronological thing to read. `ownerTo` is the discriminant and is
+                            # absent on a lane move. Card #0053.
+                            "history": [
+                                {
+                                    "by": h.by,
+                                    "when": when(h.at),
+                                    "from": h.frm,
+                                    "fromLabel": policy.lane_label.get(h.frm or "", ""),
+                                    "toLabel": policy.lane_label.get(h.to, h.to),
+                                    "ownerFrom": h.owner_frm,
+                                    "ownerTo": h.owner_to,
+                                    # Card #0070, the third entry shape.
+                                    "priorityFrom": h.priority_frm,
+                                    "priorityTo": h.priority_to,
+                                }
+                                for h in reversed(item.history)
+                            ],
+                        }
+                        for item in lane.items
+                    ],
+                }
+                for lane in lanes
+            ],
+            "edges": sorted(browser_edges),
+            # **The priority list ships from `rules.json`, never typed into the page.**
+            # A range written in HTML is a second copy that goes stale silently -- and it
+            # already nearly did: card #0047 was specified as "P1-P5" while `P0` exists.
+            "priorities": [
+                {"id": p, "label": policy.priority_label.get(p, "")} for p in policy.priorities
+            ],
+            "defaultPriority": policy.default_priority,
+            # **The actor list ships from the server, never typed into the page.** Card
+            # #0069, and the same rule the priorities already follow. **Card #0072 made it
+            # configurable**, so a page naming Terry and Claude in markup would go stale the
+            # day somebody else deploys this.
+            #
+            # **The LABEL now comes from config rather than from `a.capitalize()`.** That
+            # call worked for two lowercase ids and would have rendered `mcallister` as
+            # `Mcallister`, which is a name spelled wrong on every card that person touches.
+            "actors": [
+                {"id": u.id, "label": u.label, "class": u.user_class, "color": u.color}
+                for u in board.users
+            ],
+            # **Who the PAGE writes as.** It labels the comment button and the new-card
+            # note, both of which said "Terry" in markup until this card.
+            "browserUser": board.browser_user,
+            "defaultOwner": board.default_owner,
+            "counts": counts,
+            "error": "; ".join(drift) if drift else None,
+        }
+    ).encode("utf-8")
 
 
 SLUG_MAX = 48
@@ -3506,6 +3574,62 @@ def slug_for(board: board_state.Board, subject: str) -> str:
     return f"{base}-{board.next_ticket:04d}"
 
 
+def _apply_http_command(  # noqa: PLR0911, PLR0912 -- one explicit branch per REST action
+    board: board_state.Board,
+    command_parts: list[str],
+    body: board_state.JsonObject,
+    actor: board_state.Actor,
+    policy: board_state.TransitionPolicy,
+) -> str:
+    """Translate one validated REST route into one domain mutation."""
+    if command_parts == ["cards"]:
+        state = str(body["state"])
+        subject = str(body["subject"]).strip()
+        if not subject:
+            raise board_state.BoardError("a card needs a title")
+        item_id = str(body.get("id") or slug_for(board, subject))
+        return board.create(
+            item_id,
+            subject,
+            state,
+            actor,
+            priority=str(body.get("priority") or policy.default_priority),
+            detail=str(body.get("detail") or ""),
+            owner=board_state.as_actor(str(body.get("owner") or board_state.DEFAULT_OWNER)),
+        )
+
+    if command_parts == ["board", "project"]:
+        was = board.project
+        name = str(body["project"]).strip()
+        if not name:
+            raise board_state.BoardError("a project needs a name")
+        board.project = name
+        return f"project renamed: {was!r} -> {name!r}"
+
+    ref, action = command_parts[1], command_parts[2]
+    if action == "move":
+        return board.move(ref, str(body["to"]), actor)
+    if action == "comment":
+        return board.comment(ref, str(body["text"]), actor)
+    if action == "assign":
+        return board.assign(ref, board_state.as_actor(str(body["owner"])), actor)
+    if action == "priority":
+        return board.set_priority(ref, str(body["priority"]).upper(), actor)
+    if action == "subject":
+        return board.set_subject(ref, str(body["subject"]), actor)
+    if action == "detail":
+        return board.set_detail(ref, str(body["detail"]), actor)
+    if action == "parent":
+        parent = body.get("parent")
+        return board.set_parent(ref, str(parent) if parent else None, actor)
+    if action == "link":
+        kind, other = str(body["kind"]).lower(), str(body["other"])
+        if body.get("remove"):
+            return board.unlink(ref, kind, other, actor)
+        return board.link(ref, kind, other, actor)
+    raise board_state.BoardError(f"unknown card command {action!r}")
+
+
 class Handler(http.server.BaseHTTPRequestHandler):
     """The page, the board, a timestamp to poll, the fonts, and three write routes."""
 
@@ -3519,7 +3643,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(body)
 
-    def _json(self, obj: dict[str, object], code: int = 200) -> None:
+    def _json(self, obj: object, code: int = 200) -> None:
         self._send(json.dumps(obj).encode("utf-8"), "application/json", code)
 
     def _redirect(self, location: str) -> None:
@@ -3528,11 +3652,11 @@ class Handler(http.server.BaseHTTPRequestHandler):
         self.send_header("Cache-Control", "no-store, max-age=0")
         self.end_headers()
 
-    def _read_json(self) -> dict[str, object] | None:
+    def _read_json(self) -> board_state.JsonObject | None:
         try:
             length = int(self.headers.get("Content-Length") or 0)
-            body = json.loads(self.rfile.read(length) or b"{}")
-        except (ValueError, TypeError):
+            body = cast("board_state.JsonValue", json.loads(self.rfile.read(length) or b"{}"))
+        except ValueError, TypeError:
             return None
         return body if isinstance(body, dict) else None
 
@@ -3588,14 +3712,18 @@ class Handler(http.server.BaseHTTPRequestHandler):
             #
             # Cost is one `stat` on a local file per poll, beside the board `stat` and
             # a 12 KB JSON parse that already happen here.
-            reloaded = (STORE.reload_policy_if_changed() if STORE is not None
-                        else board_state.reload_rules_if_changed())
+            reloaded = (
+                STORE.reload_policy_if_changed()
+                if STORE is not None
+                else board_state.reload_rules_if_changed()
+            )
             if reloaded:
                 print(f"  {reloaded}", flush=True)
 
             code_stale = code_is_stale()
             restarting, restart_problem = (
-                request_code_restart(self.server) if code_stale else (False, None))
+                request_code_restart(self.server) if code_stale else (False, None)
+            )
             code_meta = {
                 "build": BUILD,
                 "codeStale": code_stale,
@@ -3613,17 +3741,28 @@ class Handler(http.server.BaseHTTPRequestHandler):
                 # **`build` rides on the FAILURE path too.** An unreadable board and a
                 # stale tab are independent problems, and the page must be able to tell
                 # them apart while one of them is happening.
-                self._json({"ok": False, "mtime": 0, "stamp": "unreadable",
-                            **code_meta,
-                            "push": push_status(), "error": str(exc)})
+                self._json(
+                    {
+                        "ok": False,
+                        "mtime": 0,
+                        "stamp": "unreadable",
+                        **code_meta,
+                        "push": push_status(),
+                        "error": str(exc),
+                    }
+                )
                 return
-            stamp = (datetime.datetime.fromtimestamp(mtime, tz=datetime.UTC)
-                     .astimezone().strftime("%H:%M:%S"))
+            stamp = (
+                datetime.datetime.fromtimestamp(mtime, tz=datetime.UTC)
+                .astimezone()
+                .strftime("%H:%M:%S")
+            )
             # **`codeStale` rides on BOTH paths, like `build` and for the same
             # reason.** An unreadable board and a stale process are independent
             # failures, and either can be true while the other is.
-            self._json({"ok": True, "mtime": mtime, "stamp": stamp,
-                        **code_meta, "push": push_status()})
+            self._json(
+                {"ok": True, "mtime": mtime, "stamp": stamp, **code_meta, "push": push_status()}
+            )
         elif route == API_PREFIX + "/board":
             self._send(payload(), "application/json")
         elif route == "/favicon.svg":
@@ -3655,37 +3794,37 @@ class Handler(http.server.BaseHTTPRequestHandler):
             # **A broken board still serves its page.** The title falls back and
             # `/api/v001/board` carries the real error to the banner.
             title = "Work board"
-            with contextlib.suppress(board_state.BoardError, OSError,
-                                     json.JSONDecodeError):
+            with contextlib.suppress(board_state.BoardError, OSError, json.JSONDecodeError):
                 title = board_state.load(BOARD_PATH).project or title
             # **`%BUILD%` is baked into the page at request time**, so the constant the
             # JavaScript holds describes the code THIS tab loaded -- which is the whole
             # comparison. Fetching it later would just re-read the server and always agree.
-            page = (PAGE.replace("%POLL%", str(POLL_MS))
-                    .replace("%BUILD%", html.escape(BUILD))
-                    .replace("%TOKEN%", BROWSER_TOKEN)
-                    .replace("%API_PREFIX%", API_PREFIX)
-                    # **The bar's mark comes from the same `FAVICON` the tab icon
-                    # uses.** Card #0095. One definition, so a recolor cannot land in
-                    # one place and miss the other.
-                    .replace("%BRANDURI%", brand_data_uri())
-                    # **Built per request, not once at import**, so `reload_rules`
-                    # adding a user reaches the next page load without a restart.
-                    .replace("%USERCSS%", user_css())
-                    .replace("%TITLE%", html.escape(title)))
+            page = (
+                PAGE.replace("%POLL%", str(POLL_MS))
+                .replace("%BUILD%", html.escape(BUILD))
+                .replace("%TOKEN%", BROWSER_TOKEN)
+                .replace("%API_PREFIX%", API_PREFIX)
+                # **The bar's mark comes from the same `FAVICON` the tab icon
+                # uses.** Card #0095. One definition, so a recolor cannot land in
+                # one place and miss the other.
+                .replace("%BRANDURI%", brand_data_uri())
+                # **Built per request, not once at import**, so `reload_rules`
+                # adding a user reaches the next page load without a restart.
+                .replace("%USERCSS%", user_css())
+                .replace("%TITLE%", html.escape(title))
+            )
             self._send(page.encode("utf-8"), "text/html; charset=utf-8")
         else:
             self.send_error(404)
 
-    def do_POST(self) -> None:  # noqa: PLR0911, PLR0915 -- HTTP boundary
+    def do_POST(self) -> None:  # noqa: PLR0911 -- BaseHTTPRequestHandler contract
         """Execute one authenticated, revision-checked domain command."""
         route = self.path.partition("?")[0]
         parts = [urllib.parse.unquote(part) for part in route.strip("/").split("/")]
-        command_parts = parts[len(API_PARTS):] if parts[:len(API_PARTS)] == API_PARTS else []
+        command_parts = parts[len(API_PARTS) :] if parts[: len(API_PARTS)] == API_PARTS else []
         is_create = command_parts == ["cards"]
         is_project = command_parts == ["board", "project"]
-        is_card_command = (len(command_parts) == CARD_COMMAND_PARTS
-                           and command_parts[0] == "cards")
+        is_card_command = len(command_parts) == CARD_COMMAND_PARTS and command_parts[0] == "cards"
         if not (is_create or is_project or is_card_command):
             self.send_error(404)
             return
@@ -3703,58 +3842,16 @@ class Handler(http.server.BaseHTTPRequestHandler):
             self._json({"error": "bad request body"}, 400)
             return
 
+        store = STORE
+        if store is None:
+            self._json({"error": "board store is not initialized"}, 409)
+            return
+
+        def mutate(board: board_state.Board) -> str:
+            return _apply_http_command(board, command_parts, body, actor, store.policy)
+
         try:
-            if STORE is None:
-                raise board_state.BoardError("board store is not initialized")
-
-            def mutate(board: board_state.Board) -> str:  # noqa: PLR0911, PLR0912
-                if is_create:
-                    state = str(body["state"])
-                    subject = str(body["subject"]).strip()
-                    if not subject:
-                        raise board_state.BoardError("a card needs a title")
-                    item_id = str(body.get("id") or slug_for(board, subject))
-                    return board.create(
-                        item_id, subject, state, actor,
-                        priority=str(body.get("priority") or (
-                            STORE.policy.default_priority if STORE is not None
-                            else board_state.DEFAULT_PRIORITY)),
-                        detail=str(body.get("detail") or ""),
-                        owner=board_state.as_actor(
-                            str(body.get("owner") or board_state.DEFAULT_OWNER)),
-                    )
-                if is_project:
-                    was = board.project
-                    name = str(body["project"]).strip()
-                    if not name:
-                        raise board_state.BoardError("a project needs a name")
-                    board.project = name
-                    return f"project renamed: {was!r} -> {name!r}"
-
-                ref, action = command_parts[1], command_parts[2]
-                if action == "move":
-                    return board.move(ref, str(body["to"]), actor)
-                if action == "comment":
-                    return board.comment(ref, str(body["text"]), actor)
-                if action == "assign":
-                    return board.assign(ref, board_state.as_actor(str(body["owner"])), actor)
-                if action == "priority":
-                    return board.set_priority(ref, str(body["priority"]).upper(), actor)
-                if action == "subject":
-                    return board.set_subject(ref, str(body["subject"]), actor)
-                if action == "detail":
-                    return board.set_detail(ref, str(body["detail"]), actor)
-                if action == "parent":
-                    parent = body.get("parent")
-                    return board.set_parent(ref, str(parent) if parent else None, actor)
-                if action == "link":
-                    kind, other = str(body["kind"]).lower(), str(body["other"])
-                    if body.get("remove"):
-                        return board.unlink(ref, kind, other, actor)
-                    return board.link(ref, kind, other, actor)
-                raise board_state.BoardError(f"unknown card command {action!r}")
-
-            result, revision = STORE.execute(expected, mutate)
+            result, revision = store.execute(expected, mutate)
         except KeyError as exc:
             self._json({"error": f"missing field {exc}"}, 400)
             return
@@ -3789,11 +3886,12 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     """Parse the service command line, including opt-in external side effects."""
     ap = argparse.ArgumentParser(description="Serve a localswim board.")
     ap.add_argument("board", type=pathlib.Path, help="path to the board JSON")
-    ap.add_argument("--port", type=int, default=None,
-                    help="override the port in the board file")
+    ap.add_argument("--port", type=int, default=None, help="override the port in the board file")
     ap.add_argument(
-        "--autopush", action="store_true",
-        help="commit and push quiet board changes to the board repository's remote")
+        "--autopush",
+        action="store_true",
+        help="commit and push quiet board changes to the board repository's remote",
+    )
     return ap.parse_args(argv)
 
 

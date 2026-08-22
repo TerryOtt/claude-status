@@ -60,10 +60,15 @@ import time
 import urllib.error
 import urllib.parse
 import urllib.request
-from collections.abc import Callable, Iterator, Mapping
 from dataclasses import dataclass, field
 from types import MappingProxyType
-from typing import Any, Self
+from typing import TYPE_CHECKING, Self, cast
+
+if TYPE_CHECKING:
+    from collections.abc import Generator, Mapping
+
+type JsonValue = bool | int | float | str | list[JsonValue] | JsonObject | None
+type JsonObject = dict[str, JsonValue]
 
 # **`dataclasses.asdict` was considered and REFUSED**, which is why every class here
 # hand-writes `to_json`. `asdict` walks nested dataclasses blindly: it would emit `frm`
@@ -103,9 +108,9 @@ class BoardError(ValueError):
     """
 
 
-def _unique_json_object(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
+def _unique_json_object(pairs: list[tuple[str, JsonValue]]) -> JsonObject:
     """Build one JSON object while refusing duplicate keys instead of losing one."""
-    result: dict[str, Any] = {}
+    result: JsonObject = {}
     for key, value in pairs:
         if key in result:
             raise BoardError(f"duplicate JSON object key {key!r}")
@@ -113,15 +118,16 @@ def _unique_json_object(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
     return result
 
 
-def _read_json(path: pathlib.Path) -> Any:  # noqa: ANN401 -- JSON is untrusted input
+def _read_json(path: pathlib.Path) -> JsonValue:
     """Read JSON with useful syntax locations and no silently collapsed keys."""
     try:
         with path.open(encoding="utf-8") as fh:
-            return json.load(fh, object_pairs_hook=_unique_json_object)
+            return cast("JsonValue", json.load(fh, object_pairs_hook=_unique_json_object))
     except json.JSONDecodeError as exc:
         raise BoardError(
-            f"{path}: invalid JSON at line {exc.lineno}, column {exc.colno}: "
-            f"{exc.msg}") from exc
+            f"{path}: invalid JSON at line {exc.lineno}, column {exc.colno}: {exc.msg}"
+        ) from exc
+
 
 # **The default port, and it is a DEFAULT rather than the port.** Terry, 2026-08-18:
 # *"I want per-project config JSON that includes TCP port num; I want to be able to
@@ -277,18 +283,23 @@ class Link:
         return {"from": self.frm, "kind": self.kind, "to": self.to}
 
     @classmethod
-    def from_json(cls, raw: Any, where: str) -> Self:  # noqa: ANN401 -- untrusted input
+    def from_json(cls, raw: JsonValue, where: str) -> Self:
         if not isinstance(raw, dict):
             raise BoardError(f"{where}: a link is {type(raw).__name__}, want object")
-        missing = [k for k in ("from", "kind", "to") if not raw.get(k)]
+        missing = [key for key in ("from", "kind", "to") if not raw.get(key)]
         if missing:
             raise BoardError(f"{where}: link is missing {', '.join(missing)}")
-        kind = str(raw["kind"])
+        frm, kind, to = raw["from"], raw["kind"], raw["to"]
+        if not all(isinstance(value, str) for value in (frm, kind, to)):
+            raise BoardError(f"{where}: link endpoints and kind must be strings")
+        frm, kind, to = str(frm), str(kind), str(to)
         if kind not in LINK_CANONICAL:
             raise BoardError(
                 f"{where}: link kind {kind!r} is not stored form; "
-                f"want one of {', '.join(LINK_CANONICAL)}")
-        return cls(frm=str(raw["from"]), kind=kind, to=str(raw["to"]))
+                f"want one of {', '.join(LINK_CANONICAL)}"
+            )
+        return cls(frm=frm, kind=kind, to=to)
+
 
 # **THREE STATES MEAN "NOT MOVING", AND TERRY DREW THE LINES HIMSELF.** They get
 # confused constantly, and the whole value of the board is that a stalled card says WHO
@@ -348,8 +359,11 @@ NOBODY: frozenset[str] = frozenset()
 # of one fact is the drift this project keeps paying for.
 RULES_PATH = pathlib.Path(__file__).resolve().parent / "rules.json"
 
+
 def _index_edges(  # noqa: PLR0912 -- every branch rejects one malformed input shape
-    edges_raw: dict[str, Any], known: set[str], path: pathlib.Path,
+    edges_raw: JsonObject,
+    known: set[str],
+    path: pathlib.Path,
 ) -> tuple[
     dict[str, dict[str, set[str]]],
     dict[str, dict[str, set[str]]],
@@ -372,7 +386,8 @@ def _index_edges(  # noqa: PLR0912 -- every branch rejects one malformed input s
     for actor, actor_edges in edges_raw.items():
         if not actor or actor != actor.strip():
             raise BoardError(
-                f"{path}: edges actor ids must be nonempty and have no outer whitespace")
+                f"{path}: edges actor ids must be nonempty and have no outer whitespace"
+            )
         if not isinstance(actor_edges, list):
             raise BoardError(f"{path}: edges.{actor} is not a list")
         for index, edge in enumerate(actor_edges):
@@ -384,18 +399,16 @@ def _index_edges(  # noqa: PLR0912 -- every branch rejects one malformed input s
                 raise BoardError(f"{path}: {spot} is missing {', '.join(missing)}")
             unexpected = sorted(set(edge) - {"from", "to", "description"})
             if unexpected:
-                raise BoardError(
-                    f"{path}: {spot} has unknown field(s) {', '.join(unexpected)}")
+                raise BoardError(f"{path}: {spot} has unknown field(s) {', '.join(unexpected)}")
             if "description" in edge and not isinstance(edge["description"], str):
                 raise BoardError(f"{path}: {spot}.description is not a string")
 
             for required in ("from", "to"):
                 value = edge[required]
                 if not isinstance(value, str) or not value.strip():
-                    raise BoardError(
-                        f"{path}: {spot}.{required} is not a nonempty string")
+                    raise BoardError(f"{path}: {spot}.{required} is not a nonempty string")
 
-            frm, to = edge["from"], edge["to"]
+            frm, to = str(edge["from"]), str(edge["to"])
             for end in (frm, to):
                 if end not in known:
                     raise BoardError(f"{path}: {spot} names unknown lane {end!r}")
@@ -432,7 +445,7 @@ class Rules:
     # per-project; this object describes `rules.json`, which is per-tool.
 
 
-def _parse_users(doc: dict[str, Any], path: pathlib.Path) -> tuple[User, ...]:
+def _parse_users(doc: JsonObject, path: pathlib.Path) -> tuple[User, ...]:
     """Read and validate the `users` block. **Card #0072.**
 
     **Every field is mandatory and none is defaulted.** A user with no class would make
@@ -454,19 +467,28 @@ def _parse_users(doc: dict[str, Any], path: pathlib.Path) -> tuple[User, ...]:
             raise BoardError(f"{path}: {spot} is missing {', '.join(missing)}")
         if entry["class"] not in USER_CLASSES:
             raise BoardError(
-                f"{path}: {spot} class {entry['class']!r}; "
-                f"want one of {', '.join(USER_CLASSES)}")
+                f"{path}: {spot} class {entry['class']!r}; want one of {', '.join(USER_CLASSES)}"
+            )
         # **Ids are the key everything else joins on**, so a duplicate would make one
         # user's permissions silently shadow the other's.
         if any(u.id == entry["id"] for u in users):
             raise BoardError(f"{path}: {spot} repeats id {entry['id']!r}")
-        users.append(User(id=str(entry["id"]), label=str(entry["label"]),
-                          user_class=str(entry["class"]), color=str(entry["color"])))
+        users.append(
+            User(
+                id=str(entry["id"]),
+                label=str(entry["label"]),
+                user_class=str(entry["class"]),
+                color=str(entry["color"]),
+            )
+        )
     return tuple(users)
 
 
 def _pick_role(
-    doc: dict[str, Any], key: str, users: tuple[User, ...], want: str,
+    doc: JsonObject,
+    key: str,
+    users: tuple[User, ...],
+    want: str,
     path: pathlib.Path,
 ) -> str:
     """Resolve `browserUser` or `cliUser`: configured if named, derived if unambiguous.
@@ -493,7 +515,59 @@ def _pick_role(
         raise BoardError(f"{path}: no user has class {want!r}, so {key} cannot be derived")
     raise BoardError(
         f"{path}: {len(candidates)} users have class {want!r} ({', '.join(candidates)}), "
-        f"so {key} MUST be set explicitly -- this board will not guess who is acting")
+        f"so {key} MUST be set explicitly -- this board will not guess who is acting"
+    )
+
+
+def _parse_lanes(
+    doc: JsonObject, path: pathlib.Path
+) -> tuple[list[JsonObject], tuple[tuple[str, str], ...], set[str]]:
+    """Validate lane rows and return their typed records, display order, and ids."""
+    lanes_raw = doc.get("lanes")
+    if not isinstance(lanes_raw, list) or not lanes_raw:
+        raise BoardError(f"{path}: 'lanes' is missing or empty")
+
+    lanes: list[JsonObject] = []
+    order: list[tuple[str, str]] = []
+    for index, lane in enumerate(lanes_raw):
+        spot = f"lanes[{index}]"
+        if not isinstance(lane, dict):
+            raise BoardError(f"{path}: {spot} is not an object")
+        lane_id, label, create = lane.get("id"), lane.get("label"), lane.get("create")
+        if not isinstance(lane_id, str) or not lane_id:
+            raise BoardError(f"{path}: {spot}.id is not a nonempty string")
+        if not isinstance(label, str) or not label:
+            raise BoardError(f"{path}: {spot}.label is not a nonempty string")
+        if not isinstance(create, list) or not all(isinstance(actor, str) for actor in create):
+            raise BoardError(f"{path}: {spot}.create is not a list of actor ids")
+        lanes.append(lane)
+        order.append((lane_id, label))
+
+    known = {lane_id for lane_id, _label in order}
+    if len(known) != len(lanes):
+        raise BoardError(f"{path}: lane ids are not unique")
+    return lanes, tuple(order), known
+
+
+def _parse_priorities(
+    doc: JsonObject, path: pathlib.Path
+) -> tuple[tuple[str, ...], dict[str, str]]:
+    """Validate priority rows and return their order and display labels."""
+    priorities_raw = doc.get("priorities")
+    if not isinstance(priorities_raw, list) or not priorities_raw:
+        raise BoardError(f"{path}: 'priorities' is missing or empty")
+    rows: list[tuple[str, str]] = []
+    for index, priority in enumerate(priorities_raw):
+        spot = f"priorities[{index}]"
+        if not isinstance(priority, dict):
+            raise BoardError(f"{path}: {spot} is not an object")
+        priority_id, label = priority.get("id"), priority.get("label")
+        if not isinstance(priority_id, str) or not priority_id:
+            raise BoardError(f"{path}: {spot}.id is not a nonempty string")
+        if not isinstance(label, str) or not label:
+            raise BoardError(f"{path}: {spot}.label is not a nonempty string")
+        rows.append((priority_id, label))
+    return tuple(priority_id for priority_id, _label in rows), dict(rows)
 
 
 def _load_rules(path: pathlib.Path) -> Rules:
@@ -507,23 +581,22 @@ def _load_rules(path: pathlib.Path) -> Rules:
     for the person reading the diff; only actor, source, and destination affect the
     transition index.
     """
-    doc = _read_json(path)
+    raw_doc = _read_json(path)
+    if not isinstance(raw_doc, dict):
+        raise BoardError(f"{path}: rules document is not an object")
+    doc = raw_doc
 
     if doc.get("schema") != RULES_SCHEMA:
         raise BoardError(
             f"{path}: rules schema {doc.get('schema')!r}, want {RULES_SCHEMA}. "
             "schema 6 groups edges under actor ids and renames edge note to the "
-            "optional description field.")
-
-    lanes_raw = doc.get("lanes")
-    if not isinstance(lanes_raw, list) or not lanes_raw:
-        raise BoardError(f"{path}: 'lanes' is missing or empty")
+            "optional description field."
+        )
 
     # **ACTORS ARE NOT VALIDATED HERE ANY MORE. Card #0083.** The user list moved to
     # the board file, which is not loaded yet -- the board path is a command-line
     # argument. `install_users` does the check the moment both halves exist.
-    known = {lane["id"] for lane in lanes_raw}
-    order = tuple((lane["id"], lane["label"]) for lane in lanes_raw)
+    lanes, order, known = _parse_lanes(doc, path)
 
     edges_raw = doc.get("edges")
     if not isinstance(edges_raw, dict) or not edges_raw:
@@ -531,28 +604,33 @@ def _load_rules(path: pathlib.Path) -> Rules:
     if len(edges_raw) != REQUIRED_EDGE_ACTORS:
         raise BoardError(
             f"{path}: 'edges' contains {len(edges_raw)} actors; "
-            f"exactly {REQUIRED_EDGE_ACTORS} distinct actors are required")
+            f"exactly {REQUIRED_EDGE_ACTORS} distinct actors are required"
+        )
 
     inbound, outbound, edge_actors = _index_edges(edges_raw, known, path)
 
     table: dict[str, LaneRules] = {}
-    for lane in lanes_raw:
-        lane_id = lane["id"]
+    for lane in lanes:
+        lane_id = str(lane["id"])
+        create = cast("list[JsonValue]", lane["create"])
         table[lane_id] = LaneRules(
-            create=frozenset(lane.get("create", [])),
+            create=frozenset(actor for actor in create if isinstance(actor, str)),
             inbound={src: frozenset(who) for src, who in inbound[lane_id].items()},
             outbound={dst: frozenset(who) for dst, who in outbound[lane_id].items()},
         )
 
-    priorities = tuple(p["id"] for p in doc["priorities"])
-    labels = {p["id"]: p["label"] for p in doc["priorities"]}
+    priorities, labels = _parse_priorities(doc, path)
     default = doc.get("defaultPriority", priorities[len(priorities) // 2])
-    if default not in priorities:
+    if not isinstance(default, str) or default not in priorities:
         raise BoardError(f"{path}: defaultPriority {default!r} is not in the list")
 
     return Rules(
-        lanes=order, table=table, priorities=priorities, priority_label=labels,
-        default_priority=default, edge_actors=edge_actors,
+        lanes=order,
+        table=table,
+        priorities=priorities,
+        priority_label=labels,
+        default_priority=default,
+        edge_actors=edge_actors,
     )
 
 
@@ -565,14 +643,16 @@ class TransitionPolicy:
     observed_mtime_ns: int
 
     def __post_init__(self) -> None:
-        table = MappingProxyType({
-            state: LaneRules(
-                rules.create,
-                MappingProxyType(dict(rules.inbound)),
-                MappingProxyType(dict(rules.outbound)),
-            )
-            for state, rules in self.rules.table.items()
-        })
+        table = MappingProxyType(
+            {
+                state: LaneRules(
+                    rules.create,
+                    MappingProxyType(dict(rules.inbound)),
+                    MappingProxyType(dict(rules.outbound)),
+                )
+                for state, rules in self.rules.table.items()
+            }
+        )
         frozen = Rules(
             self.rules.lanes,
             table,
@@ -583,7 +663,7 @@ class TransitionPolicy:
         )
         object.__setattr__(self, "rules", frozen)
 
-    def __deepcopy__(self, _memo: dict[int, Any]) -> Self:
+    def __deepcopy__(self, _memo: dict[int, object]) -> Self:
         return self
 
     @classmethod
@@ -596,7 +676,7 @@ class TransitionPolicy:
             stamp = 0
         policy = cls(rules, path, stamp)
         if problems := policy.check_edges():
-            raise BoardError('; '.join(problems))
+            raise BoardError("; ".join(problems))
         return policy
 
     @property
@@ -638,38 +718,44 @@ class TransitionPolicy:
     def explain_refusal(self, actor: str, from_state: str, to_state: str) -> str:
         rules = self.table.get(from_state)
         if rules is None:
-            return f'{from_state} is not a lane'
+            return f"{from_state} is not a lane"
         if to_state not in self.table:
-            return f'{to_state} is not a lane'
+            return f"{to_state} is not a lane"
         if self.may_move(actor, from_state, to_state):
-            return ''
-        allowed_here = sorted(dst for dst, actors in rules.outbound.items()
-                              if actor in actors)
+            return ""
+        allowed_here = sorted(dst for dst, actors in rules.outbound.items() if actor in actors)
         if allowed_here:
-            return (f'{actor.capitalize()} has out permission on {from_state}, but not '
-                    f'to {to_state}. From here {actor} may go to: '
-                    + ', '.join(allowed_here))
+            return (
+                f"{actor.capitalize()} has out permission on {from_state}, but not "
+                f"to {to_state}. From here {actor} may go to: " + ", ".join(allowed_here)
+            )
         others = sorted({a for actors in rules.outbound.values() for a in actors})
         if others:
-            return (f"{from_state} is not {actor}'s to move out of. "
-                    f"That belongs to: {', '.join(others)}")
-        return f'Nothing moves out of {from_state}'
+            return (
+                f"{from_state} is not {actor}'s to move out of. "
+                f"That belongs to: {', '.join(others)}"
+            )
+        return f"Nothing moves out of {from_state}"
 
     def edges_for(self, actor: str) -> frozenset[tuple[str, str]]:
-        return frozenset((a, b) for a in self.states for b in self.states
-                         if a != b and self.may_move(actor, a, b))
+        return frozenset(
+            (a, b)
+            for a in self.states
+            for b in self.states
+            if a != b and self.may_move(actor, a, b)
+        )
 
     def actors_in(self, state: str) -> frozenset[str]:
         rules = self.table.get(state)
         if rules is None or not rules.inbound:
             return NOBODY
-        return frozenset().union(*rules.inbound.values())
+        return frozenset[str]().union(*rules.inbound.values())
 
     def actors_out(self, state: str) -> frozenset[str]:
         rules = self.table.get(state)
         if rules is None or not rules.outbound:
             return NOBODY
-        return frozenset().union(*rules.outbound.values())
+        return frozenset[str]().union(*rules.outbound.values())
 
     def check_edges(self) -> list[str]:
         problems: list[str] = []
@@ -677,23 +763,25 @@ class TransitionPolicy:
             for src, actors in rules.inbound.items():
                 other = self.table.get(src)
                 if other is None:
-                    problems.append(f'{state}.inbound names unknown lane {src!r}')
+                    problems.append(f"{state}.inbound names unknown lane {src!r}")
                     continue
                 mirror = other.outbound.get(state)
                 if mirror is None:
-                    problems.append(f'{src} -> {state} was indexed inbound but not outbound')
+                    problems.append(f"{src} -> {state} was indexed inbound but not outbound")
                 elif mirror != actors:
                     problems.append(
-                        f'{src} -> {state}: inbound says {sorted(actors)}, '
-                        f'outbound says {sorted(mirror)}')
+                        f"{src} -> {state}: inbound says {sorted(actors)}, "
+                        f"outbound says {sorted(mirror)}"
+                    )
             for dst, actors in rules.outbound.items():
                 other = self.table.get(dst)
                 if other is None:
-                    problems.append(f'{state}.outbound names unknown lane {dst!r}')
+                    problems.append(f"{state}.outbound names unknown lane {dst!r}")
                 elif state not in other.inbound:
                     problems.append(
-                        f'{state} -> {dst} was indexed outbound but not inbound '
-                        f'for {sorted(actors)}')
+                        f"{state} -> {dst} was indexed outbound but not inbound "
+                        f"for {sorted(actors)}"
+                    )
         return problems
 
     def validate_actors(
@@ -709,15 +797,16 @@ class TransitionPolicy:
                 named |= set(who)
         if unknown := sorted(named - actors):
             raise BoardError(
-                f'{self.path} names actor(s) ' + ', '.join(unknown) + f' that {where} '
-                'does not list as users; the board user list is authoritative')
-        if (configured_edge_actors is not None
-                and self.rules.edge_actors != configured_edge_actors):
+                f"{self.path} names actor(s) " + ", ".join(unknown) + f" that {where} "
+                "does not list as users; the board user list is authoritative"
+            )
+        if configured_edge_actors is not None and self.rules.edge_actors != configured_edge_actors:
             expected = ", ".join(sorted(configured_edge_actors))
             actual = ", ".join(sorted(self.rules.edge_actors))
             raise BoardError(
                 f"{self.path} edges actors ({actual}) do not exactly match "
-                f"{where} browserUser and cliUser ({expected})")
+                f"{where} browserUser and cliUser ({expected})"
+            )
 
     def reload_if_changed(
         self,
@@ -734,13 +823,11 @@ class TransitionPolicy:
         try:
             fresh = type(self).load(self.path)
             if actors is not None:
-                fresh.validate_actors(
-                    actors, str(self.path), configured_edge_actors)
+                fresh.validate_actors(actors, str(self.path), configured_edge_actors)
         except (BoardError, OSError, ValueError) as exc:
             seen = type(self)(self.rules, self.path, stamp)
-            return seen, (f'rules.json changed and was REFUSED: {exc}. '
-                          'Keeping the loaded table.')
-        return fresh, f'rules.json reloaded: {len(fresh.states)} lanes'
+            return seen, (f"rules.json changed and was REFUSED: {exc}. Keeping the loaded table.")
+        return fresh, f"rules.json reloaded: {len(fresh.states)} lanes"
 
 
 _POLICY = TransitionPolicy.load(RULES_PATH)
@@ -776,9 +863,13 @@ DEFAULT_OWNER: str = ""
 
 
 def install_users(  # noqa: PLR0913, PLR0917 -- one complete user configuration
-                  users: tuple[User, ...], browser: str, cli: str,
-                  default_owner: str, where: str,
-                  policy: TransitionPolicy | None = None) -> None:
+    users: tuple[User, ...],
+    browser: str,
+    cli: str,
+    default_owner: str,
+    where: str,
+    policy: TransitionPolicy | None = None,
+) -> None:
     """Bind the cast, and check `rules.json` only names people this board knows.
 
     **Card #0083. This is where the two config files meet.** Lanes and edges are the
@@ -795,12 +886,10 @@ def install_users(  # noqa: PLR0913, PLR0917 -- one complete user configuration
 
     configured_edge_actors = frozenset((browser, cli))
     if len(configured_edge_actors) != REQUIRED_EDGE_ACTORS:
-        raise BoardError(
-            f"{where}: browserUser and cliUser MUST be two different actor ids")
+        raise BoardError(f"{where}: browserUser and cliUser MUST be two different actor ids")
 
     active = policy or _POLICY
-    active.validate_actors(
-        {u.id for u in users}, where, configured_edge_actors)
+    active.validate_actors({u.id for u in users}, where, configured_edge_actors)
 
     USERS = users
     ACTORS = tuple(u.id for u in users)
@@ -820,9 +909,9 @@ def is_human(actor: str) -> bool:
     """
     return USER_CLASS.get(actor) == HUMAN
 
+
 STATES: tuple[str, ...] = tuple(state for state, _ in LANES)
 LANE_LABEL: dict[str, str] = dict(LANES)
-
 
 
 def rules_gaps(path: pathlib.Path = RULES_PATH) -> tuple[list[str], list[str]]:
@@ -845,29 +934,42 @@ def rules_gaps(path: pathlib.Path = RULES_PATH) -> tuple[list[str], list[str]]:
     """
     try:
         doc = _read_json(path)
-    except (BoardError, OSError):
+    except BoardError, OSError:
+        return [], []
+    if not isinstance(doc, dict):
         return [], []
     edges = doc.get("edges")
     if not isinstance(edges, dict):
         return [], []
-    rows = [(actor, edge) for actor, actor_edges in edges.items()
-            if isinstance(actor_edges, list) for edge in actor_edges
-            if isinstance(edge, dict)]
-    blank = [f"{actor}: {edge['from']} -> {edge['to']}"
-             for actor, edge in rows
-             if not (edge.get("description") or "").strip()]
+    rows: list[tuple[str, str, str, str]] = []
+    for actor, actor_edges in edges.items():
+        if not isinstance(actor_edges, list):
+            continue
+        for edge in actor_edges:
+            if not isinstance(edge, dict):
+                continue
+            frm, to, description = (
+                edge.get("from"),
+                edge.get("to"),
+                edge.get("description", ""),
+            )
+            if isinstance(frm, str) and isinstance(to, str) and isinstance(description, str):
+                rows.append((actor, frm, to, description.strip()))
+    blank = [f"{actor}: {frm} -> {to}" for actor, frm, to, description in rows if not description]
     by_edge: dict[tuple[str, str], set[str]] = {}
-    for _actor, edge in rows:
-        description = (edge.get("description") or "").strip()
+    for _actor, frm, to, description in rows:
         if description:
-            by_edge.setdefault((edge["from"], edge["to"]), set()).add(description)
+            by_edge.setdefault((frm, to), set()).add(description)
     counts: dict[tuple[str, str], int] = {}
-    for _actor, edge in rows:
-        if (edge.get("description") or "").strip():
-            key = (edge["from"], edge["to"])
+    for _actor, frm, to, description in rows:
+        if description:
+            key = (frm, to)
             counts[key] = counts.get(key, 0) + 1
-    shared = [f"{frm} -> {to}" for (frm, to), n in counts.items()
-              if n > 1 and len(by_edge[(frm, to)]) == 1]
+    shared = [
+        f"{frm} -> {to}"
+        for (frm, to), n in counts.items()
+        if n > 1 and len(by_edge[(frm, to)]) == 1
+    ]
     return blank, sorted(shared)
 
 
@@ -1015,8 +1117,8 @@ def reload_rules_if_changed() -> str | None:
         LANE_LABEL = fresh_policy.lane_label
         BROWSER_EDGES = fresh_policy.edges_for(BROWSER_USER)
         _rules_mtime = fresh_policy.observed_mtime_ns / 1_000_000_000
-    if message and message.startswith('rules.json reloaded'):
-        return (message + f', {len(BROWSER_EDGES)} draggable edges')
+    if message and message.startswith("rules.json reloaded"):
+        return message + f", {len(BROWSER_EDGES)} draggable edges"
     return message
 
 
@@ -1035,7 +1137,8 @@ def actors_out(state: str) -> frozenset[str]:
 
 
 def lane_class(
-    state: str, policy: TransitionPolicy | None = None,
+    state: str,
+    policy: TransitionPolicy | None = None,
     browser_user: str | None = None,
 ) -> str:
     """A coarse class for styling: a USER ID, `handoff`, `done` or `shared`.
@@ -1073,7 +1176,8 @@ def lane_class(
 
 
 def lane_owner_label(
-    state: str, policy: TransitionPolicy | None = None,
+    state: str,
+    policy: TransitionPolicy | None = None,
 ) -> str:
     """`IN: x · OUT: y`, which is what a lane header shows.
 
@@ -1112,7 +1216,7 @@ def now() -> str:
 _BEGINNING_OF_TIME = datetime.datetime.min.replace(tzinfo=datetime.UTC)
 
 
-def created_key(item: "Item") -> datetime.datetime:
+def created_key(item: Item) -> datetime.datetime:
     """A total, comparable creation time for one card. **Card #0047.**
 
     **Terry asked to sort by creation date, and the field is not the clean key it looks
@@ -1220,17 +1324,25 @@ def self_test_sort() -> list[str]:
         return created_key(item)
 
     # MUST parse to a real moment.
-    must_parse = ("2026-08-19T10:27:01-04:00",  # the ordinary case
-                  "2026-08-18 12:40 ET",        # #0012's human format
-                  "2026-08-18T16:02:45",        # naive, no offset
-                  "2026-08-18")                 # a bare date
-    problems.extend(f"created_key failed to parse {raw!r}"
-                    for raw in must_parse if key_of(raw) == _BEGINNING_OF_TIME)
+    must_parse = (
+        "2026-08-19T10:27:01-04:00",  # the ordinary case
+        "2026-08-18 12:40 ET",  # #0012's human format
+        "2026-08-18T16:02:45",  # naive, no offset
+        "2026-08-18",
+    )  # a bare date
+    problems.extend(
+        f"created_key failed to parse {raw!r}"
+        for raw in must_parse
+        if key_of(raw) == _BEGINNING_OF_TIME
+    )
 
     # MUST fall back, and MUST NOT raise.
     must_fall_back: tuple[str | None, ...] = (None, "utter nonsense")
-    problems.extend(f"created_key should have fallen back on {raw!r}"
-                    for raw in must_fall_back if key_of(raw) != _BEGINNING_OF_TIME)
+    problems.extend(
+        f"created_key should have fallen back on {raw!r}"
+        for raw in must_fall_back
+        if key_of(raw) != _BEGINNING_OF_TIME
+    )
 
     # **Ordering, not just parsing.** A key that parses everything and compares
     # backwards would pass every check above.
@@ -1242,7 +1354,7 @@ def self_test_sort() -> list[str]:
     return problems
 
 
-def report_sort_health(board: "Board") -> list[str]:
+def report_sort_health(board: Board) -> list[str]:
     """Run both sort checks, print the outcome, and hand back the failures.
 
     **Extracted from `main()` rather than inlined**, because inlining it pushed that
@@ -1259,7 +1371,7 @@ def report_sort_health(board: "Board") -> list[str]:
     return problems
 
 
-def total_order_problems(board: "Board") -> list[str]:
+def total_order_problems(board: Board) -> list[str]:
     """Report any lane whose cards do not compare STRICTLY increasing. **Card #0047.**
 
     **This is the requirement the card states in capitals**, and it is about the screen
@@ -1273,14 +1385,15 @@ def total_order_problems(board: "Board") -> list[str]:
     problems: list[str] = []
 
     def rank(item: Item) -> int:
-        return (PRIORITIES.index(item.priority)
-                if item.priority in PRIORITIES else len(PRIORITIES))
+        return PRIORITIES.index(item.priority) if item.priority in PRIORITIES else len(PRIORITIES)
 
     for lane in board.lanes():
         keys = [(rank(i), created_key(i), i.ticket) for i in lane.items]
         problems.extend(
             f"{lane.label}: #{before[2]:04d} and #{after[2]:04d} do not order"
-            for before, after in itertools.pairwise(keys) if before >= after)
+            for before, after in itertools.pairwise(keys)
+            if before >= after
+        )
 
     return problems
 
@@ -1353,25 +1466,34 @@ class Change:
         return out
 
     @classmethod
-    def from_json(cls, raw: dict[str, Any], where: str) -> Self:
+    def from_json(cls, raw: JsonObject, where: str) -> Self:
         owner_to = raw.get("ownerTo")
         priority_to = raw.get("priorityTo")
         # **`to` is required on a LANE entry and absent on the other two.** Checking it
         # unconditionally would refuse every board written after either change.
         moves_lane = not isinstance(owner_to, str) and not isinstance(priority_to, str)
-        required = ("at", "to", "by") if moves_lane else ("at", "by")
-        for key in required:
-            if not isinstance(raw.get(key), str) or not raw[key]:
+        at, to, by = raw.get("at"), raw.get("to", ""), raw.get("by")
+        required = {"at": at, "by": by}
+        if moves_lane:
+            required["to"] = to
+        for key, value in required.items():
+            if not isinstance(value, str) or not value:
                 raise BoardError(f"{where}: history entry has no {key}")
+        if not isinstance(at, str) or not isinstance(to, str) or not isinstance(by, str):
+            raise BoardError(f"{where}: history entry contains a non-string field")
         frm = raw.get("from")
         owner_frm = raw.get("ownerFrom")
         priority_frm = raw.get("priorityFrom")
-        return cls(at=raw["at"], to=raw.get("to", ""), by=raw["by"],
-                   frm=frm if isinstance(frm, str) else None,
-                   owner_frm=owner_frm if isinstance(owner_frm, str) else None,
-                   owner_to=owner_to if isinstance(owner_to, str) else None,
-                   priority_frm=priority_frm if isinstance(priority_frm, str) else None,
-                   priority_to=priority_to if isinstance(priority_to, str) else None)
+        return cls(
+            at=at,
+            to=to,
+            by=by,
+            frm=frm if isinstance(frm, str) else None,
+            owner_frm=owner_frm if isinstance(owner_frm, str) else None,
+            owner_to=owner_to if isinstance(owner_to, str) else None,
+            priority_frm=priority_frm if isinstance(priority_frm, str) else None,
+            priority_to=priority_to if isinstance(priority_to, str) else None,
+        )
 
 
 @dataclass
@@ -1394,11 +1516,12 @@ class Comment:
         return {"at": self.at, "by": self.by, "text": self.text}
 
     @classmethod
-    def from_json(cls, raw: dict[str, Any], where: str) -> Self:
-        for key in ("at", "by", "text"):
-            if not isinstance(raw.get(key), str):
+    def from_json(cls, raw: JsonObject, where: str) -> Self:
+        values = {key: raw.get(key) for key in ("at", "by", "text")}
+        for key, value in values.items():
+            if not isinstance(value, str):
                 raise BoardError(f"{where}: comment has no {key}")
-        return cls(at=raw["at"], by=raw["by"], text=raw["text"])
+        return cls(at=str(values["at"]), by=str(values["by"]), text=str(values["text"]))
 
 
 @dataclass
@@ -1452,8 +1575,8 @@ class Item:
     #
     # It holds the parent's `id`, and `None` means top level.
     parent: str | None = None
-    history: list[Change] = field(default_factory=list)
-    comments: list[Comment] = field(default_factory=list)
+    history: list[Change] = field(default_factory=list[Change])
+    comments: list[Comment] = field(default_factory=list[Comment])
 
     @property
     def created_at(self) -> str | None:
@@ -1521,8 +1644,9 @@ class Item:
         lanes = [c for c in self.history if c.kind == "lane"]
         return lanes[-1].to if lanes else None
 
-    def to_json(self) -> dict[str, Any]:
-        out: dict[str, Any] = {
+    def to_json(self) -> JsonObject:
+        history: list[JsonValue] = [cast("JsonValue", change.to_json()) for change in self.history]
+        out: JsonObject = {
             "id": self.id,
             "ticket": self.ticket,
             "priority": self.priority,
@@ -1530,31 +1654,35 @@ class Item:
             "subject": self.subject,
             "detail": self.detail,
             "owner": self.owner,
-            "history": [c.to_json() for c in self.history],
+            "history": history,
         }
         # Omitted at top level, so 60-odd parentless cards stay readable.
         if self.parent:
             out["parent"] = self.parent
         # Omitted when empty, so a board full of comment-less cards stays readable.
         if self.comments:
-            out["comments"] = [c.to_json() for c in self.comments]
+            out["comments"] = [cast("JsonValue", comment.to_json()) for comment in self.comments]
         return out
 
     @classmethod
     def from_json(
-        cls, raw: dict[str, Any], where: str,
+        cls,
+        raw: JsonObject,
+        where: str,
         policy: TransitionPolicy | None = None,
         actors: set[str] | None = None,
         default_owner: str | None = None,
     ) -> Self:
         active = policy or _POLICY
-        for key in ("id", "state", "subject"):
-            if not isinstance(raw.get(key), str) or not raw[key]:
+        required = {key: raw.get(key) for key in ("id", "state", "subject")}
+        for key, value in required.items():
+            if not isinstance(value, str) or not value:
                 raise BoardError(f"{where} has no {key}")
-        if raw["state"] not in active.states:
-            raise BoardError(f"{where}: unknown state {raw['state']!r}")
+        item_id, state, subject = (str(required[key]) for key in ("id", "state", "subject"))
+        if state not in active.states:
+            raise BoardError(f"{where}: unknown state {state!r}")
         priority = raw.get("priority", active.default_priority)
-        if priority not in active.priorities:
+        if not isinstance(priority, str) or priority not in active.priorities:
             raise BoardError(f"{where}: unknown priority {priority!r}")
         ticket = raw.get("ticket", 0)
         if not isinstance(ticket, int) or ticket < 0:
@@ -1564,15 +1692,33 @@ class Item:
         # header can render, is a data error and `from_json` REFUSES rather than
         # repairs -- the same contract the rest of this class keeps.
         owner = raw.get("owner", default_owner or DEFAULT_OWNER)
-        if owner not in (actors if actors is not None else set(ACTORS)):
+        if not isinstance(owner, str) or owner not in (
+            actors if actors is not None else set(ACTORS)
+        ):
             raise BoardError(f"{where}: unknown owner {owner!r}")
+        detail = raw.get("detail", "")
+        if not isinstance(detail, str):
+            raise BoardError(f"{where}: detail is not a string")
+        parent = raw.get("parent")
+        if parent is not None and not isinstance(parent, str):
+            raise BoardError(f"{where}: parent is not a string")
+        history_raw = raw.get("history", [])
+        if not isinstance(history_raw, list) or not all(
+            isinstance(change, dict) for change in history_raw
+        ):
+            raise BoardError(f"{where}: history is not a list of objects")
+        comments_raw = raw.get("comments", [])
+        if not isinstance(comments_raw, list) or not all(
+            isinstance(comment, dict) for comment in comments_raw
+        ):
+            raise BoardError(f"{where}: comments is not a list of objects")
         return cls(
-            id=raw["id"],
-            subject=raw["subject"],
-            state=raw["state"],
+            id=item_id,
+            subject=subject,
+            state=state,
             ticket=ticket,
             priority=priority,
-            detail=raw.get("detail", "") or "",
+            detail=detail,
             # **A card with no `owner` reads as Claude's**, which is the migration for
             # the 51 cards written before this field existed. Terry's standing order:
             # *"if in doubt, assign to claude."* No synthetic history entry is written
@@ -1580,13 +1726,21 @@ class Item:
             owner=owner,
             # **Existence and cycles are checked in `Board.from_json`, not here.** An item
             # cannot see its siblings, so this only records what the file said.
-            parent=str(raw["parent"]) if raw.get("parent") else None,
-            history=[Change.from_json(h, where) for h in raw.get("history", [])],
-            comments=[Comment.from_json(c, where) for c in raw.get("comments", [])],
+            parent=parent,
+            history=[
+                Change.from_json(change, where)
+                for change in history_raw
+                if isinstance(change, dict)
+            ],
+            comments=[
+                Comment.from_json(comment, where)
+                for comment in comments_raw
+                if isinstance(comment, dict)
+            ],
         )
 
 
-def _links_from_json(raw: Any, known: set[str], where: str) -> list[Link]:  # noqa: ANN401
+def _links_from_json(raw: JsonValue, known: set[str], where: str) -> list[Link]:
     """Validate the board's link table. **Extracted from `Board.from_json`**, which ruff
     correctly called too branchy once this landed in it. Card #0028."""
     if not isinstance(raw, list):
@@ -1612,7 +1766,7 @@ def _links_from_json(raw: Any, known: set[str], where: str) -> list[Link]:  # no
     return links
 
 
-def _check_parents(board: "Board", known: set[str], where: str) -> None:
+def _check_parents(board: Board, known: set[str], where: str) -> None:
     """Refuse a parent that does not exist or that closes a loop. Card #0028.
 
     **It runs once the whole board exists**, because a parent is a sibling and no item
@@ -1641,10 +1795,9 @@ class Board:
     """A whole board: the project it belongs to, the port it is served on, its cards."""
 
     project: str = ""
-    policy: TransitionPolicy = field(
-        default_factory=lambda: _POLICY, repr=False, compare=False)
+    policy: TransitionPolicy = field(default_factory=lambda: _POLICY, repr=False, compare=False)
     port: int = DEFAULT_PORT
-    items: list[Item] = field(default_factory=list)
+    items: list[Item] = field(default_factory=list[Item])
 
     # Monotonic optimistic-concurrency token. Older schema-2 boards predate the field
     # and enter at revision zero; the first service mutation writes revision one.
@@ -1663,7 +1816,7 @@ class Board:
 
     # **Every relationship on the board, each stored ONCE.** See `Link` for why this is
     # here rather than a copy on each card. Card #0028.
-    links: list[Link] = field(default_factory=list)
+    links: list[Link] = field(default_factory=list[Link])
 
     # **THE CAST LIVES WITH THE DATA, NOT WITH THE CODE. Card #0083.**
     #
@@ -1684,33 +1837,40 @@ class Board:
 
     # ---- serialization -------------------------------------------------------
 
-    def to_json(self) -> dict[str, Any]:
+    def to_json(self) -> JsonObject:
         # **THE USERS MUST BE WRITTEN BACK OR THE FIRST SAVE DELETES THEM.** Card #0083.
         # `save()` rewrites the WHOLE file from this dict, and `api_endpoint.py` pushes it five
         # seconds later -- so a forgotten key here would erase the cast, commit the
         # erasure, and the next load would refuse to start.
-        out: dict[str, Any] = {
+        users: list[JsonValue] = [
+            {"id": u.id, "label": u.label, "class": u.user_class, "color": u.color}
+            for u in self.users
+        ]
+        items: list[JsonValue] = [item.to_json() for item in self.items]
+        out: JsonObject = {
             "schema": SCHEMA,
             "revision": self.revision,
             "project": self.project,
             "port": self.port,
-            "users": [{"id": u.id, "label": u.label, "class": u.user_class,
-                       "color": u.color} for u in self.users],
+            "users": users,
             "browserUser": self.browser_user,
             "cliUser": self.cli_user,
             "defaultOwner": self.default_owner,
             "nextTicket": self.next_ticket,
-            "items": [item.to_json() for item in self.items],
+            "items": items,
         }
         # **Omitted while empty, which is also the migration.** Every board written before
         # card #0028 simply has no `links` key, and reads back as a board with no links.
         if self.links:
-            out["links"] = [link.to_json() for link in self.links]
+            out["links"] = [cast("JsonValue", link.to_json()) for link in self.links]
         return out
 
     @classmethod
     def from_json(
-        cls, raw: Any, where: str, policy: TransitionPolicy | None = None,  # noqa: ANN401
+        cls,
+        raw: JsonValue,
+        where: str,
+        policy: TransitionPolicy | None = None,
     ) -> Self:
         """Validate and build. **The ONLY place a malformed board can enter.**
 
@@ -1721,8 +1881,7 @@ class Board:
         if not isinstance(raw, dict):
             raise BoardError(f"{where}: top level is {type(raw).__name__}, want object")
         if raw.get("schema") != SCHEMA:
-            raise BoardError(
-                f"{where}: schema {raw.get('schema')!r}, this build reads {SCHEMA}")
+            raise BoardError(f"{where}: schema {raw.get('schema')!r}, this build reads {SCHEMA}")
         items_raw = raw.get("items")
         if not isinstance(items_raw, list):
             raise BoardError(f"{where}: 'items' is missing or not a list")
@@ -1744,8 +1903,7 @@ class Board:
         if default_owner not in {u.id for u in users}:
             raise BoardError(f"{where}: defaultOwner names unknown user {default_owner!r}")
         active_policy = policy or _POLICY
-        install_users(users, browser_user, cli_user, str(default_owner), where,
-                      active_policy)
+        install_users(users, browser_user, cli_user, str(default_owner), where, active_policy)
 
         items: list[Item] = []
         seen: set[str] = set()
@@ -1755,8 +1913,8 @@ class Board:
             if not isinstance(item_raw, dict):
                 raise BoardError(f"{spot} is not an object")
             item = Item.from_json(
-                item_raw, spot, active_policy, {u.id for u in users},
-                str(default_owner))
+                item_raw, spot, active_policy, {u.id for u in users}, str(default_owner)
+            )
             if item.id in seen:
                 raise BoardError(f"{spot}: duplicate id {item.id!r}")
             seen.add(item.id)
@@ -1777,14 +1935,21 @@ class Board:
         if tickets and next_ticket <= max(tickets):
             raise BoardError(
                 f"{where}: nextTicket is {next_ticket} but ticket "
-                f"#{max(tickets):04d} already exists -- the counter went backwards")
+                f"#{max(tickets):04d} already exists -- the counter went backwards"
+            )
 
-        board = cls(project=str(raw.get("project", "")), port=port, items=items,
-                    revision=revision,
-                    next_ticket=next_ticket,
-                    links=_links_from_json(raw.get("links", []), seen, where),
-                    users=users, browser_user=browser_user, cli_user=cli_user,
-                    default_owner=str(default_owner))
+        board = cls(
+            project=str(raw.get("project", "")),
+            port=port,
+            items=items,
+            revision=revision,
+            next_ticket=next_ticket,
+            links=_links_from_json(raw.get("links", []), seen, where),
+            users=users,
+            browser_user=browser_user,
+            cli_user=cli_user,
+            default_owner=str(default_owner),
+        )
         board.policy = active_policy
         _check_parents(board, seen, where)
         return board
@@ -1842,10 +2007,13 @@ class Board:
         `created_key` handles the four measured data problems; its own docstring carries
         them.
         """
+
         def rank(item: Item) -> int:
-            return (self.policy.priorities.index(item.priority)
-                    if item.priority in self.policy.priorities
-                    else len(self.policy.priorities))
+            return (
+                self.policy.priorities.index(item.priority)
+                if item.priority in self.policy.priorities
+                else len(self.policy.priorities)
+            )
 
         def order(item: Item) -> tuple[int, datetime.datetime, int]:
             return (rank(item), created_key(item), item.ticket)
@@ -1853,11 +2021,16 @@ class Board:
         buckets: dict[str, list[Item]] = {state: [] for state in self.policy.states}
         for item in self.items:
             buckets.setdefault(item.state, []).append(item)
-        return [Lane(state, label,
-                     lane_class(state, self.policy, self.browser_user),
-                     lane_owner_label(state, self.policy),
-                     sorted(buckets.get(state, []), key=order))
-                for state, label in self.policy.lanes]
+        return [
+            Lane(
+                state,
+                label,
+                lane_class(state, self.policy, self.browser_user),
+                lane_owner_label(state, self.policy),
+                sorted(buckets.get(state, []), key=order),
+            )
+            for state, label in self.policy.lanes
+        ]
 
     def verify(self) -> list[str]:
         """Replay every item's history and report anything the transition policy forbids.
@@ -1909,13 +2082,13 @@ class Board:
             problems.extend(
                 f"{item.id}: history reassigns to {c.owner_to!r}, which is not an actor"
                 for c in item.history
-                if c.kind == "owner"
-                and c.owner_to not in {user.id for user in self.users})
+                if c.kind == "owner" and c.owner_to not in {user.id for user in self.users}
+            )
             problems.extend(
                 f"{item.id}: history sets priority {c.priority_to!r}, which is not one"
                 for c in item.history
-                if c.kind == "priority"
-                and c.priority_to not in self.policy.priorities)
+                if c.kind == "priority" and c.priority_to not in self.policy.priorities
+            )
             if not lane_history:
                 continue
 
@@ -1923,7 +2096,8 @@ class Board:
             if first.frm is None and not self.policy.may_create(first.by, first.to):
                 problems.append(
                     f"{item.id}: history says {first.by} created it in {first.to}, "
-                    f"which {first.by} may not do")
+                    f"which {first.by} may not do"
+                )
 
             where: str | None = None
             for index, change in enumerate(lane_history):
@@ -1931,23 +2105,27 @@ class Board:
                     if index > 0:
                         problems.append(
                             f"{item.id}: history[{index}] has no 'from', so it reads "
-                            f"as a second creation")
+                            f"as a second creation"
+                        )
                 elif where is not None and change.frm != where:
                     problems.append(
                         f"{item.id}: history[{index}] leaves {change.frm!r} but the "
-                        f"previous entry arrived at {where!r} -- the chain is broken")
+                        f"previous entry arrived at {where!r} -- the chain is broken"
+                    )
                 elif not self.policy.may_move(change.by, change.frm, change.to):
                     problems.append(
                         f"{item.id}: history[{index}] records {change.by} moving "
                         f"{change.frm} -> {change.to}, which the permission table "
-                        f"forbids")
+                        f"forbids"
+                    )
                 where = change.to
 
             if where is not None and where != item.state:
                 problems.append(
                     f"{item.id}: stored state is {item.state!r} but its history ends "
                     f"at {where!r} -- something changed it without going through "
-                    f"move()")
+                    f"move()"
+                )
         return problems
 
     # ---- writing -------------------------------------------------------------
@@ -1974,12 +2152,15 @@ class Board:
         card's earliest record would be the day somebody happened to touch it.
         """
         if not self.policy.may_create(by, state):
-            allowed = sorted(s for s in self.policy.states
-                             if self.policy.may_create(by, s))
+            allowed = sorted(s for s in self.policy.states if self.policy.may_create(by, s))
             raise BoardError(
                 f"{by} may not create in {state}. "
-                + (f"{by} may create in: {', '.join(allowed)}" if allowed
-                   else f"{by} may not create anywhere"))
+                + (
+                    f"{by} may create in: {', '.join(allowed)}"
+                    if allowed
+                    else f"{by} may not create anywhere"
+                )
+            )
         if any(item.id == item_id for item in self.items):
             raise BoardError(f"duplicate id {item_id!r}")
         priority = priority or self.policy.default_priority
@@ -1997,9 +2178,15 @@ class Board:
         # the creation entry already carries the moment, and only a REASSIGNMENT is a
         # change to record.
         item = Item(
-            id=item_id, subject=subject, state=state, ticket=self.next_ticket,
-            priority=priority, detail=detail, owner=chosen_owner,
-            history=[Change(at=now(), to=state, by=by)])
+            id=item_id,
+            subject=subject,
+            state=state,
+            ticket=self.next_ticket,
+            priority=priority,
+            detail=detail,
+            owner=chosen_owner,
+            history=[Change(at=now(), to=state, by=by)],
+        )
         self.next_ticket += 1
         self.items.append(item)
         return f"created {item.label} {item_id} in {state} (by {by})"
@@ -2029,14 +2216,12 @@ class Board:
         would only make a correction need a round trip.
         """
         if priority not in self.policy.priorities:
-            raise BoardError(
-                f"unknown priority {priority!r}; want one of {', '.join(PRIORITIES)}")
+            raise BoardError(f"unknown priority {priority!r}; want one of {', '.join(PRIORITIES)}")
         item = self.find(item_id)
         was = item.priority
         if was == priority:
             return f"{item.label} is already {priority}"
-        item.history.append(Change(at=now(), to="", by=by,
-                                   priority_frm=was, priority_to=priority))
+        item.history.append(Change(at=now(), to="", by=by, priority_frm=was, priority_to=priority))
         item.priority = priority
         return f"{item.label} priority: {was} -> {priority} (by {by})"
 
@@ -2106,8 +2291,8 @@ class Board:
         """
         if kind not in LINK_INVERSE:
             raise BoardError(
-                f"unknown relationship {kind!r}; want one of "
-                f"{', '.join(sorted(LINK_INVERSE))}")
+                f"unknown relationship {kind!r}; want one of {', '.join(sorted(LINK_INVERSE))}"
+            )
         a, b = self.find(a_ref), self.find(b_ref)
         if a.id == b.id:
             raise BoardError(f"{a.label} cannot be related to itself")
@@ -2240,8 +2425,7 @@ class Board:
         was = item.owner
         if was == owner:
             return f"{item.label} is already owned by {owner}"
-        item.history.append(Change(at=now(), to="", by=by,
-                                   owner_frm=was, owner_to=owner))
+        item.history.append(Change(at=now(), to="", by=by, owner_frm=was, owner_to=owner))
         item.owner = owner
         return f"{item.label} ownership change: {was} -> {owner} (by {by})"
 
@@ -2320,8 +2504,7 @@ class Board:
     # ordinary prose -- "28 tests", "step 12" -- from silently wiring cards together.
     TICKET_MENTION = re.compile(r"#(\d{1,6})\b")
 
-    def _links_from_text(self, item: Item, text: str,
-                         by: Actor) -> tuple[list[str], list[str]]:
+    def _links_from_text(self, item: Item, text: str, by: Actor) -> tuple[list[str], list[str]]:
         """Add a `references` link for each `#nnnn` a comment names. Card #0028.
 
         **Terry's example, verbatim:** *"If I tag ticket 9876 in a comment with 'See
@@ -2398,7 +2581,7 @@ LOCK_STALE_S = 10.0
 
 
 @contextlib.contextmanager
-def locked(path: pathlib.Path) -> Iterator[None]:
+def locked(path: pathlib.Path) -> Generator[None]:
     """Hold an exclusive lock on a board for the whole read-modify-write.
 
     **Terry asked whether this was needed:** *"are we (do we need to?) file locking
@@ -2440,7 +2623,8 @@ def locked(path: pathlib.Path) -> Iterator[None]:
             if time.monotonic() > deadline:
                 raise BoardError(
                     f"{path.name} is locked by another writer "
-                    f"(held {age:.1f}s). Nothing was changed.") from None
+                    f"(held {age:.1f}s). Nothing was changed."
+                ) from None
             time.sleep(0.02)
             continue
         try:
@@ -2456,8 +2640,9 @@ def locked(path: pathlib.Path) -> Iterator[None]:
 
 @contextlib.contextmanager
 def edit(
-    path: pathlib.Path, policy: TransitionPolicy | None = None,
-) -> Iterator[Board]:
+    path: pathlib.Path,
+    policy: TransitionPolicy | None = None,
+) -> Generator[Board]:
     """Load, hand over the board, then save -- all under one lock.
 
     **This is the ONLY correct way to change a board**, and both writers use it. A
@@ -2547,14 +2732,15 @@ def _replace_with_retry(tmp: pathlib.Path, target: pathlib.Path) -> None:
             return
 
 
-def _service_descriptor(path: pathlib.Path) -> dict[str, Any]:
+def _service_descriptor(path: pathlib.Path) -> JsonObject:
     """Read and validate the local service rendezvous file."""
     service = service_descriptor_path(path)
     try:
-        raw = json.loads(service.read_text(encoding="utf-8"))
+        raw = cast("JsonValue", json.loads(service.read_text(encoding="utf-8")))
     except (OSError, ValueError) as exc:
         raise BoardError(
-            f"board service is not running ({service} is unavailable); nothing changed") from exc
+            f"board service is not running ({service} is unavailable); nothing changed"
+        ) from exc
     if not isinstance(raw, dict) or raw.get("schema") != 1:
         raise BoardError(f"{service}: unsupported service descriptor")
     host, port, token = raw.get("host"), raw.get("port"), raw.get("token")
@@ -2563,8 +2749,9 @@ def _service_descriptor(path: pathlib.Path) -> dict[str, Any]:
     return raw
 
 
-def _service_json(url: str, token: str, *, body: dict[str, object] | None = None,
-                  revision: int | None = None) -> dict[str, Any]:
+def _service_json(
+    url: str, token: str, *, body: dict[str, object] | None = None, revision: int | None = None
+) -> JsonObject:
     """Make one authenticated service request and turn refusals into BoardError."""
     headers = {"Authorization": f"Bearer {token}"}
     data: bytes | None = None
@@ -2572,15 +2759,19 @@ def _service_json(url: str, token: str, *, body: dict[str, object] | None = None
         headers["Content-Type"] = "application/json"
         headers["If-Match"] = f'"revision-{revision}"'
         data = json.dumps(body).encode("utf-8")
-    request = urllib.request.Request(url, data=data, headers=headers,
-                                     method="POST" if body is not None else "GET")
+    request = urllib.request.Request(  # noqa: S310 -- URL comes from validated loopback data
+        url, data=data, headers=headers, method="POST" if body is not None else "GET"
+    )
     try:
-        with urllib.request.urlopen(request, timeout=5) as response:
-            raw = json.loads(response.read())
+        with urllib.request.urlopen(  # noqa: S310 -- only the loopback descriptor is accepted
+            request, timeout=5
+        ) as response:
+            raw = cast("JsonValue", json.loads(response.read()))
     except urllib.error.HTTPError as exc:
         try:
-            error = json.loads(exc.read()).get("error", str(exc))
-        except (ValueError, AttributeError):
+            error_raw = cast("JsonValue", json.loads(exc.read()))
+            error = error_raw.get("error", str(exc)) if isinstance(error_raw, dict) else str(exc)
+        except ValueError:
             error = str(exc)
         raise BoardError(f"board service refused the command: {error}") from exc
     except (OSError, urllib.error.URLError, ValueError) as exc:
@@ -2602,42 +2793,62 @@ def _remote_apply(path: pathlib.Path, args: argparse.Namespace) -> str:  # noqa:
 
     route: str
     body: dict[str, object]
+
     def quote(value: object) -> str:
         return urllib.parse.quote(str(value), safe="")
+
     if args.create:
         route = API_PREFIX + "/cards"
-        body = {"id": args.create[0], "subject": args.create[1], "state": args.state,
-                "priority": args.priority, "detail": _detail_text(args),
-                "owner": args.owner or DEFAULT_OWNER}
+        body = {
+            "id": args.create[0],
+            "subject": args.create[1],
+            "state": args.state,
+            "priority": args.priority,
+            "detail": _detail_text(args),
+            "owner": args.owner or DEFAULT_OWNER,
+        }
     elif args.set_project:
         route, body = API_PREFIX + "/board/project", {"project": args.set_project}
     elif args.move:
         route, body = f"{API_PREFIX}/cards/{quote(args.move[0])}/move", {"to": args.move[1]}
     elif args.comment:
-        route, body = (f"{API_PREFIX}/cards/{quote(args.comment[0])}/comment",
-                       {"text": args.comment[1]})
+        route, body = (
+            f"{API_PREFIX}/cards/{quote(args.comment[0])}/comment",
+            {"text": args.comment[1]},
+        )
     elif args.assign:
-        route, body = (f"{API_PREFIX}/cards/{quote(args.assign[0])}/assign",
-                       {"owner": args.assign[1]})
+        route, body = (
+            f"{API_PREFIX}/cards/{quote(args.assign[0])}/assign",
+            {"owner": args.assign[1]},
+        )
     elif args.set_priority:
-        route, body = (f"{API_PREFIX}/cards/{quote(args.set_priority[0])}/priority",
-                       {"priority": args.set_priority[1]})
+        route, body = (
+            f"{API_PREFIX}/cards/{quote(args.set_priority[0])}/priority",
+            {"priority": args.set_priority[1]},
+        )
     elif args.set_detail:
-        route, body = f"{API_PREFIX}/cards/{quote(args.set_detail)}/detail", {
-            "detail": _detail_text(args)}
+        route, body = (
+            f"{API_PREFIX}/cards/{quote(args.set_detail)}/detail",
+            {"detail": _detail_text(args)},
+        )
     elif args.set_subject:
-        route, body = f"{API_PREFIX}/cards/{quote(args.set_subject[0])}/subject", {
-            "subject": args.set_subject[1]}
+        route, body = (
+            f"{API_PREFIX}/cards/{quote(args.set_subject[0])}/subject",
+            {"subject": args.set_subject[1]},
+        )
     elif args.link or args.unlink:
         values = args.link or args.unlink
-        route, body = f"{API_PREFIX}/cards/{quote(values[0])}/link", {
-            "kind": values[1], "other": values[2], "remove": bool(args.unlink)}
+        route, body = (
+            f"{API_PREFIX}/cards/{quote(values[0])}/link",
+            {"kind": values[1], "other": values[2], "remove": bool(args.unlink)},
+        )
     elif args.set_parent:
-        route, body = f"{API_PREFIX}/cards/{quote(args.set_parent[0])}/parent", {
-            "parent": args.set_parent[1]}
+        route, body = (
+            f"{API_PREFIX}/cards/{quote(args.set_parent[0])}/parent",
+            {"parent": args.set_parent[1]},
+        )
     elif args.clear_parent:
-        route, body = (f"{API_PREFIX}/cards/{quote(args.clear_parent)}/parent",
-                       {"parent": None})
+        route, body = (f"{API_PREFIX}/cards/{quote(args.clear_parent)}/parent", {"parent": None})
     else:
         raise BoardError("no mutation requested")
 
@@ -2653,16 +2864,24 @@ def main() -> None:
     ap = argparse.ArgumentParser(description="Inspect or update a localswim board.")
     ap.add_argument("board", type=pathlib.Path, help="path to the board JSON")
     ap.add_argument("--json", action="store_true", help="dump the parsed board")
-    ap.add_argument("--verify", action="store_true",
-                    help="replay every history and refuse a state it disagrees with")
+    ap.add_argument(
+        "--verify",
+        action="store_true",
+        help="replay every history and refuse a state it disagrees with",
+    )
     ap.add_argument("--move", nargs=2, metavar=("ID", "STATE"), help="move one card")
-    ap.add_argument("--comment", nargs=2, metavar=("ID", "TEXT"),
-                    help="leave a comment on one card")
+    ap.add_argument(
+        "--comment", nargs=2, metavar=("ID", "TEXT"), help="leave a comment on one card"
+    )
     # **Both actors are offered, unlike `--state` above.** Ownership is a LABEL rather
     # than a permission -- card #0053 -- so either actor may be assigned either way and
     # there is no lane-style restriction to encode here.
-    ap.add_argument("--assign", nargs=2, metavar=("ID", "OWNER"),
-                    help="reassign one card's owner between terry and claude")
+    ap.add_argument(
+        "--assign",
+        nargs=2,
+        metavar=("ID", "OWNER"),
+        help="reassign one card's owner between terry and claude",
+    )
     # **Board METADATA gets a flag rather than a hand edit.** Card #0050. The standing
     # order is that Claude writes to the board THROUGH THE LIBRARY, and the usual
     # reasons -- `may_create`, `nextTicket`, the creation history entry -- do not reach
@@ -2671,14 +2890,14 @@ def main() -> None:
     # argument for keeping hands out of the file rather than a license to reach in.
     #
     # **`port` has the same shape and will want the same treatment.**
-    ap.add_argument("--set-project", metavar="NAME",
-                    help="rename the board's project field")
+    ap.add_argument("--set-project", metavar="NAME", help="rename the board's project field")
     # **Priority was set-once until 2026-08-19.** `--priority` above only decorates
     # `--create`, so a card filed at the wrong priority could not be corrected from the
     # CLI at all -- and the drawer has no control for it either. Terry asked to move a
     # card to P1 and there was no way to do it. Card #0060.
-    ap.add_argument("--set-priority", nargs=2, metavar=("ID", "PRIORITY"),
-                    help="change one card's priority")
+    ap.add_argument(
+        "--set-priority", nargs=2, metavar=("ID", "PRIORITY"), help="change one card's priority"
+    )
     # **A card's description was WRITE-ONCE until 2026-08-19.** Terry read one and
     # said *"wall of text ELI5, try again in human readable fashion"* -- and there was
     # no way to try again. Only comments could be added, so a bad description could be
@@ -2686,42 +2905,66 @@ def main() -> None:
     #
     # **Takes its text from `--detail` or `--detail-file`, the same pair `--create`
     # uses**, so the shell-quoting lesson is inherited rather than repeated.
-    ap.add_argument("--set-detail", metavar="ID",
-                    help="replace one card's description; use --detail or --detail-file")
+    ap.add_argument(
+        "--set-detail",
+        metavar="ID",
+        help="replace one card's description; use --detail or --detail-file",
+    )
     # **Card #0081.** The web drawer is the surface Terry asked for; this exists so the
     # CLI is not the one place a rename is impossible, which is the asymmetry `/priority`
     # already closed in the other direction.
-    ap.add_argument("--set-subject", nargs=2, metavar=("ID", "TEXT"),
-                    help="rename one card; the id and ticket number do not move")
+    ap.add_argument(
+        "--set-subject",
+        nargs=2,
+        metavar=("ID", "TEXT"),
+        help="rename one card; the id and ticket number do not move",
+    )
     # **Card #0069, and it is the CLI half of the dialog's new picker.** The default
     # stays `claude` because that is what `Item.owner` already did; his standing rule is
     # *"if in doubt, assign to claude."*
-    ap.add_argument("--owner", default="",
-                    help="owner for --create; defaults to the board's defaultOwner")
+    ap.add_argument(
+        "--owner", default="", help="owner for --create; defaults to the board's defaultOwner"
+    )
     # **Card #0028. Both cards in one call, always.** The relationship is stored once and
     # the other direction is derived, so there is no call shape that writes half of one.
-    ap.add_argument("--link", nargs=3, metavar=("ID", "KIND", "OTHER"),
-                    help=f"relate two cards; KIND is one of {', '.join(sorted(LINK_INVERSE))}")
-    ap.add_argument("--unlink", nargs=3, metavar=("ID", "KIND", "OTHER"),
-                    help="remove a relationship between two cards")
-    ap.add_argument("--set-parent", nargs=2, metavar=("CHILD", "PARENT"),
-                    help="put one card under another; refuses a cycle")
-    ap.add_argument("--clear-parent", metavar="CHILD",
-                    help="move a card back to the top level")
-    ap.add_argument("--create", nargs=2, metavar=("ID", "SUBJECT"),
-                    help="add one card; needs --state")
+    ap.add_argument(
+        "--link",
+        nargs=3,
+        metavar=("ID", "KIND", "OTHER"),
+        help=f"relate two cards; KIND is one of {', '.join(sorted(LINK_INVERSE))}",
+    )
+    ap.add_argument(
+        "--unlink",
+        nargs=3,
+        metavar=("ID", "KIND", "OTHER"),
+        help="remove a relationship between two cards",
+    )
+    ap.add_argument(
+        "--set-parent",
+        nargs=2,
+        metavar=("CHILD", "PARENT"),
+        help="put one card under another; refuses a cycle",
+    )
+    ap.add_argument("--clear-parent", metavar="CHILD", help="move a card back to the top level")
+    ap.add_argument(
+        "--create", nargs=2, metavar=("ID", "SUBJECT"), help="add one card; needs --state"
+    )
     # **`choices` is the lanes Claude may CREATE in, not every lane.** argparse then
     # refuses an illegal lane by name before the board is opened, which is a better
     # error than `BoardError` raised under the lock -- and it makes `--help` state
     # the permission rather than hide it behind a failed run.
-    ap.add_argument("--state", choices=list(STATES),
-                    help="the lane to --create in")
-    ap.add_argument("--priority", choices=list(PRIORITIES), default=DEFAULT_PRIORITY,
-                    help="priority for --create")
+    ap.add_argument("--state", choices=list(STATES), help="the lane to --create in")
+    ap.add_argument(
+        "--priority",
+        choices=list(PRIORITIES),
+        default=DEFAULT_PRIORITY,
+        help="priority for --create",
+    )
     detail = ap.add_mutually_exclusive_group()
     detail.add_argument("--detail", default="", help="description for --create")
-    detail.add_argument("--detail-file", type=pathlib.Path,
-                        help="read the description from a file instead")
+    detail.add_argument(
+        "--detail-file", type=pathlib.Path, help="read the description from a file instead"
+    )
     args = ap.parse_args()
 
     if args.create and not args.state:
@@ -2738,66 +2981,6 @@ def main() -> None:
     _report(load(args.board), args)
 
 
-def _apply(board: Board, args: argparse.Namespace) -> str:
-    """Perform the one requested change and RETURN its description.
-
-    Called INSIDE `edit`, so it must not save -- and it must not PRINT either. The
-    caller prints after the save lands, which is what makes the line trustworthy.
-    See the comment at the call site for the lost write that established this.
-
-    **THE CLI IS ALWAYS `claude`, and there is no flag to say otherwise.**
-
-    Terry asked how Claude's changes get tagged, and the first answer exposed a
-    backwards asymmetry: the server HARD-CODES `terry` because loopback proves it is
-    him, while the CLI merely DEFAULTED to `claude` and accepted `--by terry`. **So
-    he could not impersonate Claude and Claude could impersonate him** -- including
-    on `ready_for_review -> completed`, the one edge that exists to be his alone.
-
-    **Two paths, two identities, neither able to claim the other.** `Board.move`
-    still takes an actor because the tests must walk both sides of the permission
-    table; the CLI, which is the thing Claude actually runs, cannot.
-
-    **This is a guard rail, not a proof.** Nothing stops a hand edit that writes
-    `"by": "terry"` into the JSON, and no code here fixes that short of signing,
-    which would be absurd for a local board. What it does is make the honest path
-    the easy path and forgery a deliberate act.
-    """
-    for name, handler in HANDLERS.items():
-        if getattr(args, name):
-            return handler(board, args)
-    # **Unreachable via `main`'s guard, and it MUST stay a raise anyway.** Falling off
-    # the end would return `None`, which prints as `None` and saves an unchanged
-    # board -- a silent no-op of exactly the kind this table exists to prevent.
-    raise BoardError(f"no mutation requested; one of {', '.join(MUTATIONS)} is needed")
-
-
-def _do_create(board: Board, args: argparse.Namespace) -> str:
-    return board.create(args.create[0], args.create[1], args.state, CLI_USER,
-                        priority=args.priority, detail=_detail_text(args),
-                        owner=as_actor(args.owner) if args.owner else DEFAULT_OWNER)
-
-
-def _do_assign(board: Board, args: argparse.Namespace) -> str:
-    return board.assign(args.assign[0], as_actor(args.assign[1]), CLI_USER)
-
-
-def _do_set_project(board: Board, args: argparse.Namespace) -> str:
-    """Rename the board. **No history entry, and that is consistent rather than lazy.**
-
-    The trail belongs to CARDS -- `verify()` replays per-item histories -- and board
-    metadata has no card to attach to. Same reasoning that keeps initial ownership out
-    of the log: a property, not an event.
-    """
-    was = board.project
-    name = args.set_project.strip()
-    if not name:
-        raise BoardError("a project needs a name")
-    if name == was:
-        return f"project is already {name!r}"
-    board.project = name
-    return f"project renamed: {was!r} -> {name!r}"
-
-
 # **ONE TABLE, so a write flag cannot be added in one place and forgotten in another.**
 #
 # This replaced a literal `if args.move or args.comment or args.create:` in `main` plus
@@ -2806,27 +2989,22 @@ def _do_set_project(board: Board, args: argparse.Namespace) -> str:
 # the whole board and exited 0. A write that silently became a read, and reported
 # success.
 #
-# **`MUTATIONS` is now DERIVED from these keys rather than maintained beside them**, so
-# the two cannot disagree. The key is the argparse `dest`.
-HANDLERS: dict[str, Callable[[Board, argparse.Namespace], str]] = {
-    "create": _do_create,
-    "move": lambda b, a: b.move(a.move[0], a.move[1], CLI_USER),
-    "assign": _do_assign,
-    "comment": lambda b, a: b.comment(a.comment[0], a.comment[1], CLI_USER),
-    "set_project": _do_set_project,
-    "set_priority": lambda b, a: b.set_priority(
-        a.set_priority[0], a.set_priority[1].upper(), CLI_USER),
-    "set_detail": lambda b, a: b.set_detail(a.set_detail, _detail_text(a), CLI_USER),
-    "set_subject": lambda b, a: b.set_subject(a.set_subject[0], a.set_subject[1],
-                                              CLI_USER),
-    "link": lambda b, a: b.link(a.link[0], a.link[1].lower(), a.link[2], CLI_USER),
-    "unlink": lambda b, a: b.unlink(a.unlink[0], a.unlink[1].lower(), a.unlink[2],
-                                    CLI_USER),
-    "set_parent": lambda b, a: b.set_parent(a.set_parent[0], a.set_parent[1], CLI_USER),
-    "clear_parent": lambda b, a: b.set_parent(a.clear_parent, None, CLI_USER),
-}
-
-MUTATIONS = tuple(HANDLERS)
+# These are the argparse destination names that mutate through the service. Keeping
+# one immutable tuple makes the dispatch boundary explicit and type-checkable.
+MUTATIONS = (
+    "create",
+    "move",
+    "assign",
+    "comment",
+    "set_project",
+    "set_priority",
+    "set_detail",
+    "set_subject",
+    "link",
+    "unlink",
+    "set_parent",
+    "clear_parent",
+)
 
 
 def _detail_text(args: argparse.Namespace) -> str:
