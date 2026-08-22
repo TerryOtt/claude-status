@@ -160,6 +160,14 @@ partially written card, search text and view state survive in per-tab session st
 
 ## Development
 
+Before changing the implementation, read the
+[contributor orientation](docs/ORIENTATION.md). It maps the components, data and
+request flows, schemas, safety invariants, state-policy caveats, test boundaries, and
+Windows/Codex environment details that are intentionally more technical than this user
+guide. The branch and pull-request policy lives in
+[CONTRIBUTING.md](CONTRIBUTING.md), and automation-specific working rules live in
+[AGENTS.md](AGENTS.md).
+
 Install the development tools:
 
 ~~~console

@@ -1,0 +1,34 @@
+# The main-branch ruleset requires this check for contributors who do not have a
+# direct-push bypass. It intentionally needs no checkout and executes no PR code.
+name: contribution-policy
+
+on:
+  pull_request:
+    branches:
+      - main
+
+jobs:
+  contribution-policy:
+    name: contribution-policy
+    runs-on: ubuntu-latest
+    steps:
+      - name: Require a feature branch from other contributors
+        env:
+          HEAD_REF: ${{ github.head_ref }}
+          PR_AUTHOR: ${{ github.event.pull_request.user.login }}
+        shell: bash
+        run: |
+          if [[ "$PR_AUTHOR" == "TerryOtt" || \
+                "$PR_AUTHOR" == "chatgpt-codex-connector[bot]" ]]; then
+            echo "$PR_AUTHOR is an approved direct-main actor."
+            exit 0
+          fi
+
+          if [[ "$HEAD_REF" =~ ^feature/[a-z0-9]+(-[a-z0-9]+)*$ ]]; then
+            echo "$HEAD_REF follows the feature branch convention."
+            exit 0
+          fi
+
+          echo "Pull requests from $PR_AUTHOR must use " \
+               "feature/<terse-kebab-case-description>; got: $HEAD_REF" >&2
+          exit 1
