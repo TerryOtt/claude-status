@@ -48,6 +48,7 @@ saved, and only then published as the current in-memory snapshot.
 | `vendor/typefaces/inter/` | Unmodified Inter WOFF2 subsets and their SIL OFL license. |
 | `.github/workflows/gate.yml` | Runs the same gate in CI and obtains the public canonical vocabulary table. |
 | `.github/workflows/contribution-policy.yml` | Checks non-exempt pull-request source branch names without executing PR code. |
+| `.github/CODEOWNERS` | Makes `TerryOtt` the sole code owner for every repository path. |
 | `.github/rulesets/main.json` | Reproducible recipe for the server-side `main` branch ruleset. |
 | `.github/repository-settings.json` | Reproducible recipe for merge methods, auto-merge availability, and branch cleanup. |
 | `.githooks/pre-commit` | Opt-in local hook that executes `python check.py`. |
@@ -357,14 +358,17 @@ installs the App and adds it to both the live rule and recipe. The branch bypass
 not override the repository instruction that Codex commits and pushes only after an
 explicit user request.
 
-The main ruleset requires one approval of the current changes, `contribution-policy`,
-and the existing `gate`; only squash merge is allowed. Repository settings disable
+The main ruleset requires one approval of the current changes, and that approval RFC
+2119 MUST come from GitHub user `TerryOtt`. `.github/CODEOWNERS` makes Terry the sole
+owner of every path, while the ruleset requires code-owner review; another person's
+approval cannot satisfy the requirement. The rule also requires `contribution-policy`
+and the existing `gate`, and only squash merge is allowed. Repository settings disable
 merge commits and rebase merges, allow a maintainer to enable auto-merge on an
 individual PR, and delete merged same-repository head branches. Native GitHub
 auto-merge does not enroll every PR automatically: when selected for a PR, it performs
-the squash merge after the approval and checks pass. If policy expectations change,
-update the GitHub rule, both JSON recipes, workflow, `CONTRIBUTING.md`, and this section
-together.
+the squash merge after Terry's approval and both checks pass. If policy expectations
+change, update CODEOWNERS, the GitHub rule, both JSON recipes, workflow,
+`CONTRIBUTING.md`, and this section together.
 
 ## Documentation ownership
 

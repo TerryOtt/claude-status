@@ -137,8 +137,11 @@ work for any other contributor, follow `CONTRIBUTING.md`.
 The active server-side rule must match `.github/rulesets/main.json`, and
 `.github/workflows/contribution-policy.yml` supplies its required branch-name check.
 The repository merge settings must match `.github/repository-settings.json`: only
-squash merges are permitted, one current approval and both required checks gate a PR,
-per-PR auto-merge is available, and merged same-repository branches are deleted.
+squash merges are permitted, both required checks gate a PR, per-PR auto-merge is
+available, and merged same-repository branches are deleted. The one current approval
+RFC 2119 MUST come from GitHub user `TerryOtt`; `.github/CODEOWNERS` and the ruleset's
+required code-owner review enforce that requirement. Approval by anyone else does not
+satisfy it.
 Do not create duplicate rulesets: inspect GitHub first and update the existing rule by
 ID. The GitHub CLI token needs both `repo` and `workflow` scopes to push changes under
 `.github/workflows/`; refresh it with

@@ -26,8 +26,8 @@ Every other contributor must:
    `feature/reject-stale-card-edit`.
 3. Push that branch and submit a pull request targeting `main`.
 4. Wait for the `contribution-policy` and `gate` checks to pass.
-5. Obtain one approving review, then use squash merge or a previously enabled
-   per-PR auto-merge.
+5. Obtain an approving review from GitHub user `TerryOtt`, then use squash merge or a
+   previously enabled per-PR auto-merge.
 
 The enforced branch-name grammar is:
 
@@ -48,10 +48,13 @@ pull request.
 - GitHub's active repository ruleset is the actual protection boundary. Committing
   either JSON recipe does not apply it automatically.
 
-The ruleset requires one approving review of the current changes and both the
-`contribution-policy` and `gate` status checks. Squash is the only permitted PR merge
-method. GitHub automatically deletes a same-repository head branch after its PR is
-merged; it cannot delete a contributor's branch in a separate fork.
+The approval requirement is an RFC 2119 **MUST**: approval must come from GitHub user
+`TerryOtt`. Another review may be useful but does not satisfy the merge requirement.
+`.github/CODEOWNERS` makes Terry the sole owner of every path, and the ruleset requires
+a code-owner review plus one approving review of the current changes. It also requires
+the `contribution-policy` and `gate` status checks. Squash is the only permitted PR
+merge method. GitHub automatically deletes a same-repository head branch after its PR
+is merged; it cannot delete a contributor's branch in a separate fork.
 
 Repository auto-merge is available but is not automatically selected for every PR.
 Someone with write permission must enable it on an individual PR; GitHub then performs
