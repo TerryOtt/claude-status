@@ -49,6 +49,7 @@ saved, and only then published as the current in-memory snapshot.
 | `.github/workflows/gate.yml` | Runs the same gate in CI and obtains the public canonical vocabulary table. |
 | `.github/workflows/contribution-policy.yml` | Checks non-exempt pull-request source branch names without executing PR code. |
 | `.github/rulesets/main.json` | Reproducible recipe for the server-side `main` branch ruleset. |
+| `.github/repository-settings.json` | Reproducible recipe for merge methods, auto-merge availability, and branch cleanup. |
 | `.githooks/pre-commit` | Opt-in local hook that executes `python check.py`. |
 
 There is no package metadata, JavaScript build, template engine, database service, or
@@ -356,12 +357,14 @@ installs the App and adds it to both the live rule and recipe. The branch bypass
 not override the repository instruction that Codex commits and pushes only after an
 explicit user request.
 
-The main ruleset intentionally requires zero fixed review approvals: the requested
-boundary is “submit a PR,” with Terry retaining the merge decision. It requires the
-branch-policy check but does not duplicate the existing gate as a required status
-check. The gate still runs on every push and pull request and should be green before a
-merge. If policy expectations change, update the GitHub rule, recipe, workflow,
-`CONTRIBUTING.md`, and this section together.
+The main ruleset requires one approval of the current changes, `contribution-policy`,
+and the existing `gate`; only squash merge is allowed. Repository settings disable
+merge commits and rebase merges, allow a maintainer to enable auto-merge on an
+individual PR, and delete merged same-repository head branches. Native GitHub
+auto-merge does not enroll every PR automatically: when selected for a PR, it performs
+the squash merge after the approval and checks pass. If policy expectations change,
+update the GitHub rule, both JSON recipes, workflow, `CONTRIBUTING.md`, and this section
+together.
 
 ## Documentation ownership
 

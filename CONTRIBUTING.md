@@ -25,8 +25,9 @@ Every other contributor must:
 2. Use lower-case kebab case after the slash, for example
    `feature/reject-stale-card-edit`.
 3. Push that branch and submit a pull request targeting `main`.
-4. Wait for the `contribution-policy` and `gate` checks to pass before asking Terry
-   to merge it.
+4. Wait for the `contribution-policy` and `gate` checks to pass.
+5. Obtain one approving review, then use squash merge or a previously enabled
+   per-PR auto-merge.
 
 The enforced branch-name grammar is:
 
@@ -42,14 +43,20 @@ pull request.
 
 - `.github/workflows/contribution-policy.yml` checks the source branch and PR author.
 - `.github/rulesets/main.json` is the checked-in recipe for the active GitHub ruleset.
+- `.github/repository-settings.json` is the checked-in recipe for merge methods,
+  auto-merge availability, and branch cleanup.
 - GitHub's active repository ruleset is the actual protection boundary. Committing
-  the JSON recipe does not apply it automatically.
+  either JSON recipe does not apply it automatically.
 
-The ruleset requires a pull request and the `contribution-policy` status check, but it
-does not prescribe a fixed number of approving reviews. The existing `gate` workflow
-runs on every push and pull request; contributors should treat a green gate as a merge
-prerequisite even though the narrowly scoped ruleset does not make that check a second
-branch-protection requirement.
+The ruleset requires one approving review of the current changes and both the
+`contribution-policy` and `gate` status checks. Squash is the only permitted PR merge
+method. GitHub automatically deletes a same-repository head branch after its PR is
+merged; it cannot delete a contributor's branch in a separate fork.
+
+Repository auto-merge is available but is not automatically selected for every PR.
+Someone with write permission must enable it on an individual PR; GitHub then performs
+the squash merge after the required review and checks pass. Otherwise, Terry performs
+the squash merge explicitly after approval.
 
 ## Maintaining the GitHub ruleset
 
@@ -61,6 +68,8 @@ gh auth status -h github.com
 gh auth refresh -h github.com -s repo -s workflow
 gh api repos/TerryOtt/localswim/rulesets
 gh api repos/TerryOtt/localswim/rules/branches/main
+gh api repos/TerryOtt/localswim --jq \
+  '{allow_auto_merge,allow_merge_commit,allow_rebase_merge,allow_squash_merge,delete_branch_on_merge}'
 ```
 
 The `workflow` scope is required when a commit creates or changes a file beneath
@@ -73,8 +82,14 @@ For a repository with no existing ruleset, apply the checked-in recipe once:
 gh api --method POST repos/TerryOtt/localswim/rulesets --input .github/rulesets/main.json
 ```
 
+Apply the repository-level merge settings idempotently with:
+
+```console
+gh api --method PATCH repos/TerryOtt/localswim --input .github/repository-settings.json
+```
+
 Do not run that POST when the named ruleset already exists; it would create a second
-ruleset. Update the existing ruleset by ID instead, then retrieve it and compare its
+ruleset. Update the existing ruleset by ID with `PUT`, then retrieve it and compare its
 conditions, rules, and bypass actors with the recipe. GitHub intentionally returns
 bypass actors only to callers with write access to the ruleset.
 
